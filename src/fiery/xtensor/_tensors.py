@@ -35,6 +35,27 @@ ArgLabelsT = tx.Sequence[tx.Union[str, EllipsisType, None]]
 CoordsT = tx.Mapping[str, ArgLabelsT]
 """A mapping *dimension name -> its labels* (xarray-style coordinates)."""
 
+AxisMetaT = tx.Mapping[str, tx.Any]
+"""Extra axis-descriptor fields (OME-NGFF): `type`/`unit`/`orientation`."""
+
+AxisT = tx.Union[str, None, tx.Mapping[str, tx.Any]]
+"""One axis as given: a bare name, `None`, or a descriptor dict + `name`."""
+
+
+def _validate_orientation(orientation: tx.Any) -> None:
+    """An `orientation` descriptor field must have the form ``{a}-to-{b}``."""
+    if not isinstance(orientation, str) or "-to-" not in orientation:
+        raise ValueError(
+            "orientation must have the form '{a}-to-{b}', got "
+            f"{orientation!r}"
+        )
+
+
+def _flip_orientation(orientation: str) -> str:
+    """Reverse ``{a}-to-{b}`` into ``{b}-to-{a}`` (what a flip does)."""
+    a, _, b = orientation.partition("-to-")
+    return b + "-to-" + a
+
 
 def _resolve_axis(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     """
@@ -196,17 +217,24 @@ class XTensor(ExtendedTensor):
       in `coords` -- a mapping *dim name -> labels* -- keyed by dimension
       **name**, so they follow their dimension through reshaping/reordering
       with no positional bookkeeping. A labelled dimension must be named.
+    - **Axis descriptors** may enrich a name with extra (OME-NGFF-style)
+      fields -- `type`, `unit`, `orientation` -- passed as a dict in place of
+      a bare name (`{"name": "x", "type": "space"}`). `names` stays the
+      ergonomic view (bare names); `axes` returns the full descriptors. The
+      extra fields live in `_axis_meta`, keyed by dimension name, so they
+      follow the dimension like coordinates do.
 
     Select by label with `sel`, by integer position with `isel`, or reach a
     single label by attribute (`x.red`).
     """
 
-    _ATTRS = {"_axis_names", "_coords"}
+    _ATTRS = {"_axis_names", "_coords", "_axis_meta"}
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
         kwargs.pop("names", None)
         kwargs.pop("coords", None)
+        kwargs.pop("axes", None)
         # Wrapping an existing tensor via `Tensor.__new__(cls, t)` is not
         # portable: some PyTorch versions reject a non-default dtype there
         # (e.g. a Long tensor raises "expected Float"). `as_subclass` re-tags
@@ -219,7 +247,13 @@ class XTensor(ExtendedTensor):
         # NOTE: Tensor does not implement `__init__` (only `__new__`), but we
         # add support for the `names` / `coords` arguments here.
         super().__init__()  # This actually calls `object.__init__`
-        names = kwargs.pop("names", None)
+        # `axes=` is an alias for `names=` that reads better for descriptors;
+        # both accept bare names, `None`, or descriptor dicts.
+        names = kwargs.pop("axes", None)
+        if names is None:
+            names = kwargs.pop("names", None)
+        else:
+            kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
         if names is not None:
             self.names = names
@@ -240,16 +274,63 @@ class XTensor(ExtendedTensor):
         return names
 
     @names.setter
-    def names(self, value: tx.Optional[tx.Sequence[str | None]]) -> None:
+    def names(self, value: tx.Optional[tx.Sequence[AxisT]]) -> None:
         if value is None:
             self.__dict__.pop("_axis_names", None)
+            self.__dict__.pop("_axis_meta", None)
             return
         value = tuple(value)
         if len(value) != self.ndim:
             raise ValueError(
                 f"Expected {self.ndim} names, got {len(value)}: {value}"
             )
-        self._axis_names = value
+        # Each item may be a bare name / `None`, or a descriptor dict carrying
+        # extra fields (`type`/`unit`/`orientation`) alongside its `name`.
+        names, meta = [], {}
+        has_descriptor = False
+        for item in value:
+            if isinstance(item, dict):
+                has_descriptor = True
+                if "name" not in item:
+                    raise ValueError(
+                        f"axis descriptor must have a 'name': {item!r}"
+                    )
+                name = item["name"]
+                extra = {k: v for k, v in item.items() if k != "name"}
+                if "orientation" in extra:
+                    _validate_orientation(extra["orientation"])
+                names.append(name)
+                if extra and name is not None:
+                    meta[name] = extra
+            else:
+                names.append(item)
+        self._axis_names = tuple(names)
+        # Only touch `_axis_meta` when descriptors were actually supplied, so a
+        # plain `x.names = (...)` keeps any existing metadata (the getter hides
+        # entries whose dim is no longer present).
+        if has_descriptor:
+            self._axis_meta = meta
+
+    # -- axis descriptors --------------------------------------------------
+
+    @property
+    def axes(self) -> tuple[dict | None, ...]:
+        """
+        Each axis as a descriptor dict ``{"name": ..., **extra}`` (or `None`
+        for an unnamed axis). The extra OME-NGFF-style fields (`type`, `unit`,
+        `orientation`) come from `_axis_meta`, keyed by dimension name.
+        """
+        meta = self._valid_axis_meta()
+        return tuple(
+            None if name is None else {"name": name, **meta.get(name, {})}
+            for name in self.names
+        )
+
+    def _valid_axis_meta(self) -> dict[str, dict]:
+        """`_axis_meta` filtered to dimensions still named on this tensor."""
+        stored = self.__dict__.get("_axis_meta") or {}
+        names = self.names
+        return {name: extra for name, extra in stored.items() if name in names}
 
     # -- coordinates -------------------------------------------------------
 
@@ -325,16 +406,20 @@ class XTensor(ExtendedTensor):
             )
         return new_names
 
-    def _remap_coords(self, new_names: tuple) -> dict:
-        """Coordinates re-keyed from the current names to `new_names`."""
-        coords = self.__dict__.get("_coords") or {}
-        if not coords:
+    def _remap_named(self, attr: str, new_names: tuple) -> dict:
+        """Re-key a `{dim name: ...}` dict attribute from current names."""
+        stored = self.__dict__.get(attr) or {}
+        if not stored:
             return {}
         remapped = {}
         for old, new in zip(self.names, new_names):
-            if old in coords and new is not None:
-                remapped[new] = coords[old]
+            if old in stored and new is not None:
+                remapped[new] = stored[old]
         return remapped
+
+    def _remap_coords(self, new_names: tuple) -> dict:
+        """Coordinates re-keyed from the current names to `new_names`."""
+        return self._remap_named("_coords", new_names)
 
     def rename(self, *names: str | None, **rename_map: str) -> tx.Self:
         """
@@ -350,13 +435,17 @@ class XTensor(ExtendedTensor):
         out = self.as_subclass(type(self))
         out.__dict__.update(self.__dict__)
         out._coords = self._remap_coords(new_names)
+        out._axis_meta = self._remap_named("_axis_meta", new_names)
         out._axis_names = new_names
         return out
 
     def rename_(self, *names: str | None, **rename_map: str) -> tx.Self:
         """In-place variant of `rename`."""
         new_names = self._resolve_rename(names, rename_map)
-        self._coords = self._remap_coords(new_names)
+        coords = self._remap_coords(new_names)
+        meta = self._remap_named("_axis_meta", new_names)
+        self._coords = coords
+        self._axis_meta = meta
         self._axis_names = new_names
         return self
 
@@ -1208,13 +1297,24 @@ def _(input: XTensor, dims: int | str | tx.Sequence) -> XTensor:
     dlist = resolved if isinstance(resolved, (tuple, list)) else (resolved,)
     result = Tensor.flip(input, list(dlist))
     # Rank and axis positions are unchanged; the labels of a flipped axis are
-    # reversed too.
+    # reversed, and a flipped axis' `orientation` descriptor reverses too
+    # ("left-to-right" -> "right-to-left").
     flipped = {input.names[d % input.ndim] for d in dlist}
     coords = dict(input.coords)
     for name in flipped:
         if name in coords:
             coords[name] = tuple(reversed(coords[name]))
-    return _carry(input, result, _coords=coords)
+    overrides = {"_coords": coords}
+    meta = input._valid_axis_meta()
+    if any("orientation" in meta.get(name, {}) for name in flipped):
+        meta = {name: dict(extra) for name, extra in meta.items()}
+        for name in flipped:
+            if name in meta and "orientation" in meta[name]:
+                meta[name]["orientation"] = _flip_orientation(
+                    meta[name]["orientation"]
+                )
+        overrides["_axis_meta"] = meta
+    return _carry(input, result, **overrides)
 
 
 @XTensor.overrides(_torch_func("roll"))

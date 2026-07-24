@@ -102,6 +102,31 @@ that agree are carried through. If **any** axis is unnamed — or an operand is 
 plain tensor or a scalar — the op falls back to ordinary positional
 broadcasting.
 
+## Axis descriptors
+
+A name can be enriched into an [OME-NGFF](https://ngff.openmicroscopy.org)-style
+**descriptor** — a dict with a required `name` plus optional `type`, `unit`, and
+`orientation` — by passing it in place of a bare string:
+
+```python
+x = xtensor(
+    torch.zeros(2, 3, 4),
+    names=[
+        {"name": "b", "type": "batch"},
+        "h",
+        {"name": "w", "type": "space", "orientation": "left-to-right"},
+    ],
+)
+x.names          # ('b', 'h', 'w')          — the bare, ergonomic view
+x.axes           # full descriptors, one dict per axis
+x.flip("w").axes[2]["orientation"]   # 'right-to-left'  — flip reverses it
+```
+
+Descriptor fields are keyed by dimension name, so — like coordinates — they
+follow their dimension through `permute`, reductions, `rename`, etc. An
+`orientation` must read `"{a}-to-{b}"`; flipping the axis rewrites it to
+`"{b}-to-{a}"`.
+
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or

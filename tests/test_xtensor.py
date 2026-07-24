@@ -1122,3 +1122,81 @@ def test_pointwise_aligns_coordinates_by_name():
     out = p + q
     assert out.names == ("x", "y")
     assert out.coords == {"y": ("a", "b", "c")}
+
+
+# ----------------------------------------------------------------------
+# axis descriptors (OME-NGFF-style: type / unit / orientation)
+# ----------------------------------------------------------------------
+
+
+def test_descriptor_axes_expose_extra_fields_while_names_stay_bare():
+    x = XTensor(
+        torch.zeros(2, 3, 4),
+        names=[
+            {"name": "b", "type": "batch"},
+            "h",
+            {"name": "w", "type": "space", "orientation": "left-to-right"},
+        ],
+    )
+    assert x.names == ("b", "h", "w")  # ergonomic view stays bare
+    assert x.axes == (
+        {"name": "b", "type": "batch"},
+        {"name": "h"},
+        {"name": "w", "type": "space", "orientation": "left-to-right"},
+    )
+
+
+def test_axes_keyword_is_an_alias_for_names():
+    x = XTensor(torch.zeros(2), axes=[{"name": "t", "type": "time"}])
+    assert x.axes == ({"name": "t", "type": "time"},)
+
+
+def test_descriptor_requires_a_name_and_valid_orientation():
+    with pytest.raises(ValueError, match="must have a 'name'"):
+        XTensor(torch.zeros(2), names=[{"type": "space"}])
+    with pytest.raises(ValueError, match="a}-to-{b"):
+        XTensor(torch.zeros(2), names=[{"name": "x", "orientation": "lr"}])
+
+
+def test_axis_meta_follows_the_dimension_through_ops():
+    x = XTensor(
+        torch.zeros(2, 3, 4),
+        names=[
+            {"name": "b", "type": "batch"},
+            "h",
+            {"name": "w", "type": "space"},
+        ],
+    )
+    # permute reorders descriptors with their axes
+    assert x.permute(2, 0, 1).axes[0] == {"name": "w", "type": "space"}
+    # reducing a described axis drops its metadata (getter filters it)
+    assert x.sum(dim="w").axes == (
+        {"name": "b", "type": "batch"},
+        {"name": "h"},
+    )
+
+
+def test_rename_moves_axis_metadata_to_the_new_name():
+    x = XTensor(torch.zeros(2, 3), names=[{"name": "w", "type": "space"}, "h"])
+    assert x.rename(w="width").axes[0] == {"name": "width", "type": "space"}
+
+
+def test_flip_reverses_the_orientation_of_a_flipped_axis():
+    x = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "y", "orientation": "top-to-bottom"}, "x"],
+    )
+    assert x.flip("y").axes[0]["orientation"] == "bottom-to-top"
+    # an axis without an orientation is untouched
+    assert x.flip("x").axes[0] == {"name": "y", "orientation": "top-to-bottom"}
+
+
+def test_descriptors_and_coordinates_coexist():
+    z = XTensor(
+        torch.zeros(3),
+        names=[{"name": "c", "type": "channel"}],
+        coords={"c": ("r", "g", "b")},
+    )
+    assert z.axes == ({"name": "c", "type": "channel"},)
+    assert z.coords == {"c": ("r", "g", "b")}
+    assert z.sel(c="g").item() == 0
