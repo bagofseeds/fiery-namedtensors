@@ -3,12 +3,11 @@ from __future__ import annotations
 # stdlib
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, List, Tuple, Union
 
 # dependencies
 import torch
+import typing_extensions as tx
 from torch import Tensor
-from typing_extensions import Final, Literal
 
 # EllipsisType lives in `types` only since Python 3.10; fall back to the
 # concrete type of `...` on older interpreters. Re-exported for _tensors.py.
@@ -31,21 +30,21 @@ except ImportError:  # torch < 1.8
         )
 
 
-# typing (evaluated at import time -> keep old, runtime-valid syntax)
-_SlicerT = Union[int, slice, EllipsisType, None]
-_SmartSlicerT = Union[_SlicerT, List[int], Tensor]
-CardinalSlicerT = Union[_SlicerT, Tuple[_SlicerT, ...]]
-SmartSlicerT = Union[_SmartSlicerT, Tuple[_SmartSlicerT, ...]]
+# typing (evaluated at import time -> use tx, never abc/builtin subscription)
+_SlicerT = tx.Union[int, slice, EllipsisType, None]
+_SmartSlicerT = tx.Union[_SlicerT, tx.List[int], Tensor]
+CardinalSlicerT = tx.Union[_SlicerT, tx.Tuple[_SlicerT, ...]]
+SmartSlicerT = tx.Union[_SmartSlicerT, tx.Tuple[_SmartSlicerT, ...]]
 
 # constants
-_UNSET: Final[object] = object()
+_UNSET: tx.Final[object] = object()
 
 
-def _is_basic_index(value: Any) -> bool:
+def _is_basic_index(value: tx.Any) -> bool:
     return isinstance(value, (int, slice, type(...), type(None)))
 
 
-def _is_boolean_index(value: Any) -> bool:
+def _is_boolean_index(value: tx.Any) -> bool:
     if torch.is_tensor(value):
         return value.dtype == torch.bool
     elif isinstance(value, Sequence) and not isinstance(value, str):
@@ -53,7 +52,7 @@ def _is_boolean_index(value: Any) -> bool:
     return False
 
 
-def _is_advanced_index(value: Any) -> bool:
+def _is_advanced_index(value: tx.Any) -> bool:
     if torch.is_tensor(value):
         return value.dtype == torch.long
     elif isinstance(value, Sequence) and not isinstance(value, str):
@@ -61,7 +60,7 @@ def _is_advanced_index(value: Any) -> bool:
     return False
 
 
-def _is_valid_index(value: Any) -> bool:
+def _is_valid_index(value: tx.Any) -> bool:
     return (
         _is_basic_index(value)
         or _is_boolean_index(value)
@@ -141,9 +140,9 @@ def _count_output_axes(values: SmartSlicerT) -> int:
 def _unroll(
     values: Sequence,
     nb_values: int,
-    side: Literal["left", "right"] = "right",
-    insert: Any = None,
-    ignore: Any = _UNSET,
+    side: tx.Literal["left", "right"] = "right",
+    insert: tx.Any = None,
+    ignore: tx.Any = _UNSET,
 ) -> Sequence:
     """
     Unroll a list by replacing an ellipsis with as many `insert` values
@@ -230,9 +229,9 @@ def _unroll(
 def _unroll_slicer(
     values: SmartSlicerT,
     nb_values: int,
-    side: Literal["left", "right"] = "right",
-    insert: Any = slice(None),
-    ignore: Any = _count_input_axes,
+    side: tx.Literal["left", "right"] = "right",
+    insert: tx.Any = slice(None),
+    ignore: tx.Any = _count_input_axes,
 ) -> Sequence:
     """Specialized version of `_unroll` for array slicers."""
     if not isinstance(values, tuple):

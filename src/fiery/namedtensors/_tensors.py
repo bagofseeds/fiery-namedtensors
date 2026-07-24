@@ -1,41 +1,43 @@
-# NOTE: `from __future__ import annotations` makes every annotation a lazy
-# string, so modern typing syntax (`str | None`, `list[int]`, `Self`, ...)
-# is safe in signatures even on old interpreters. Only values *evaluated at
-# runtime* (the type aliases below) must stay old-syntax; hence `typing`
-# generics and `typing_extensions` rather than PEP 585/604/695.
+# `from __future__ import annotations` keeps every annotation a lazy string,
+# so only values *evaluated at runtime* -- the type aliases below -- must avoid
+# PEP 585/604/695. Those use `typing_extensions` (imported as `tx`), never
+# abc/builtin subscription (e.g. `collections.abc.Sequence[...]`, which is not
+# subscriptable before Python 3.9). `collections.abc` is imported only for the
+# runtime isinstance checks.
 from __future__ import annotations
 
 # stdlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from functools import wraps
-from typing import Any, List, Optional, Tuple, TypeVar, Union
 from warnings import filterwarnings
 
 # dependencies
 import torch
+import typing_extensions as tx
 from torch import Tensor
-from typing_extensions import Self
 
 # internals
 from fiery.namedtensors import _arrayutils as arrayutils
 from fiery.namedtensors._arrayutils import EllipsisType
 
-# typing (evaluated at import time -> keep old, runtime-valid syntax)
-_SlicerT = Union[int, slice, EllipsisType, None]
-_SmartSlicerT = Union[_SlicerT, List[int], Tensor]
-CardinalSlicerT = Union[_SlicerT, Tuple[_SlicerT, ...]]
-SmartSlicerT = Union[_SmartSlicerT, Tuple[_SmartSlicerT, ...]]
-ArgIndexNameT = Union[str, EllipsisType, None]
-ArgIndexNamesT = Sequence[Union[ArgIndexNameT, Sequence[ArgIndexNameT]]]
-ChannelNameT = Optional[str]
-ChannelNamesT = Tuple[ChannelNameT, ...]
-T = TypeVar("T")
+# typing (evaluated at import time -> use tx, never abc/builtin subscription)
+_SlicerT = tx.Union[int, slice, EllipsisType, None]
+_SmartSlicerT = tx.Union[_SlicerT, tx.List[int], Tensor]
+CardinalSlicerT = tx.Union[_SlicerT, tx.Tuple[_SlicerT, ...]]
+SmartSlicerT = tx.Union[_SmartSlicerT, tx.Tuple[_SmartSlicerT, ...]]
+ArgIndexNameT = tx.Union[str, EllipsisType, None]
+ArgIndexNamesT = tx.Sequence[
+    tx.Union[ArgIndexNameT, tx.Sequence[ArgIndexNameT]]
+]
+ChannelNameT = tx.Optional[str]
+ChannelNamesT = tx.Tuple[ChannelNameT, ...]
+T = tx.TypeVar("T")
 
 # warnings
 filterwarnings("ignore", ".*(Named tensors).*", UserWarning)
 
 
-def _torch_func(name: str) -> Optional[Callable]:
+def _torch_func(name: str) -> tx.Optional[tx.Callable]:
     """
     Resolve a torch callable by name, preferring the functional form
     (`torch.<name>`) and falling back to the tensor method
@@ -55,7 +57,7 @@ class ExtendedTensorMeta(type(Tensor)):
     # We need a metaclass so that each subclass has its own registry
 
     def __new__(
-        cls, name: str, bases: tuple[type, ...], classdict: Mapping
+        cls, name: str, bases: tuple[type, ...], classdict: tx.Mapping
     ) -> type:
         kls = super().__new__(cls, name, bases, classdict)
         kls._OVERRIDES = {}
@@ -73,7 +75,7 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
     """
 
     @classmethod
-    def overrides(cls, func: Optional[Callable]) -> Callable:
+    def overrides(cls, func: tx.Optional[tx.Callable]) -> tx.Callable:
         """
         Decorator to register a function override.
 
@@ -84,7 +86,7 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         function that is missing from this PyTorch build.
         """
 
-        def decorator(newfunc: Callable) -> Callable:
+        def decorator(newfunc: tx.Callable) -> tx.Callable:
             if func is None:
                 # Target op absent in this PyTorch version: do not register.
                 return newfunc
@@ -100,11 +102,11 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
     @classmethod
     def __torch_function__(
         cls,
-        func: Callable,
+        func: tx.Callable,
         types: tuple[type, ...],
         args: tuple = (),
         kwargs: dict | None = None,
-    ) -> Any:
+    ) -> tx.Any:
         # Lookup the function in the registry, with some sort of
         # inheritance logic.
         kwargs = kwargs or {}
@@ -146,7 +148,7 @@ class NamedTensor(ExtendedTensor):
     does not (e.g. `permute`).
     """
 
-    def __new__(cls, *args, **kwargs) -> Self:
+    def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
         kwargs.pop("names", None)
         return super().__new__(cls, *args, **kwargs)
@@ -158,7 +160,7 @@ class NamedTensor(ExtendedTensor):
         if "names" in kwargs:
             self.names = kwargs.pop("names")
 
-    def __getitem__(self, slicer: SmartSlicerT) -> Self:
+    def __getitem__(self, slicer: SmartSlicerT) -> tx.Self:
         # NOTE: when newaxes are present in a slicer, Tensor.__getitem__
         # falls back to torch.unsqueeze, which is not implemented for
         # named tensors. This section handles newaxes manually.
@@ -180,7 +182,7 @@ class NamedTensor(ExtendedTensor):
         return Tensor.__getitem__(out, slicer)
 
     @property
-    def T(self) -> Self:
+    def T(self) -> tx.Self:
         dims = reversed(range(self.ndim))
         return self.permute(*dims)
 
@@ -283,7 +285,7 @@ class TensorWithNamedIndices(NamedTensor):
 
     _ATTRS = {"_index_names", "_index_dims"}
 
-    def __new__(cls, *args, **kwargs) -> Self:
+    def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that Tensor.__new__ does not support.
         kwargs.pop("index_names", None)
         kwargs.pop("index_dims", None)
@@ -345,7 +347,7 @@ class TensorWithNamedIndices(NamedTensor):
             self.index_names, value, self.shape
         )
 
-    def __getattr__(self, name: str) -> Self:
+    def __getattr__(self, name: str) -> tx.Self:
         # Private / dunder attributes are never index-name lookups. Raising
         # `AttributeError` here (rather than returning `None`) is what lets
         # `hasattr(out, "_index_names")` be False on a freshly-wrapped
@@ -375,7 +377,7 @@ class TensorWithNamedIndices(NamedTensor):
         return self[tuple(slicer)]
 
     @wraps(Tensor.__getitem__)
-    def __getitem__(self, index: SmartSlicerT) -> Self:
+    def __getitem__(self, index: SmartSlicerT) -> tx.Self:
         # Slice tensor
         out = super().__getitem__(index)
         # If there are no named indices, leave whatever metadata the
@@ -395,7 +397,7 @@ class TensorWithNamedIndices(NamedTensor):
 
     def index(
         self, positions: SmartSlicerT, dims: int | tuple[int, ...]
-    ) -> Self:
+    ) -> tx.Self:
         """
         Index positions along one or more dimensions.
 
@@ -445,7 +447,7 @@ class NamedVector(TensorWithNamedIndices):
     the order of the values in the channel axis.
     """
 
-    def __new__(cls, *args, **kwargs) -> Self:
+    def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that Tensor.__new__ does not support.
         kwargs.pop("channels", None)
         kwargs.pop("channel_dim", None)
@@ -497,7 +499,7 @@ class NamedMatrix(TensorWithNamedIndices):
     A matrix with named axes, represented as a PyTorch tensor subclass.
     """
 
-    def __new__(cls, *args, **kwargs) -> Self:
+    def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that Tensor.__new__ does not support.
         kwargs.pop("channels", None)
         kwargs.pop("channel_dims", None)
