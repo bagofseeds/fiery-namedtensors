@@ -16,9 +16,13 @@ from fiery.namedtensors._compat import (
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription)
 _SlicerT = tx.Union[int, slice, EllipsisType, None]
+"""One *basic* index: an int, a `slice`, an ellipsis, or a newaxis (`None`)."""
+
 _SmartSlicerT = tx.Union[_SlicerT, tx.List[int], Tensor]
-CardinalSlicerT = tx.Union[_SlicerT, tx.Tuple[_SlicerT, ...]]
+"""One index, including *advanced* ones (a list of ints or an index tensor)."""
+
 SmartSlicerT = tx.Union[_SmartSlicerT, tx.Tuple[_SmartSlicerT, ...]]
+"""A whole slicer as passed to `__getitem__`: one index, or a tuple of them."""
 
 # constants
 _UNSET: tx.Final[object] = object()
