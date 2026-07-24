@@ -1164,6 +1164,107 @@ def _(
 
 # ======================================================================
 #
+#                             C O M B I N E
+#
+# ======================================================================
+#
+# Multi-operand ops whose first argument is a *sequence* of tensors. Axis
+# names are reconciled positionally across the operands: an axis keeps the
+# unique non-`None` name its operands agree on, and is unnamed on conflict
+# (a stricter conflict policy is left to the broadcasting-by-name work).
+
+
+def _operand_axis_names(tensors: tx.Sequence) -> list:
+    """The axis names of each operand (all-`None` for a plain tensor)."""
+    return [
+        t.names if isinstance(t, NamedTensor) else (None,) * t.ndim
+        for t in tensors
+    ]
+
+
+def _reconcile_axis_names(all_names: list, ndim: int) -> tuple:
+    """Per-axis reconciled name: the agreed non-`None` name, else `None`."""
+    reconciled = []
+    for axis in range(ndim):
+        distinct = {names[axis] for names in all_names} - {None}
+        reconciled.append(distinct.pop() if len(distinct) == 1 else None)
+    return tuple(reconciled)
+
+
+def _all_share_index_layout(tensors: tx.Sequence) -> bool:
+    """True if every operand is a TWNI sharing the same index dims."""
+    layouts = [
+        t.index_dims
+        if isinstance(t, TensorWithNamedIndices) and t.index_names is not None
+        else None
+        for t in tensors
+    ]
+    return None not in layouts and len(set(layouts)) == 1
+
+
+@NamedTensor.overrides(_torch_func("cat"))
+def _(tensors: tx.Sequence, dim: int | str = 0, **kwargs) -> NamedTensor:
+    tensors = list(tensors)
+    ref = tensors[0]
+    dim = _resolve_axis(ref.names, dim) % ref.ndim
+    result = torch.cat(tensors, dim, **kwargs)
+    overrides = {
+        "_axis_names": _reconcile_axis_names(
+            _operand_axis_names(tensors), ref.ndim
+        )
+    }
+    if isinstance(ref, TensorWithNamedIndices):
+        # Concatenating along a named-index axis concatenates its index
+        # names; the other named axes must agree and are taken as-is. If the
+        # operands don't share an index layout, the metadata can't be
+        # reconciled and is dropped.
+        if _all_share_index_layout(tensors):
+            dims = ref.index_dims
+            names = []
+            for k, axis in enumerate(dims):
+                if axis % ref.ndim == dim:
+                    joined = ()
+                    for t in tensors:
+                        joined += tuple(t.index_names[k])
+                    names.append(joined)
+                else:
+                    names.append(ref.index_names[k])
+            overrides["_index_names"] = tuple(names)
+            overrides["_index_dims"] = dims
+        else:
+            overrides["_index_names"] = None
+            overrides["_index_dims"] = None
+    return _carry(ref, result, **overrides)
+
+
+@NamedTensor.overrides(_torch_func("stack"))
+def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> NamedTensor:
+    tensors = list(tensors)
+    ref = tensors[0]
+    out_ndim = ref.ndim + 1
+    dim %= out_ndim
+    result = torch.stack(tensors, dim, **kwargs)
+    reconciled = _reconcile_axis_names(_operand_axis_names(tensors), ref.ndim)
+    # A brand-new (unnamed) axis is inserted at `dim`.
+    overrides = {"_axis_names": reconciled[:dim] + (None,) + reconciled[dim:]}
+    if isinstance(ref, TensorWithNamedIndices):
+        same = _all_share_index_layout(tensors) and all(
+            t.index_names == ref.index_names for t in tensors
+        )
+        if same:
+            overrides["_index_names"] = ref.index_names
+            overrides["_index_dims"] = tuple(
+                pos + (1 if pos >= dim else 0)
+                for pos in (d % ref.ndim for d in ref.index_dims)
+            )
+        else:
+            overrides["_index_names"] = None
+            overrides["_index_dims"] = None
+    return _carry(ref, result, **overrides)
+
+
+# ======================================================================
+#
 #                               U T I L S
 #
 # ======================================================================

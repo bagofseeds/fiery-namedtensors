@@ -699,3 +699,62 @@ def test_diagonal_shifts_surviving_named_index_dim():
     out = d.diagonal(0, 0, 1)
     assert out.index_dims == (0,)
     assert out.index_names == (("w", "x", "y", "z"),)
+
+
+# ----------------------------------------------------------------------
+# combine ops: cat / stack (name reconciliation across operands)
+# ----------------------------------------------------------------------
+
+
+def test_cat_reconciles_axis_names():
+    a = NamedTensor(torch.zeros(2, 3), names=("r", "c"))
+    b = NamedTensor(torch.zeros(4, 3), names=("r", "c"))
+    out = torch.cat([a, b], 0)
+    assert out.names == ("r", "c")
+    assert out.shape == (6, 3)
+    # a name is usable for the dim
+    assert torch.cat([a, b], "r").names == ("r", "c")
+
+
+def test_cat_conflicting_names_become_unnamed():
+    a = NamedTensor(torch.zeros(2, 3), names=("r", "c"))
+    conflicting = NamedTensor(torch.zeros(2, 3), names=("r", "x"))
+    assert torch.cat([a, conflicting], 0).names == ("r", None)
+
+
+def test_stack_inserts_an_unnamed_axis():
+    a = NamedTensor(torch.zeros(2, 3), names=("r", "c"))
+    assert torch.stack([a, a], 0).names == (None, "r", "c")
+    assert torch.stack([a, a], 1).names == ("r", None, "c")
+    assert torch.stack([a, a], 0).shape == (2, 2, 3)
+
+
+def test_cat_concatenates_index_names_along_index_axis():
+    t1 = TensorWithNamedIndices(
+        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+    )
+    t2 = TensorWithNamedIndices(
+        torch.zeros(2, 3), index_names=(("r", "s", "u"),), index_dims=(1,)
+    )
+    out = torch.cat([t1, t2], 1)
+    assert out.index_names == (("p", "q", "r", "s", "u"),)
+    assert out.index_dims == (1,)
+    assert out.shape == (2, 5)
+
+
+def test_cat_with_a_plain_operand_drops_index_metadata():
+    t1 = TensorWithNamedIndices(
+        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+    )
+    out = torch.cat([t1, NamedTensor(torch.zeros(2, 2))], 1)
+    assert out.index_names is None
+
+
+def test_stack_shifts_index_dims_past_the_new_axis():
+    t1 = TensorWithNamedIndices(
+        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+    )
+    out = torch.stack([t1, t1], 0)
+    assert out.index_dims == (2,)
+    assert out.index_names == (("p", "q"),)
+    assert out.shape == (2, 2, 2)
