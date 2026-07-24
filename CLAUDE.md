@@ -38,13 +38,19 @@ tests/
 ## How the subclassing works
 
 - `ExtendedTensor` holds a per-subclass registry (`_OVERRIDES`) and a
-  `__torch_function__` that (a) dispatches to a registered override and
-  (b) propagates subclass attributes listed in `_ATTRS` (axis names
-  `_axis_names`, named-index metadata `_index_names`/`_index_dims`) from the
-  first tensor argument onto the output — **but only when the output is a real
-  `Tensor`** (many ops return `None`).
+  `__torch_function__` that, for a **registered override**, runs it under
+  `_compat.no_dispatch()` (so the plain torch ops it calls don't recurse) and
+  returns its result directly; for **any other op** it propagates the subclass
+  attributes listed in `_ATTRS` (axis names `_axis_names`, named-index metadata
+  `_index_names`/`_index_dims`) from the first tensor argument onto the output
+  (only when the output is a real `Tensor`).
 - Register an override with `@Cls.overrides(func)`. The decorator also shadows
   the tensor method of the same name, so both `torch.f(x)` and `x.f()` hit it.
+- **Overrides return `_carry(input, <op>(input, ...), **new_meta)`.** `_carry`
+  re-tags the result as `input`'s subclass, copies `input`'s metadata, then
+  applies the overrides — so the *same* metadata lands whether the op was
+  reached as `x.op(...)` or `torch.op(x, ...)` (functional/method parity). Do
+  **not** set metadata attributes on the raw op result and return it directly.
 - **Axis names are self-managed** (`_axis_names`), *not* PyTorch's builtin
   named-tensor feature. The underlying tensor is never given builtin names; the
   `names` property, `rename`/`rename_` and the axis-name overrides all read/write
@@ -82,13 +88,6 @@ tests/
 
 - **Per-method survey.** Every name-related torch op should have a name-aware
   override + a test; coverage is tracked with one sub-issue per function.
-- **Functional-form metadata parity.** An override sets metadata on its result,
-  but a *functional* call (`torch.op(x, ...)`) routes through the outer
-  `__torch_function__`, which re-wraps the result and then re-propagates the
-  source's original metadata — so `torch.index_select(x, ...)` currently drops
-  the re-sliced index names while the method form `x.index_select(...)` keeps
-  them. The method forms are the documented API; unifying the two is part of the
-  propagation redesign.
 
 ## Gate before a PR
 

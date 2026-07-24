@@ -17,6 +17,7 @@ from torch import Tensor
 # internals
 from fiery.namedtensors import _arrayutils as arrayutils
 from fiery.namedtensors._compat import EllipsisType
+from fiery.namedtensors._compat import no_dispatch as _no_dispatch
 from fiery.namedtensors._compat import torch_func as _torch_func
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription)
@@ -31,6 +32,23 @@ ArgIndexNamesT = tx.Sequence[
 ChannelNameT = tx.Optional[str]
 ChannelNamesT = tx.Tuple[ChannelNameT, ...]
 T = tx.TypeVar("T")
+
+
+def _carry(source: Tensor, result: Tensor, **overrides: tx.Any) -> Tensor:
+    """
+    Return `result` as `source`'s subclass, carrying `source`'s subclass
+    metadata (its `__dict__`, e.g. `_axis_names` / `_index_names`) and then
+    applying `overrides` on top.
+
+    Name-aware overrides return `_carry(input, <op>(input, ...), **new_meta)`
+    so the *same* metadata lands on the result whether the op was reached as a
+    method (`x.op(...)`) or as a function (`torch.op(x, ...)`).
+    """
+    cls = type(source)
+    out = result if type(result) is cls else result.as_subclass(cls)
+    out.__dict__.update(source.__dict__)
+    out.__dict__.update(overrides)
+    return out
 
 
 class ExtendedTensorMeta(type(Tensor)):
@@ -87,20 +105,30 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         args: tuple = (),
         kwargs: dict | None = None,
     ) -> tx.Any:
-        # Lookup the function in the registry, with some sort of
-        # inheritance logic.
+        # Look up a name-aware override for this op (most-derived first).
         kwargs = kwargs or {}
+        override = None
         for base in cls.__mro__:
-            OVERRIDES = getattr(base, "_OVERRIDES", {})
-            if func in OVERRIDES:
-                func = OVERRIDES[func]
+            registry = getattr(base, "_OVERRIDES", {})
+            if func in registry:
+                override = registry[func]
                 break
+
+        if override is not None:
+            # The override computes the result AND its name metadata (via
+            # `_carry`), so the same metadata lands for `x.op(...)` and
+            # `torch.op(x, ...)`. Run it with subclass dispatch disabled so the
+            # plain torch ops it calls do not recurse back here, and return its
+            # result directly (routing it back through the default
+            # `__torch_function__` re-wraps and drops the metadata on some
+            # PyTorch versions).
+            with _no_dispatch():
+                return override(*args, **kwargs)
+
         out = super().__torch_function__(func, types, args, kwargs)
-        # Propagate subclass attributes (e.g. named-index metadata) from the
-        # first tensor argument onto the output. Only do this when the output
-        # is an actual tensor: many functions (in-place ops, property
-        # setters such as `.names = ...`) return `None`, and some take no
-        # tensor as their first argument.
+        # Ops without a name-aware override: carry subclass attributes (axis
+        # names, named-index metadata) from the first tensor argument onto the
+        # output, when the output is a real tensor (many ops return `None`).
         if isinstance(out, Tensor) and args:
             source = args[0]
             attrs = set()
@@ -247,18 +275,16 @@ def _(input: NamedTensor, *dims: int | tuple[int, ...]) -> NamedTensor:
     if len(dims) == 1:
         dims = dims[0]
     names = input.names
-    out = Tensor.permute(input, dims)
-    out._axis_names = tuple(names[dim] for dim in dims)
-    return out
+    result = Tensor.permute(input, dims)
+    return _carry(input, result, _axis_names=tuple(names[dim] for dim in dims))
 
 
 @NamedTensor.overrides(_torch_func("unsqueeze"))
 def _(input: NamedTensor, dim: int) -> NamedTensor:
     names = list(input.names)
-    out = Tensor.unsqueeze(input, dim)
+    result = Tensor.unsqueeze(input, dim)
     names.insert(dim, None)
-    out._axis_names = tuple(names)
-    return out
+    return _carry(input, result, _axis_names=tuple(names))
 
 
 @NamedTensor.overrides(_torch_func("squeeze"))
@@ -267,7 +293,9 @@ def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
     names = list(input.names)
     # `Tensor.squeeze(t, None)` is rejected on some PyTorch versions; when
     # no dim is given, squeeze all singleton dimensions.
-    out = Tensor.squeeze(input) if dim is None else Tensor.squeeze(input, dim)
+    result = (
+        Tensor.squeeze(input) if dim is None else Tensor.squeeze(input, dim)
+    )
     if dim is None:
         names = [name for name, size in zip(names, input.shape) if size != 1]
     else:
@@ -276,8 +304,7 @@ def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
         dim = [d + ndim if d < 0 else d for d in dim]
         for d in sorted(dim, reverse=True):
             names.pop(d)
-    out._axis_names = tuple(names)
-    return out
+    return _carry(input, result, _axis_names=tuple(names))
 
 
 @NamedTensor.overrides(_torch_func("view"))
@@ -316,9 +343,8 @@ def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
         new_names[n_new - 1 - j] = old_names[n_old - 1 - j]
         j += 1
 
-    out = Tensor.view(input, *shape)
-    out._axis_names = tuple(new_names)
-    return out
+    result = Tensor.view(input, *shape)
+    return _carry(input, result, _axis_names=tuple(new_names))
 
 
 # ======================================================================
@@ -634,17 +660,17 @@ def _(input: TensorWithNamedIndices, dim: int, index: Tensor) -> Tensor:
     if dim < 0:
         dim += input.ndim
 
-    out = NamedTensor.index_select(input, dim, index)
+    result = Tensor.index_select(input, dim, index)
     # index_select keeps ndim; only the selected axis' names are re-sliced.
+    meta = {}
     if input.index_names is not None:
         names = list(input.index_names)
         dims = input.index_dims
         if dim in dims:
             k = dims.index(dim)
             names[k] = _slice_names(names[k], index)
-        out._index_names = tuple(names)
-        out._index_dims = dims
-    return out
+        meta = {"_index_names": tuple(names), "_index_dims": dims}
+    return _carry(input, result, **meta)
 
 
 # ======================================================================
