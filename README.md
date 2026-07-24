@@ -12,7 +12,7 @@ integer index.
 
 | Class | What it adds |
 | ----- | ------------ |
-| `NamedTensor` | Named **axes**, self-managed (independent of PyTorch's experimental builtin named tensors) so it works across a wide torch range. Names propagate through `permute`, `view`, `squeeze`, `unsqueeze`, `T`, fancy `__getitem__`, `rename`/`rename_`, … |
+| `NamedTensor` | Named **axes**, self-managed (independent of PyTorch's experimental builtin named tensors) so it works across a wide torch range. Names propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). |
 | `TensorWithNamedIndices` | Named **indices**: individual positions along an axis can be addressed by name (e.g. `x.c1`), and the naming metadata is tracked through slicing. |
 | `NamedVector` / `NamedMatrix` | Convenience specializations for 1-D and 2-D named-index axes (channels). |
 
@@ -25,6 +25,11 @@ x = NamedTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
 x.T.names                       # ('width', 'height', 'batch')
 x.unsqueeze(1).names            # ('batch', None, 'height', 'width')
 
+# Refer to a dimension by name (method form)
+x.transpose("height", "width").names   # ('batch', 'width', 'height')
+x.sum(dim="batch").names               # ('height', 'width')
+x.mean(dim="height", keepdim=True).names  # ('batch', 'height', 'width')
+
 # Named indices: address positions along an axis by name
 m = TensorWithNamedIndices(
     torch.arange(6).reshape(2, 3),
@@ -33,6 +38,10 @@ m = TensorWithNamedIndices(
 )
 m.y                             # selects position 1 along dim 1
 ```
+
+> Referring to a dimension by name works on the **method** form
+> (`x.sum(dim="batch")`), not the functional form (`torch.sum(x, dim="batch")`):
+> recent PyTorch validates a `dim` argument before the naming layer sees it.
 
 ## Design goals
 
