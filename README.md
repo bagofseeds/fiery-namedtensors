@@ -39,9 +39,38 @@ m = TensorWithNamedIndices(
 m.y                             # selects position 1 along dim 1
 ```
 
-> Referring to a dimension by name works on the **method** form
-> (`x.sum(dim="batch")`), not the functional form (`torch.sum(x, dim="batch")`):
-> recent PyTorch validates a `dim` argument before the naming layer sees it.
+## Referring to a dimension by name
+
+Anywhere an operation takes a `dim` (or `dim0`/`dim1`, `source`/`destination`,
+…), you can pass an axis **name** instead of an integer — **on the method
+form**:
+
+```python
+x.transpose("height", "width")   # ok
+x.sum(dim="height")              # ok
+x.movedim("batch", -1)           # ok (names or ints, mixed)
+```
+
+Name-as-dim is **not** available on the *functional* form
+(`torch.transpose(x, "height", "width")`, `torch.sum(x, dim="height")`), and
+this is by design rather than an oversight:
+
+- The **method** form (`x.op(...)`) resolves to a function this package
+  installs on the tensor subclass, so a name is turned into an integer in
+  Python *before* PyTorch ever sees the arguments.
+- The **functional** form (`torch.op(x, ...)`) goes straight into PyTorch's
+  C-level argument parser, which validates that `dim` is an integer *before*
+  the `__torch_function__` hook that would let us intercept the call runs. On
+  recent PyTorch a string `dim` therefore raises `TypeError` from PyTorch
+  itself, before this package is consulted. Older PyTorch happened to dispatch
+  first, so the behaviour was version-dependent and is not relied upon.
+
+Intercepting the functional form would require monkey-patching the `torch.*`
+functions globally, which this package deliberately does not do. The functional
+form still works perfectly with an **integer** `dim` — and still carries names
+through the result (`torch.sum(x, 1).names == x.sum(dim=1).names`); only the
+name-*as*-dim convenience is method-only. Operations that have no method form
+at all (`torch.cat`, `torch.stack`) take an integer `dim` only.
 
 ## Design goals
 
