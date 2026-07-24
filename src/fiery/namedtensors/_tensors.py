@@ -8,7 +8,6 @@ from __future__ import annotations
 
 # stdlib
 from functools import wraps
-from warnings import filterwarnings
 
 # dependencies
 import torch
@@ -32,9 +31,6 @@ ArgIndexNamesT = tx.Sequence[
 ChannelNameT = tx.Optional[str]
 ChannelNamesT = tx.Tuple[ChannelNameT, ...]
 T = tx.TypeVar("T")
-
-# warnings
-filterwarnings("ignore", ".*(Named tensors).*", UserWarning)
 
 
 class ExtendedTensorMeta(type(Tensor)):
@@ -127,10 +123,16 @@ class NamedTensor(ExtendedTensor):
     """
     A tensor with named axes, represented as a PyTorch tensor subclass.
 
-    This class leverages PyTorch's builin "names" feature, but extends
-    it to support additional methods that the builtin implementation
-    does not (e.g. `permute`).
+    Axis names are **self-managed**: they live in the `_axis_names`
+    attribute (propagated through `__torch_function__` via `_ATTRS`) and are
+    exposed through the `names` property, which shadows PyTorch's builtin
+    named-tensor attribute. The underlying tensor is never given builtin
+    names, so the class does not depend on the experimental named-tensor API
+    (`.rename` / builtin `.names`), which has been removed in some PyTorch
+    builds.
     """
+
+    _ATTRS = {"_axis_names"}
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
@@ -150,26 +152,89 @@ class NamedTensor(ExtendedTensor):
         if "names" in kwargs:
             self.names = kwargs.pop("names")
 
+    @property
+    def names(self) -> tuple[str | None, ...]:
+        """The name of each axis (`None` for unnamed axes)."""
+        names = self.__dict__.get("_axis_names", None)
+        # Fall back to all-unnamed if metadata is missing or stale (e.g. it
+        # was propagated onto the output of an op that changed the rank but
+        # has no name-aware override yet).
+        if names is None or len(names) != self.ndim:
+            return (None,) * self.ndim
+        return names
+
+    @names.setter
+    def names(self, value: tx.Optional[tx.Sequence[str | None]]) -> None:
+        if value is None:
+            self.__dict__.pop("_axis_names", None)
+            return
+        value = tuple(value)
+        if len(value) != self.ndim:
+            raise ValueError(
+                f"Expected {self.ndim} names, got {len(value)}: {value}"
+            )
+        self._axis_names = value
+
+    def _resolve_rename(
+        self, names: tuple, rename_map: dict
+    ) -> tuple[str | None, ...]:
+        """Compute the new axis-name tuple for `rename` / `rename_`."""
+        if rename_map:
+            if names:
+                raise ValueError(
+                    "rename: cannot mix positional names and a rename map"
+                )
+            current = list(self.names)
+            for old, new in rename_map.items():
+                if old not in current:
+                    raise ValueError(
+                        f"rename: no axis named {old!r} in {tuple(current)}"
+                    )
+                current[current.index(old)] = new
+            return tuple(current)
+        if len(names) == 1 and names[0] is None:
+            return (None,) * self.ndim
+        if len(names) == 1 and isinstance(names[0], (tuple, list)):
+            names = tuple(names[0])
+        new_names = tuple(names)
+        if len(new_names) != self.ndim:
+            raise ValueError(
+                f"rename: expected {self.ndim} names, got {len(new_names)}"
+            )
+        return new_names
+
+    def rename(self, *names: str | None, **rename_map: str) -> tx.Self:
+        """
+        Return a view with renamed axes (self-managed; not the builtin op).
+
+        Call positionally (`x.rename("a", "b")`), with `None` to clear all
+        names (`x.rename(None)`), or with a mapping to rename specific axes
+        (`x.rename(old="new")`). Other subclass metadata is preserved.
+        """
+        new_names = self._resolve_rename(names, rename_map)
+        # `as_subclass` returns a view but does not copy `__dict__`, so carry
+        # the subclass metadata (e.g. named-index dims) over explicitly.
+        out = self.as_subclass(type(self))
+        out.__dict__.update(self.__dict__)
+        out._axis_names = new_names
+        return out
+
+    def rename_(self, *names: str | None, **rename_map: str) -> tx.Self:
+        """In-place variant of `rename`."""
+        self._axis_names = self._resolve_rename(names, rename_map)
+        return self
+
     def __getitem__(self, slicer: SmartSlicerT) -> tx.Self:
-        # NOTE: when newaxes are present in a slicer, Tensor.__getitem__
-        # falls back to torch.unsqueeze, which is not implemented for
-        # named tensors. This section handles newaxes manually.
-        out = self
-        if not isinstance(slicer, tuple):
-            slicer = (slicer,)
-
-        # Insert new axes using unsqueeze
-        new_axes = (i for i, index in enumerate(slicer) if index is None)
-        for i, dim in enumerate(new_axes):
-            out = out.unsqueeze(dim + i)
-
-        # Keep all other types of indices
-        slicer = tuple(
-            index if index is not None else slice(None) for index in slicer
+        # The underlying tensor carries no builtin names, so basic indexing
+        # (including newaxis via `None`) works directly.
+        out = Tensor.__getitem__(self, slicer)
+        # Map each output axis back to its source axis to carry names across.
+        in_names = self.names
+        axis_map = arrayutils._map_axes(slicer, self.ndim)
+        out._axis_names = tuple(
+            in_names[src] if isinstance(src, int) else None for src in axis_map
         )
-
-        # Slice tensor
-        return Tensor.__getitem__(out, slicer)
+        return out
 
     @property
     def T(self) -> tx.Self:
@@ -182,18 +247,17 @@ def _(input: NamedTensor, *dims: int | tuple[int, ...]) -> NamedTensor:
     if len(dims) == 1:
         dims = dims[0]
     names = input.names
-    out = Tensor.permute(input.rename(None), dims)
-    if names:
-        out.names = tuple(names[dim] for dim in dims)
+    out = Tensor.permute(input, dims)
+    out._axis_names = tuple(names[dim] for dim in dims)
     return out
 
 
 @NamedTensor.overrides(_torch_func("unsqueeze"))
 def _(input: NamedTensor, dim: int) -> NamedTensor:
     names = list(input.names)
-    out = Tensor.unsqueeze(input.rename(None), dim)
+    out = Tensor.unsqueeze(input, dim)
     names.insert(dim, None)
-    out.names = tuple(names)
+    out._axis_names = tuple(names)
     return out
 
 
@@ -201,10 +265,9 @@ def _(input: NamedTensor, dim: int) -> NamedTensor:
 def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
     ndim = input.ndim
     names = list(input.names)
-    bare = input.rename(None)
     # `Tensor.squeeze(t, None)` is rejected on some PyTorch versions; when
     # no dim is given, squeeze all singleton dimensions.
-    out = Tensor.squeeze(bare) if dim is None else Tensor.squeeze(bare, dim)
+    out = Tensor.squeeze(input) if dim is None else Tensor.squeeze(input, dim)
     if dim is None:
         names = [name for name, size in zip(names, input.shape) if size != 1]
     else:
@@ -213,7 +276,7 @@ def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
         dim = [d + ndim if d < 0 else d for d in dim]
         for d in sorted(dim, reverse=True):
             names.pop(d)
-    out.names = tuple(names)
+    out._axis_names = tuple(names)
     return out
 
 
@@ -253,8 +316,8 @@ def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
         new_names[n_new - 1 - j] = old_names[n_old - 1 - j]
         j += 1
 
-    out = Tensor.view(input.rename(None), *shape)
-    out.names = tuple(new_names)
+    out = Tensor.view(input, *shape)
+    out._axis_names = tuple(new_names)
     return out
 
 

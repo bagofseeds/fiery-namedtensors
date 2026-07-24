@@ -12,7 +12,7 @@ integer index.
 
 | Class | What it adds |
 | ----- | ------------ |
-| `NamedTensor` | Named **axes**. Extends PyTorch's builtin named-tensor feature with operations the builtin does not propagate (`permute`, `view`, `squeeze`, `unsqueeze`, `T`, fancy `__getitem__`). |
+| `NamedTensor` | Named **axes**, self-managed (independent of PyTorch's experimental builtin named tensors) so it works across a wide torch range. Names propagate through `permute`, `view`, `squeeze`, `unsqueeze`, `T`, fancy `__getitem__`, `rename`/`rename_`, … |
 | `TensorWithNamedIndices` | Named **indices**: individual positions along an axis can be addressed by name (e.g. `x.c1`), and the naming metadata is tracked through slicing. |
 | `NamedVector` / `NamedMatrix` | Convenience specializations for 1-D and 2-D named-index axes (channels). |
 
@@ -55,7 +55,8 @@ pip install fiery-namedtensors
 ## Status
 
 Alpha — ported from a work-in-progress in
-[`balbasty/magnetix`](https://github.com/balbasty/magnetix). See the tracking
-issues for the roadmap, including the planned move to **self-managed names**
-(independent of PyTorch's experimental builtin named tensors, which have been
-dropped in some future torch builds).
+[`balbasty/magnetix`](https://github.com/balbasty/magnetix). Axis names are
+**self-managed**, independent of PyTorch's experimental builtin named tensors
+(which have been dropped in some torch builds), so the package spans a wide
+torch range. See the tracking issues for the roadmap (per-op name coverage,
+reductions, gather/scatter, …).

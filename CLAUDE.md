@@ -39,11 +39,18 @@ tests/
 
 - `ExtendedTensor` holds a per-subclass registry (`_OVERRIDES`) and a
   `__torch_function__` that (a) dispatches to a registered override and
-  (b) propagates subclass attributes listed in `_ATTRS` (e.g. the named-index
-  metadata) from the first tensor argument onto the output — **but only when
-  the output is a real `Tensor`** (many ops / property setters return `None`).
+  (b) propagates subclass attributes listed in `_ATTRS` (axis names
+  `_axis_names`, named-index metadata `_index_names`/`_index_dims`) from the
+  first tensor argument onto the output — **but only when the output is a real
+  `Tensor`** (many ops return `None`).
 - Register an override with `@Cls.overrides(func)`. The decorator also shadows
   the tensor method of the same name, so both `torch.f(x)` and `x.f()` hit it.
+- **Axis names are self-managed** (`_axis_names`), *not* PyTorch's builtin
+  named-tensor feature. The underlying tensor is never given builtin names; the
+  `names` property, `rename`/`rename_` and the axis-name overrides all read/write
+  `_axis_names`. So the package works even where the builtin `.names`/`.rename`
+  API has been removed. **Do not call builtin `.rename` / `.refine_names` or set
+  builtin names anywhere.**
 
 ## Conventions specific to this repo (do not regress)
 
@@ -73,10 +80,6 @@ tests/
 
 ## Known follow-ups (see the tracking issues)
 
-- **Stop trusting the builtin named-tensor feature.** `NamedTensor` still stores
-  axis names via PyTorch's experimental `.names` / `.rename`, which has been
-  dropped in some future torch builds. The plan is to self-manage axis names the
-  way `TensorWithNamedIndices` already self-manages index metadata.
 - **Per-method survey.** Every name-related torch op should have a name-aware
   override + a test; coverage is tracked with one sub-issue per function.
 - **Functional-form metadata parity.** An override sets metadata on its result,

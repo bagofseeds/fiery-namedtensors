@@ -26,11 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # CPU-only torch wheels across the named-tensor era of PyTorch
-          # (1.8 -> 2.2, all verified green). numpy is pinned <2 for the numpy
-          # 2 C-ABI. The upper bound is pinned rather than "latest": torch
-          # builds that dropped the builtin named-tensor API (`.names` /
-          # `.rename`) are tracked separately (self-managed axis names).
+          # CPU-only torch wheels. numpy is pinned <2 for the numpy 2 C-ABI on
+          # older torch. Axis names are self-managed, so the matrix spans the
+          # whole range from old torch up to and including the *latest* build
+          # (which no longer ships the builtin named-tensor API).
           - python-version: "3.7"
             os: "ubuntu-22.04"
             pip-install: "torch==1.8.1+cpu numpy==1.21.6 -f https://download.pytorch.org/whl/torch_stable.html"
@@ -46,6 +45,9 @@ jobs:
           - python-version: "3.12"
             os: "ubuntu-latest"
             pip-install: "torch==2.2.2+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.x"
+            os: "ubuntu-latest"
+            pip-install: "torch --index-url https://download.pytorch.org/whl/cpu"
     uses: bagofseeds/actions/.github/workflows/test.yaml@main
     with:
       tag: ${{ inputs.tag }}

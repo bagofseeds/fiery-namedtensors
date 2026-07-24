@@ -125,7 +125,7 @@ def test_tensor_with_named_indices_index_selects_positions_and_updates_meta():
     # Dim 1 was consumed; the coord index moves up to dim 1.
     assert y.index_names == (("x", "y", "z", "t"),)
     assert y.index_dims == (1,)
-    assert torch.equal(y.rename(None), x.rename(None)[:, 1, :])
+    assert torch.equal(y, x.as_subclass(torch.Tensor)[:, 1, :])
 
 
 def test_tensor_with_named_indices_index_mismatched_lengths_raises():
@@ -188,8 +188,9 @@ def test_slice_names_nd_tracks_output_dims_after_slicing():
 
 
 def test_index_metadata_survives_auto_wrapped_ops():
-    # `rename(None)` is auto-wrapped by __torch_function__; the index
-    # metadata must be propagated onto the result rather than dropped.
+    # `clone()` has no name-aware override, so it is auto-wrapped by
+    # __torch_function__; the index metadata must be propagated onto the
+    # result rather than dropped.
     x = TensorWithNamedIndices(
         torch.arange(6).reshape(2, 3),
         names=("row", "col"),
@@ -197,7 +198,7 @@ def test_index_metadata_survives_auto_wrapped_ops():
         index_dims=(1,),
     )
 
-    y = x.rename(None)
+    y = x.clone()
 
     assert y.index_names == (("c0", "c1", "c2"),)
     assert y.index_dims == (1,)
@@ -206,7 +207,7 @@ def test_index_metadata_survives_auto_wrapped_ops():
 def test_tensor_without_named_indices_is_still_sliceable():
     x = TensorWithNamedIndices(torch.arange(6).reshape(2, 3))
     # Strip metadata, then slice: must not raise and must report no names.
-    bare = x.rename(None)
+    bare = x.clone()
     bare.__dict__.pop("_index_names", None)
     bare.__dict__.pop("_index_dims", None)
 
@@ -248,7 +249,7 @@ def test_tensor_with_named_indices_permute_reorders_index_dims():
     # dim 1 -> position 2, dim 2 -> position 0; per-axis names unchanged.
     assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
     assert y.index_dims == (2, 0)
-    assert torch.equal(y.rename(None), x.rename(None).permute(2, 0, 1))
+    assert torch.equal(y, x.as_subclass(torch.Tensor).permute(2, 0, 1))
 
 
 def test_tensor_with_named_indices_index_select_reslices_axis_names():
@@ -268,3 +269,57 @@ def test_tensor_with_named_indices_index_select_reslices_axis_names():
     # Only the dim-2 axis names are re-sliced; dim-1 names untouched.
     assert y.index_names == (("c0", "c1", "c2"), ("x", "z"))
     assert y.index_dims == (1, 2)
+
+
+def test_rename_out_of_place_sets_and_clears_names():
+    x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
+
+    y = x.rename("a", "b")
+
+    assert y.names == ("a", "b")
+    assert x.names == ("row", "col")  # out-of-place: x unchanged
+    assert y.rename(None).names == (None, None)
+    plain = torch.Tensor
+    assert torch.equal(y.as_subclass(plain), x.as_subclass(plain))
+
+
+def test_rename_by_map():
+    x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
+
+    assert x.rename(col="C").names == ("row", "C")
+    with pytest.raises(ValueError, match="no axis named"):
+        x.rename(nope="X")
+
+
+def test_rename_in_place_returns_self():
+    x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
+
+    out = x.rename_("a", "b")
+
+    assert out is x
+    assert x.names == ("a", "b")
+
+
+def test_rename_preserves_index_metadata():
+    x = TensorWithNamedIndices(
+        torch.arange(6).reshape(2, 3),
+        index_names=(("c0", "c1", "c2"),),
+        index_dims=(1,),
+    )
+
+    y = x.rename("row", "col")
+
+    assert y.names == ("row", "col")
+    assert y.index_names == (("c0", "c1", "c2"),)
+    assert y.index_dims == (1,)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch.Tensor, "names"),
+    reason="builtin named-tensor API not present in this torch build",
+)
+def test_names_do_not_use_builtin_named_tensors():
+    # The self-managed names must not set the underlying tensor's builtin
+    # (C-level) names -- that is what keeps us portable across torch versions.
+    x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
+    assert torch.Tensor.names.__get__(x) == (None, None)
