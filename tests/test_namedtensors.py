@@ -233,3 +233,38 @@ def test_torch_func_returns_none_for_missing_op():
 
     assert _torch_func("permute") is not None
     assert _torch_func("this_op_does_not_exist_anywhere") is None
+
+
+def test_tensor_with_named_indices_permute_reorders_index_dims():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
+        index_dims=(1, 2),
+    )
+
+    y = x.permute(2, 0, 1)
+
+    assert y.shape == (4, 2, 3)
+    # dim 1 -> position 2, dim 2 -> position 0; per-axis names unchanged.
+    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
+    assert y.index_dims == (2, 0)
+    assert torch.equal(y.rename(None), x.rename(None).permute(2, 0, 1))
+
+
+def test_tensor_with_named_indices_index_select_reslices_axis_names():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
+        index_dims=(1, 2),
+    )
+
+    # Method form is the documented API and carries the metadata correctly.
+    # (Functional `torch.index_select(x, ...)` does not yet propagate
+    # override-set metadata through the outer dispatch -- tracked in the
+    # roadmap under unifying propagation.)
+    y = x.index_select(2, torch.tensor([0, 2]))
+
+    assert y.shape == (2, 3, 2)
+    # Only the dim-2 axis names are re-sliced; dim-1 names untouched.
+    assert y.index_names == (("c0", "c1", "c2"), ("x", "z"))
+    assert y.index_dims == (1, 2)

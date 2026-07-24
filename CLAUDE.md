@@ -1,9 +1,11 @@
 # CLAUDE.md — fiery-namedtensors
 
-Repo-specific guidance for coding agents. For the shared bagofseeds/fiery
-workflow and conventions, see the org guide (`bagofseeds/.github`,
-`CONTRIBUTING.md` + `CLAUDE.md`). This file only records what is specific to
-`fiery.namedtensors`.
+Repo-specific guidance for coding agents. bagofseeds publishes two families of
+PyTorch packages — standalone **`bagof-*`** packages and the **`fiery-*`**
+namespace matches (this repo is one of the latter); they share the same
+packaging, CI, docs, and workflow conventions. For those shared conventions see
+the org guide (`bagofseeds/.github`, `CONTRIBUTING.md` + `CLAUDE.md`). This file
+only records what is specific to `fiery.namedtensors`.
 
 ## What this package is
 
@@ -70,8 +72,13 @@ tests/
   way `TensorWithNamedIndices` already self-manages index metadata.
 - **Per-method survey.** Every name-related torch op should have a name-aware
   override + a test; coverage is tracked with one sub-issue per function.
-- The `permute` and `index_select` overrides on `TensorWithNamedIndices` are
-  ported but under-tested — verify against a reference before relying on them.
+- **Functional-form metadata parity.** An override sets metadata on its result,
+  but a *functional* call (`torch.op(x, ...)`) routes through the outer
+  `__torch_function__`, which re-wraps the result and then re-propagates the
+  source's original metadata — so `torch.index_select(x, ...)` currently drops
+  the re-sliced index names while the method form `x.index_select(...)` keeps
+  them. The method forms are the documented API; unifying the two is part of the
+  propagation redesign.
 
 ## Gate before a PR
 

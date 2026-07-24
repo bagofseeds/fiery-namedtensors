@@ -556,11 +556,19 @@ class NamedMatrix(TensorWithNamedIndices):
 
 @TensorWithNamedIndices.overrides(_torch_func("permute"))
 def _(
-    input: TensorWithNamedIndices, dims: tuple[int, ...]
+    input: TensorWithNamedIndices, *dims: int | tuple[int, ...]
 ) -> TensorWithNamedIndices:
-    index_dims = input.index_dims
-    out = NamedTensor.permute(input, dims)
-    out.index_dims = tuple(dims.index(dim) for dim in index_dims)
+    # Accept both `x.permute(0, 2, 1)` and `x.permute((0, 2, 1))`.
+    if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
+        dims = tuple(dims[0])
+    dims = tuple(d + input.ndim if d < 0 else d for d in dims)
+
+    out = NamedTensor.permute(input, *dims)
+    # Permuting only reorders axes: the per-axis index names are unchanged,
+    # but each named axis moves to its new position.
+    if input.index_names is not None:
+        out._index_names = input.index_names
+        out._index_dims = tuple(dims.index(d) for d in input.index_dims)
     return out
 
 
@@ -569,14 +577,16 @@ def _(input: TensorWithNamedIndices, dim: int, index: Tensor) -> Tensor:
     if dim < 0:
         dim += input.ndim
 
-    names, dims = input.index_names, input.index_dims
-    if dim in dims:
-        names = names[dims.index(dim)]
-        names = _slice_names(names, index)
-
     out = NamedTensor.index_select(input, dim, index)
-    out.index_names = names
-    out.index_dims = dims
+    # index_select keeps ndim; only the selected axis' names are re-sliced.
+    if input.index_names is not None:
+        names = list(input.index_names)
+        dims = input.index_dims
+        if dim in dims:
+            k = dims.index(dim)
+            names[k] = _slice_names(names[k], index)
+        out._index_names = tuple(names)
+        out._index_dims = dims
     return out
 
 
