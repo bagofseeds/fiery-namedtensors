@@ -294,6 +294,11 @@ class NamedTensor(ExtendedTensor):
         # The underlying tensor carries no builtin names, so basic indexing
         # (including newaxis via `None`) works directly.
         out = Tensor.__getitem__(self, slicer)
+        # Re-tag as this subclass: normal dispatch preserves it, but when
+        # __getitem__ is reached from inside a `_no_dispatch` override (e.g.
+        # `select` / `narrow` / `split`) the raw op returns a plain Tensor.
+        if type(out) is not type(self):
+            out = out.as_subclass(type(self))
         # Map each output axis back to its source axis to carry names across.
         in_names = self.names
         axis_map = arrayutils._map_axes(slicer, self.ndim)
@@ -838,29 +843,37 @@ def _reduce_index_meta(
     overrides["_index_dims"] = tuple(new_dims) or None
 
 
+def _axes_removed_meta(input: NamedTensor, removed: set) -> dict:
+    """
+    Build the `_carry` overrides for an op that removes `removed` (a set of
+    normalized axis positions): the surviving axis names, plus the dropped /
+    shifted named-index metadata.
+    """
+    overrides = {
+        "_axis_names": tuple(
+            name for i, name in enumerate(input.names) if i not in removed
+        )
+    }
+    _reduce_index_meta(input, removed, overrides)
+    return overrides
+
+
 def _reduce_names(input: NamedTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     """Recompute the name metadata for a dimension-reducing op's result."""
     if not isinstance(result, Tensor):
         # e.g. a (values, indices) namedtuple: left to a bespoke override.
         return result
-    in_names = input.names
     ndim = input.ndim
     # `keepdim` is inferable from the output rank: a reduction either removes
     # the reduced axes or keeps them as size-1.
     if dim is not None and result.ndim == ndim:
-        return _carry(input, result, _axis_names=in_names)
+        return _carry(input, result, _axis_names=input.names)
     if dim is None:
         removed = set(range(ndim))
     else:
         dims = dim if isinstance(dim, (tuple, list)) else (dim,)
         removed = {d % ndim for d in dims}
-    overrides = {
-        "_axis_names": tuple(
-            name for i, name in enumerate(in_names) if i not in removed
-        )
-    }
-    _reduce_index_meta(input, removed, overrides)
-    return _carry(input, result, **overrides)
+    return _carry(input, result, **_axes_removed_meta(input, removed))
 
 
 def _make_reduction(name: str) -> None:
@@ -903,6 +916,136 @@ _REDUCTIONS = (
 )
 for _reduction_name in _REDUCTIONS:
     _make_reduction(_reduction_name)
+
+
+# ======================================================================
+#
+#                       S L I C E   /   S P L I T
+#
+# ======================================================================
+#
+# Ops that select or split along an axis. The slice-like ones (`narrow`,
+# `select`, `split`, `chunk`) are expressed as `__getitem__` on a single
+# axis, which already tracks both axis names and named-index metadata; the
+# splitting ones return a tuple whose every element carries the metadata.
+
+
+def _slice_axis(input: NamedTensor, dim: int, index: tx.Any) -> tx.Any:
+    """Index a single axis (`input[:, ..., index, ..., :]`)."""
+    slicer = [slice(None)] * input.ndim
+    slicer[dim] = index
+    return input[tuple(slicer)]
+
+
+@NamedTensor.overrides(_torch_func("narrow"))
+def _(input: NamedTensor, dim: int | str, start: int, length: int) -> tx.Any:
+    dim = _resolve_axis(input.names, dim) % input.ndim
+    return _slice_axis(input, dim, slice(start, start + length))
+
+
+@NamedTensor.overrides(_torch_func("select"))
+def _(input: NamedTensor, dim: int | str, index: int) -> tx.Any:
+    # `select(dim, i)` == `x[..., i, ...]`: the integer index drops the axis,
+    # and `__getitem__` handles the axis-name / index-name bookkeeping.
+    dim = _resolve_axis(input.names, dim) % input.ndim
+    return _slice_axis(input, dim, index)
+
+
+@NamedTensor.overrides(_torch_func("unbind"))
+def _(input: NamedTensor, dim: int | str = 0) -> tuple:
+    dim = _resolve_axis(input.names, dim) % input.ndim
+    return tuple(_slice_axis(input, dim, i) for i in range(input.shape[dim]))
+
+
+@NamedTensor.overrides(_torch_func("split"))
+def _(
+    input: NamedTensor,
+    split_size_or_sections: int | tx.Sequence,
+    dim: int | str = 0,
+) -> tuple:
+    dim = _resolve_axis(input.names, dim) % input.ndim
+    size = input.shape[dim]
+    if isinstance(split_size_or_sections, int):
+        step = split_size_or_sections
+        sections = [step] * (size // step)
+        if size % step:
+            sections.append(size % step)
+    else:
+        sections = list(split_size_or_sections)
+    pieces, start = [], 0
+    for length in sections:
+        pieces.append(_slice_axis(input, dim, slice(start, start + length)))
+        start += length
+    return tuple(pieces)
+
+
+@NamedTensor.overrides(_torch_func("chunk"))
+def _(input: NamedTensor, chunks: int, dim: int | str = 0) -> tuple:
+    dim = _resolve_axis(input.names, dim) % input.ndim
+    size = input.shape[dim]
+    # `torch.chunk(n, chunks)` splits into pieces of ceil(n / chunks); the
+    # last piece may be smaller (and there may be fewer than `chunks`).
+    step = max(1, -(-size // chunks))
+    return input.split(step, dim)
+
+
+@NamedTensor.overrides(_torch_func("flip"))
+def _(input: NamedTensor, dims: int | str | tx.Sequence) -> NamedTensor:
+    resolved = _resolve_dims(input.names, dims)
+    dlist = resolved if isinstance(resolved, (tuple, list)) else (resolved,)
+    result = Tensor.flip(input, list(dlist))
+    # Rank and axis positions are unchanged, so axis names are carried as-is;
+    # for a flipped named-index axis the index order reverses too.
+    flipped = {d % input.ndim for d in dlist}
+    overrides = {}
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is not None and idx_dims is not None:
+        overrides["_index_names"] = tuple(
+            tuple(reversed(names)) if (d % input.ndim) in flipped else names
+            for names, d in zip(idx_names, idx_dims)
+        )
+    return _carry(input, result, **overrides)
+
+
+@NamedTensor.overrides(_torch_func("roll"))
+def _(
+    input: NamedTensor,
+    shifts: int | tx.Sequence,
+    dims: int | str | tx.Sequence | None = None,
+) -> NamedTensor:
+    if dims is None:
+        # Flattened roll: axis names are unchanged, but per-axis index order
+        # can no longer be tracked, so index metadata is dropped.
+        result = Tensor.roll(input, shifts)
+        overrides = {}
+        if input.__dict__.get("_index_names") is not None:
+            overrides = {"_index_names": None, "_index_dims": None}
+        return _carry(input, result, **overrides)
+
+    dims = _resolve_dims(input.names, dims)
+    result = Tensor.roll(input, shifts, dims)
+    slist = shifts if isinstance(shifts, (tuple, list)) else (shifts,)
+    dlist = dims if isinstance(dims, (tuple, list)) else (dims,)
+    shift_by_dim: dict = {}
+    for shift, dim in zip(slist, dlist):
+        dim %= input.ndim
+        shift_by_dim[dim] = shift_by_dim.get(dim, 0) + shift
+    overrides = {}
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is not None and idx_dims is not None:
+        new_names = []
+        for names, dim in zip(idx_names, idx_dims):
+            shift = shift_by_dim.get(dim % input.ndim)
+            if shift is None:
+                new_names.append(names)
+                continue
+            n = len(names)
+            shift %= n or 1
+            new_names.append(tuple(names[(i - shift) % n] for i in range(n)))
+        overrides["_index_names"] = tuple(new_names)
+    return _carry(input, result, **overrides)
 
 
 # ======================================================================
