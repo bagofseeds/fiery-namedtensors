@@ -544,3 +544,90 @@ def test_reduction_drops_named_index_metadata_for_reduced_axis():
     r2 = t.sum(dim="a")
     assert r2.index_dims == (0, 1)
     assert r2.index_names == (("p", "q", "r"), ("w", "x", "y", "z"))
+
+
+# ----------------------------------------------------------------------
+# slice / split ops: select / narrow / unbind / split / chunk / flip / roll
+# ----------------------------------------------------------------------
+
+
+def test_select_drops_axis_name():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.select("b", 0).names == ("a", "c")
+    assert x.select("b", 0).shape == (2, 4)
+    # functional form matches
+    assert torch.select(x, 1, 0).names == ("a", "c")
+
+
+def test_narrow_keeps_names_and_accepts_name_dim():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    y = x.narrow("c", 1, 2)
+    assert y.names == ("a", "b", "c")
+    assert y.shape == (2, 3, 2)
+
+
+def test_unbind_returns_pieces_without_the_unbound_axis():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    pieces = x.unbind("a")
+    assert len(pieces) == 2
+    assert all(p.names == ("b", "c") for p in pieces)
+    assert all(p.shape == (3, 4) for p in pieces)
+
+
+def test_split_and_chunk_keep_all_names():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    parts = x.split(2, dim="c")
+    assert [p.shape for p in parts] == [(2, 3, 2), (2, 3, 2)]
+    assert all(p.names == ("a", "b", "c") for p in parts)
+    chunks = x.chunk(2, dim="b")
+    assert [p.shape for p in chunks] == [(2, 2, 4), (2, 1, 4)]
+    assert all(p.names == ("a", "b", "c") for p in chunks)
+
+
+def test_flip_and_roll_preserve_names():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.flip(("a", "c")).names == ("a", "b", "c")
+    assert x.roll(1, dims="b").names == ("a", "b", "c")
+    assert x.roll(2).names == ("a", "b", "c")  # flattened roll
+
+
+def test_select_drops_named_index_group():
+    t = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
+        index_dims=(1, 2),
+    )
+    # select the axis carrying the first index group
+    r = t.select(1, 0)
+    assert r.index_dims == (1,)
+    assert r.index_names == (("w", "x", "y", "z"),)
+
+
+def test_narrow_and_split_slice_named_indices():
+    t = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(2,),
+    )
+    assert t.narrow(2, 1, 2).index_names == (("x", "y"),)
+    parts = t.split(2, dim=2)
+    assert [p.index_names for p in parts] == [(("w", "x"),), (("y", "z"),)]
+
+
+def test_flip_reverses_named_indices_on_flipped_axis():
+    t = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(2,),
+    )
+    assert t.flip(2).index_names == (("z", "y", "x", "w"),)
+
+
+def test_roll_rolls_named_indices_on_rolled_axis():
+    t = TensorWithNamedIndices(
+        torch.arange(12).reshape(3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(1,),
+    )
+    # a right shift of 1 moves each index name one step forward (cyclically)
+    assert t.roll(1, dims=1).index_names == (("z", "w", "x", "y"),)
