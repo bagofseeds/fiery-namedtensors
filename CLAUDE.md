@@ -1,16 +1,16 @@
-# CLAUDE.md — fiery-namedtensors
+# CLAUDE.md — fiery-xtensor
 
 Repo-specific guidance for coding agents. bagofseeds publishes two families of
 PyTorch packages — standalone **`bagof-*`** packages and the **`fiery-*`**
 namespace matches (this repo is one of the latter); they share the same
 packaging, CI, docs, and workflow conventions. For those shared conventions see
 the org guide (`bagofseeds/.github`, `CONTRIBUTING.md` + `CLAUDE.md`). This file
-only records what is specific to `fiery.namedtensors`.
+only records what is specific to `fiery.xtensor`.
 
 ## What this package is
 
 A [`fiery`](https://bagofseeds.github.io/fiery/) match that makes **names a
-first-class citizen** of `torch.Tensor`. `NamedTensor` is an
+first-class citizen** of `torch.Tensor`. `XTensor` is an
 [xarray](https://docs.xarray.dev)-like `DataArray` over a live torch tensor:
 
 - **dimensions** are named (`names`, self-managed in `_axis_names`);
@@ -18,7 +18,7 @@ first-class citizen** of `torch.Tensor`. `NamedTensor` is an
   `{dim name: labels}` dict, self-managed in `_coords`) — **keyed by dimension
   name**, so they follow their dim through permute/reduce with no positional
   bookkeeping. A labelled dim must be named.
-- `NamedVector` / `NamedMatrix` — conveniences that pre-name+label their channel
+- `XVector` / `XMatrix` — conveniences that pre-name+label their channel
   axes (`"channel"`; `"row"`/`"col"`).
 
 Select by label with `.sel`, by position with `.isel`, or reach a single label
@@ -31,13 +31,13 @@ name-keyed `coords` model (see #37).
 ## Layout
 
 ```
-src/fiery/namedtensors/
+src/fiery/xtensor/
   __init__.py       # public API re-exports
   _tensors.py       # the tensor subclasses + torch-function overrides
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
 tests/
-  test_namedtensors.py
+  test_xtensor.py
   test_arrayutils.py
   test_compat.py
 ```
@@ -92,7 +92,7 @@ tests/
 Named-aware overrides are grouped into labelled banners; add new ops to the
 matching section (or a new one):
 
-- **NAMED TENSOR** — the `NamedTensor` class: `names`/`coords` properties,
+- **NAMED TENSOR** — the `XTensor` class: `names`/`coords` properties,
   `sel`/`isel`, `__getitem__` (slices labels of kept axes), `__getattr__`
   (label access), `rename`, `refine_names`/`align_to`/`align_as`.
 - **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
@@ -105,7 +105,7 @@ matching section (or a new one):
 - **COMBINE** — `cat`/`stack` (name reconciliation across operands; `cat`
   concatenates the join-axis labels) and `matmul`/`mm`/`bmm`.
 - **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`where`/
-  `masked_select`, and `NamedVector`/`NamedMatrix`.
+  `masked_select`, and `XVector`/`XMatrix`.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 (1-D label slicer), `_reconcile_axis_names` (multi-operand), `_matmul_names`.
@@ -126,8 +126,9 @@ Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
    absent: resolve it through `_torch_func("name")` (from `_compat`, returns
    `None` if the op does not exist in the running torch) and pass that to
    `overrides()`, which skips `None`. Bespoke methods that are *not* torch ops
-   (e.g. `TensorWithNamedIndices.index`) are defined as plain methods, never via
-   the version-guarded override path. Version shims (an `EllipsisType` fallback,
+   (`sel`/`isel`, `rename`, `refine_names`/`align_*`) are defined as plain
+   methods, never via the version-guarded override path. Version shims (an
+   `EllipsisType` fallback,
    a pure-shape `broadcast_shape` that allocates nothing) live in `_compat`.
 3. **Coordinates are keyed by dim name and must stay length-consistent.** Set
    `out._coords` to a `{name: labels}` dict where every key is a current dim

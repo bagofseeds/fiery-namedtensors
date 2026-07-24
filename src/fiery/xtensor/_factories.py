@@ -1,7 +1,7 @@
 """Named factory helpers.
 
 Thin wrappers around the `torch.*` construction functions that return a
-[`NamedTensor`][fiery.namedtensors.NamedTensor] directly, so callers can name
+[`XTensor`][fiery.xtensor.XTensor] directly, so callers can name
 the axes at creation time instead of wrapping every call by hand::
 
     named_zeros(2, 3, names=("row", "col"))
@@ -15,7 +15,7 @@ from __future__ import annotations
 import torch
 import typing_extensions as tx
 
-from fiery.namedtensors._tensors import NamedTensor
+from fiery.xtensor._tensors import XTensor
 
 
 def _make_factory(name: str) -> tx.Optional[tx.Callable]:
@@ -28,13 +28,13 @@ def _make_factory(name: str) -> tx.Optional[tx.Callable]:
         *args: tx.Any,
         names: tx.Optional[tx.Sequence[str | None]] = None,
         **kwargs: tx.Any,
-    ) -> NamedTensor:
-        return NamedTensor(base(*args, **kwargs), names=names)
+    ) -> XTensor:
+        return XTensor(base(*args, **kwargs), names=names)
 
     factory.__name__ = "named_" + name
     factory.__qualname__ = "named_" + name
     factory.__doc__ = (
-        f"Like `torch.{name}`, but returns a `NamedTensor`.\n\n"
+        f"Like `torch.{name}`, but returns a `XTensor`.\n\n"
         f"All arguments are forwarded to `torch.{name}`; pass `names=(...)`\n"
         f"to name the axes of the result."
     )

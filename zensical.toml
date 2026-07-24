@@ -13,7 +13,7 @@ nav = [
 # Read more: https://zensical.org/docs/setup/basics/#site_name
 site_name = "fiery-namedtensors"
 
-site_description = "Named dimensions and named indices for PyTorch tensors."
+site_description = "xarray-like named dimensions and coordinate labels for PyTorch tensors."
 
 # The site_author attribute. This is used in the HTML head element.
 #

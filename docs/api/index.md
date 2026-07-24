@@ -2,4 +2,4 @@
 icon: fontawesome/brands/python
 ---
 
-# ::: fiery.namedtensors
+# ::: fiery.xtensor

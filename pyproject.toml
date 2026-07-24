@@ -1,21 +1,22 @@
 [project]
-name = "fiery-namedtensors"
+name = "fiery-xtensor"
 authors = [
     {name = "Yael Balbastre", email = "y.balbastre@ucl.ac.uk"},
 ]
 maintainers = [
     {name = "Yael Balbastre", email = "y.balbastre@ucl.ac.uk"},
 ]
-description = "Named dimensions and named indices for PyTorch tensors"
+description = "xarray-like named dimensions and coordinate labels for PyTorch tensors"
 readme = "README.md"
 license = {text = "MIT"}
 keywords = [
     "fiery",
     "pytorch",
     "torch",
+    "xarray",
     "named tensors",
     "named dimensions",
-    "named indices",
+    "coordinates",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -88,13 +89,13 @@ dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 
 [tool.versioningit.write]
-file = "src/fiery/namedtensors/_version.py"
+file = "src/fiery/xtensor/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.coverage.run]
-omit = ["src/fiery/namedtensors/_version.py"]
+omit = ["src/fiery/xtensor/_version.py"]
 
 [tool.ruff]
 line-length = 79

@@ -1,4 +1,4 @@
-"""Version-compatibility helpers for `fiery.namedtensors`.
+"""Version-compatibility helpers for `fiery.xtensor`.
 
 Small shims that let the package span a wide range of Python and PyTorch
 versions. Keep anything version-conditional here so the rest of the package
