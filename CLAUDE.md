@@ -26,8 +26,11 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `_axis_meta`, **keyed by dim name** (so they follow the dim exactly like
   coords). `.names` stays the bare view; `.axes` returns the full descriptors.
   `flip` reverses a flipped axis' `orientation`; `rename` remaps meta keys.
-  (Descriptor-*query* resolution — `movedim({"type":"space"}, -1)` — is a
-  follow-up.)
+  A descriptor can also be used to **address** axes: pass a query dict in
+  place of a `dim` and it expands to *every* matching axis —
+  `movedim({"type": "space"}, -1)` blocks all space axes to the back
+  (preserving order), `sum(dim={"type": "channel"})` reduces every channel
+  axis (see `_query_positions` / `_movedim_block_order` / `_resolve_reduce_dim`).
 
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a

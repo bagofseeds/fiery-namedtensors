@@ -1200,3 +1200,62 @@ def test_descriptors_and_coordinates_coexist():
     assert z.axes == ({"name": "c", "type": "channel"},)
     assert z.coords == {"c": ("r", "g", "b")}
     assert z.sel(c="g").item() == 0
+
+
+def test_movedim_by_type_moves_the_whole_block_to_the_back():
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=[
+            {"name": "b", "type": "batch"},
+            {"name": "h", "type": "space"},
+            {"name": "c", "type": "channel"},
+            {"name": "w", "type": "space"},
+        ],
+    )
+    moved = x.movedim({"type": "space"}, -1)
+    # both space axes go to the back, keeping their relative order (h before w)
+    assert moved.names == ("b", "c", "h", "w")
+    assert tuple(moved.shape) == (2, 4, 3, 5)
+
+
+def test_moveaxis_by_type_moves_the_block_to_the_front():
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=[
+            {"name": "b", "type": "batch"},
+            {"name": "h", "type": "space"},
+            {"name": "c", "type": "channel"},
+            {"name": "w", "type": "space"},
+        ],
+    )
+    moved = x.moveaxis({"type": "space"}, 0)
+    assert moved.names == ("h", "w", "b", "c")
+    assert tuple(moved.shape) == (3, 5, 2, 4)
+
+
+def test_sum_by_type_reduces_every_matching_axis():
+    y = XTensor(
+        torch.ones(2, 3, 4),
+        names=[
+            {"name": "b", "type": "batch"},
+            {"name": "c1", "type": "channel"},
+            {"name": "c2", "type": "channel"},
+        ],
+    )
+    reduced = y.sum(dim={"type": "channel"})
+    assert reduced.names == ("b",)
+    assert reduced[0].item() == 12  # 3 * 4 ones summed
+
+
+def test_single_match_query_stays_prod_safe():
+    # a query hitting exactly one axis collapses to a bare int, so even
+    # single-`dim`-only reducers (`prod`) accept it
+    y = XTensor(
+        torch.ones(2, 3, 4),
+        names=[
+            {"name": "b", "type": "batch"},
+            {"name": "c1", "type": "channel"},
+            {"name": "c2", "type": "channel"},
+        ],
+    )
+    assert y.prod(dim={"type": "batch"}).names == ("c1", "c2")

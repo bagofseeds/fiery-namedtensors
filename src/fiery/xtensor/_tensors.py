@@ -91,6 +91,34 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     return dim
 
 
+def _match_axes(input: XTensor, query: tx.Mapping) -> list:
+    """
+    Positions whose axis **descriptor** matches every key/value in `query`
+    (a descriptor query like `{"type": "space"}`), in current axis order.
+    """
+    return [
+        i
+        for i, axis in enumerate(input.axes)
+        if axis is not None and all(axis.get(k) == v for k, v in query.items())
+    ]
+
+
+def _query_positions(input: XTensor, dim: tx.Any) -> list:
+    """
+    Resolve a dim spec to a flat list of positions. Accepts an `int`, a name
+    (`str`), a **descriptor query** (a dict matching zero-or-more axes), or a
+    sequence mixing those. A query expands to *all* matching axes, in order.
+    """
+    if isinstance(dim, dict):
+        return _match_axes(input, dim)
+    if isinstance(dim, (tuple, list)):
+        positions = []
+        for one in dim:
+            positions.extend(_query_positions(input, one))
+        return positions
+    return [_resolve_axis(input.names, dim) % input.ndim]
+
+
 def _carry(source: Tensor, result: Tensor, **overrides: tx.Any) -> Tensor:
     """
     Return `result` as `source`'s subclass, carrying `source`'s subclass
@@ -824,6 +852,38 @@ def _movedim_order(
     return order
 
 
+def _movedim_block_order(ndim: int, block: list, destination: int) -> list:
+    """
+    Permutation that moves `block` (positions, in their given order) to a
+    single contiguous run governed by a scalar `destination` — the block-move
+    generalisation of `movedim`. As with a one-axis move, the run *starts* at
+    `destination`, or (for a negative `destination`) *ends* there.
+    """
+    k = len(block)
+    remaining = [d for d in range(ndim) if d not in block]
+    start = (destination % ndim) - k + 1 if destination < 0 else destination
+    start = max(0, min(start, len(remaining)))
+    return remaining[:start] + list(block) + remaining[start:]
+
+
+def _move_permutation(
+    input: XTensor, source: tx.Any, destination: tx.Any
+) -> list:
+    """
+    Resolve the `permute` order for a `movedim`/`moveaxis` call. A **descriptor
+    query** for `source` (e.g. `{"type": "space"}`) selects *every* matching
+    axis and moves them as a contiguous block to the scalar `destination`,
+    preserving relative order; otherwise `source`/`destination` pair up as in
+    plain `movedim` (names allowed, resolved to ints).
+    """
+    if isinstance(source, dict):
+        return _movedim_block_order(
+            input.ndim, _query_positions(input, source), destination
+        )
+    source = _resolve_dims(input.names, source)
+    return _movedim_order(input.ndim, source, destination)
+
+
 @XTensor.overrides(_torch_func("transpose"))
 def _(input: XTensor, dim0: int | str, dim1: int | str) -> XTensor:
     names = input.names
@@ -847,16 +907,14 @@ def _(input: XTensor, dim0: int | str, dim1: int | str) -> XTensor:
 
 @XTensor.overrides(_torch_func("movedim"))
 def _(input: XTensor, source, destination) -> XTensor:
-    # `source` names an existing axis (resolvable); `destination` is a target
-    # position, so it stays an integer.
-    source = _resolve_dims(input.names, source)
-    return input.permute(*_movedim_order(input.ndim, source, destination))
+    # `source` names existing axis/axes (resolvable, or a descriptor query);
+    # `destination` is a target position, so it stays an integer.
+    return input.permute(*_move_permutation(input, source, destination))
 
 
 @XTensor.overrides(_torch_func("moveaxis"))
 def _(input: XTensor, source, destination) -> XTensor:
-    source = _resolve_dims(input.names, source)
-    return input.permute(*_movedim_order(input.ndim, source, destination))
+    return input.permute(*_move_permutation(input, source, destination))
 
 
 # -- rank-changing reshape --------------------------------------------------
@@ -951,6 +1009,24 @@ def _(
 # remove the reduced axes or keep them as size-1.
 
 
+def _resolve_reduce_dim(input: XTensor, dim: tx.Any) -> tx.Any:
+    """
+    Resolve a reduction's `dim`, expanding any **descriptor query** to the axes
+    it matches. A query hitting a single axis collapses to a bare `int` (so
+    single-`dim`-only reducers like `prod`/`argmax` keep working); one hitting
+    several yields a list of positions. Non-query specs pass through
+    [`_resolve_dims`][fiery.xtensor._tensors._resolve_dims] unchanged.
+    """
+    has_query = isinstance(dim, dict) or (
+        isinstance(dim, (tuple, list))
+        and any(isinstance(d, dict) for d in dim)
+    )
+    if not has_query:
+        return _resolve_dims(input.names, dim)
+    positions = _query_positions(input, dim)
+    return positions[0] if len(positions) == 1 else positions
+
+
 def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     """Recompute the name metadata for a dimension-reducing op's result."""
     if not isinstance(result, Tensor):
@@ -977,13 +1053,12 @@ def _make_reduction(name: str) -> None:
     base = _torch_func(name)
 
     def _reduction(input: XTensor, *args, **kwargs) -> tx.Any:
-        names = input.names
-        # Resolve a name given for `dim` (positional arg 0 or keyword) and
+        # Resolve a name/query for `dim` (positional arg 0 or keyword) and
         # remember the (resolved) value so the output names can be computed.
         if "dim" in kwargs:
-            dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+            dim = kwargs["dim"] = _resolve_reduce_dim(input, kwargs["dim"])
         elif args:
-            dim = _resolve_dims(names, args[0])
+            dim = _resolve_reduce_dim(input, args[0])
             args = (dim,) + args[1:]
         else:
             dim = None
