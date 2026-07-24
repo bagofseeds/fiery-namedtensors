@@ -38,6 +38,40 @@ ChannelNamesT = tx.Tuple[ChannelNameT, ...]
 """The ordered channel names of a `NamedVector` / `NamedMatrix` axis."""
 
 
+def _resolve_axis(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
+    """
+    Resolve one axis specifier to an integer position.
+
+    A `str` is looked up in `names` (raising if absent); an `int` (possibly
+    negative) or `None` passes through unchanged, as does anything else (e.g.
+    a `Tensor`), so callers can share this with ops whose first argument is
+    not always a dimension.
+    """
+    if isinstance(dim, str):
+        try:
+            return names.index(dim)
+        except ValueError:
+            raise ValueError(
+                f"no axis named {dim!r} in {tuple(names)}"
+            ) from None
+    return dim
+
+
+def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
+    """
+    Resolve an axis specifier, or a sequence of them, to integer position(s).
+
+    Wraps [`_resolve_axis`][fiery.namedtensors._tensors._resolve_axis]: a
+    single specifier is resolved directly; a `tuple`/`list` is resolved
+    element-wise (keeping its container type); anything else passes through.
+    """
+    if isinstance(dim, str):
+        return _resolve_axis(names, dim)
+    if isinstance(dim, (tuple, list)):
+        return type(dim)(_resolve_axis(names, d) for d in dim)
+    return dim
+
+
 def _carry(source: Tensor, result: Tensor, **overrides: tx.Any) -> Tensor:
     """
     Return `result` as `source`'s subclass, carrying `source`'s subclass
@@ -280,10 +314,11 @@ class NamedTensor(ExtendedTensor):
 
 
 @NamedTensor.overrides(_torch_func("permute"))
-def _(input: NamedTensor, *dims: int | tuple[int, ...]) -> NamedTensor:
-    if len(dims) == 1:
-        dims = dims[0]
+def _(input: NamedTensor, *dims: int | str | tuple) -> NamedTensor:
+    if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
+        dims = tuple(dims[0])
     names = input.names
+    dims = tuple(_resolve_axis(names, dim) for dim in dims)
     result = Tensor.permute(input, dims)
     return _carry(input, result, _axis_names=tuple(names[dim] for dim in dims))
 
@@ -297,9 +332,13 @@ def _(input: NamedTensor, dim: int) -> NamedTensor:
 
 
 @NamedTensor.overrides(_torch_func("squeeze"))
-def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
+def _(
+    input: NamedTensor, dim: int | str | tx.Sequence | None = None
+) -> NamedTensor:
     ndim = input.ndim
     names = list(input.names)
+    if dim is not None:
+        dim = _resolve_dims(input.names, dim)
     # `Tensor.squeeze(t, None)` is rejected on some PyTorch versions; when
     # no dim is given, squeeze all singleton dimensions.
     result = (
@@ -402,27 +441,37 @@ def _movedim_order(
 
 
 @NamedTensor.overrides(_torch_func("transpose"))
-def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+    names = input.names
+    dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
 @NamedTensor.overrides(_torch_func("swapaxes"))
-def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+    names = input.names
+    dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
 @NamedTensor.overrides(_torch_func("swapdims"))
-def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+    names = input.names
+    dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
 @NamedTensor.overrides(_torch_func("movedim"))
 def _(input: NamedTensor, source, destination) -> NamedTensor:
+    # `source` names an existing axis (resolvable); `destination` is a target
+    # position, so it stays an integer.
+    source = _resolve_dims(input.names, source)
     return input.permute(*_movedim_order(input.ndim, source, destination))
 
 
 @NamedTensor.overrides(_torch_func("moveaxis"))
 def _(input: NamedTensor, source, destination) -> NamedTensor:
+    source = _resolve_dims(input.names, source)
     return input.permute(*_movedim_order(input.ndim, source, destination))
 
 
@@ -720,9 +769,11 @@ class NamedMatrix(TensorWithNamedIndices):
 def _(
     input: TensorWithNamedIndices, *dims: int | tuple[int, ...]
 ) -> TensorWithNamedIndices:
-    # Accept both `x.permute(0, 2, 1)` and `x.permute((0, 2, 1))`.
+    # Accept both `x.permute(0, 2, 1)` and `x.permute((0, 2, 1))`, and axis
+    # names in place of integers.
     if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
         dims = tuple(dims[0])
+    dims = tuple(_resolve_axis(input.names, d) for d in dims)
     dims = tuple(d + input.ndim if d < 0 else d for d in dims)
 
     out = NamedTensor.permute(input, *dims)
@@ -735,7 +786,8 @@ def _(
 
 
 @TensorWithNamedIndices.overrides(_torch_func("index_select"))
-def _(input: TensorWithNamedIndices, dim: int, index: Tensor) -> Tensor:
+def _(input: TensorWithNamedIndices, dim: int | str, index: Tensor) -> Tensor:
+    dim = _resolve_axis(input.names, dim)
     if dim < 0:
         dim += input.ndim
 
