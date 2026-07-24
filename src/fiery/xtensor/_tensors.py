@@ -1070,6 +1070,71 @@ _make_sorting("topk", k_arg=True)
 
 # ======================================================================
 #
+#                               S C A N S
+#
+# ======================================================================
+#
+# Unlike REDUCTIONS above, these ops are dimension-*preserving*: rank, sizes,
+# names and coordinates are all unchanged, so `_carry(input, ...)` after
+# resolving a name given for `dim` is all that's needed.
+
+
+def _make_scan(name: str) -> None:
+    """
+    Register a name-aware override for a dim-preserving scan/activation op
+    (`cumsum`, `softmax`, ...): `dim` is the op's first positional argument
+    (or a keyword), and it may be given as a name (method form only, see
+    `_resolve_axis`). Rank/size/names/coords are unchanged, so the result
+    just needs `input`'s metadata carried onto it.
+    """
+    base = _torch_func(name)
+
+    def _scan(input: XTensor, *args, **kwargs) -> XTensor:
+        names = input.names
+        if "dim" in kwargs:
+            kwargs["dim"] = _resolve_axis(names, kwargs["dim"])
+        elif args:
+            args = (_resolve_axis(names, args[0]),) + args[1:]
+        return _carry(input, base(input, *args, **kwargs))
+
+    # `overrides(None)` is a no-op, so ops missing from this torch are skipped
+    # (e.g. `logcumsumexp`, added in torch 1.9).
+    XTensor.overrides(base)(_scan)
+
+
+# `dim` is the first positional for each; `softmax`/`log_softmax` also take a
+# keyword-only `dtype`, same as `cumsum`/`cumprod`/`logcumsumexp`.
+_SCANS = ("cumsum", "cumprod", "softmax", "log_softmax", "logcumsumexp")
+for _scan_name in _SCANS:
+    _make_scan(_scan_name)
+
+
+def _make_cum_extremum(name: str) -> None:
+    """
+    Register a name-aware override for `cummax` / `cummin`: a
+    `(values, indices)` namedtuple, dim-preserving like the scans above, so
+    `input`'s names+coords are carried onto *both* members via `_rebuild`.
+    """
+    base = _torch_func(name)
+
+    def _op(input: XTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        if "dim" in kwargs:
+            kwargs["dim"] = _resolve_axis(names, kwargs["dim"])
+        elif args:
+            args = (_resolve_axis(names, args[0]),) + args[1:]
+        result = base(input, *args, **kwargs)
+        return _rebuild(result, lambda m: _carry(input, m))
+
+    XTensor.overrides(base)(_op)
+
+
+for _cum_extremum_name in ("cummax", "cummin"):
+    _make_cum_extremum(_cum_extremum_name)
+
+
+# ======================================================================
+#
 #                       S L I C E   /   S P L I T
 #
 # ======================================================================
