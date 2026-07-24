@@ -26,23 +26,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # CPU-only torch wheels; numpy pinned <2 where the torch build
-          # predates the numpy 2 C-ABI (older torch cannot use numpy>=2).
+          # CPU-only torch wheels across the named-tensor era of PyTorch
+          # (1.8 -> 2.2, all verified green). numpy is pinned <2 for the numpy
+          # 2 C-ABI. The upper bound is pinned rather than "latest": torch
+          # builds that dropped the builtin named-tensor API (`.names` /
+          # `.rename`) are tracked separately (self-managed axis names).
           - python-version: "3.7"
             os: "ubuntu-22.04"
-            pip-install: "torch==1.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html"
-          - python-version: "3.7"
-            os: "ubuntu-22.04"
-            pip-install: "torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html"
+            pip-install: "torch==1.8.1+cpu numpy==1.21.6 -f https://download.pytorch.org/whl/torch_stable.html"
           - python-version: "3.9"
             os: "ubuntu-22.04"
             pip-install: "torch==1.11.0+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
           - python-version: "3.11"
             os: "ubuntu-latest"
             pip-install: "torch==2.0.1+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
-          - python-version: "3.x"
+          - python-version: "3.11"
             os: "ubuntu-latest"
-            pip-install: "torch --index-url https://download.pytorch.org/whl/cpu"
+            pip-install: "torch==2.2.2+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.12"
+            os: "ubuntu-latest"
+            pip-install: "torch==2.2.2+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
     uses: bagofseeds/actions/.github/workflows/test.yaml@main
     with:
       tag: ${{ inputs.tag }}

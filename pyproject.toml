@@ -1,40 +1,63 @@
 [project]
-name = "fiery-things"
-# Replace these template contacts before publishing.
+name = "fiery-namedtensors"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "y.balbastre@ucl.ac.uk"},
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "y.balbastre@ucl.ac.uk"},
 ]
-description = "Template package for fiery.things"
+description = "Named dimensions and named indices for PyTorch tensors"
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["fiery", "template", "pytorch", "torch"]
+keywords = [
+    "fiery",
+    "pytorch",
+    "torch",
+    "named tensors",
+    "named dimensions",
+    "named indices",
+]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
 ]
 dynamic = ["version"]
-requires-python = ">=3.6"
+# The named-tensor subclassing needs tensor-subclass `__torch_function__`
+# support and `Tensor.as_subclass` (both torch >= 1.7). Shape broadcasting is
+# implemented in-package (`_compat.broadcast_shape`), so it is NOT a floor
+# constraint. Tested floor is torch 1.8 / Python 3.7; the code uses only
+# old-compatible runtime syntax plus `typing_extensions`. Upper bound is the
+# last release that ships the builtin named-tensor API (`.names` / `.rename`);
+# supporting newer torch is tracked (self-managed axis names).
+requires-python = ">=3.7"
 dependencies = [
-    "torch>=1.3",
+    "torch>=1.8",
+    "typing_extensions>=4.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/bagofseeds/fiery-things"
-Documentation = "https://github.com/bagofseeds/fiery-things#readme"
-Issues = "https://github.com/bagofseeds/fiery-things/issues"
-Repository = "https://github.com/bagofseeds/fiery-things"
+Homepage = "https://github.com/bagofseeds/fiery-namedtensors"
+Documentation = "https://bagofseeds.github.io/fiery-namedtensors/"
+Issues = "https://github.com/bagofseeds/fiery-namedtensors/issues"
+Repository = "https://github.com/bagofseeds/fiery-namedtensors"
 
 [project.optional-dependencies]
 test = [
     "pytest>=7",
+    "numpy",
 ]
 
 [build-system]
@@ -65,10 +88,13 @@ dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 
 [tool.versioningit.write]
-file = "src/fiery/things/_version.py"
+file = "src/fiery/namedtensors/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = ["src/fiery/namedtensors/_version.py"]
 
 [tool.ruff]
 line-length = 79

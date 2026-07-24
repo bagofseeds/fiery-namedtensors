@@ -4,24 +4,25 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"All the Matches" = "https://bagofseeds.github.io/fiery/"},
-  {"Fiery Things" = "index.md"},
+  {"Named Tensors" = "index.md"},
+  {"API reference" = "api.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_name
-site_name = "fiery-things"
+site_name = "fiery-namedtensors"
 
-site_description = "A template repository for fiery PyTorch matches."
+site_description = "Named dimensions and named indices for PyTorch tensors."
 
 # The site_author attribute. This is used in the HTML head element.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_author
 site_author = "Yael Balbastre"
 
-site_url = "https://bagofseeds.github.io/fiery-things/"
-repo_url = "https://github.com/bagofseeds/fiery-things"
-repo_name = "bagofseeds/fiery-things"
+site_url = "https://bagofseeds.github.io/fiery-namedtensors/"
+repo_url = "https://github.com/bagofseeds/fiery-namedtensors"
+repo_name = "bagofseeds/fiery-namedtensors"
 
 copyright = """
 Copyright &copy; 2026 The authors
