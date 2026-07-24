@@ -14,7 +14,7 @@ torch (autograd, device, and `__torch_function__` all keep working).
 
 | Class | What it adds |
 | ----- | ------------ |
-| `XTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
+| `XTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`, `einsum`, `tensordot`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
 | `XVector` / `XMatrix` | Convenience specializations that pre-name and label their channel axes (`"channel"`; `"row"`/`"col"`). |
 
 Labels are keyed by dimension **name**, so — like xarray — they simply follow
@@ -164,4 +164,4 @@ Alpha — ported from a work-in-progress in
 coordinates are **self-managed**, independent of PyTorch's experimental builtin
 named tensors (which have been dropped in some torch builds), so the package
 spans a wide torch range. See the tracking issues for the roadmap
-(broadcasting-by-name for pointwise ops, `einsum`, coordinate alignment, …).
+(axis `unit` propagation, coordinate alignment, …).

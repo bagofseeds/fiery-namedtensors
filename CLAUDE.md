@@ -117,7 +117,11 @@ matching section (or a new one):
   concatenates the join-axis labels), `hstack`/`vstack`/`dstack` (same
   reconciliation, but only when every operand already has the result's rank
   — these promote lower-rank operands first, which can shift axes; always
-  drop coordinates), and `matmul`/`mm`/`bmm`.
+  drop coordinates), `matmul`/`mm`/`bmm`, and the contraction ops
+  `einsum`/`tensordot` (equation- or axis-list-driven; free-function only, no
+  method form — `_einsum_output_names` parses explicit/implicit equations and
+  falls back to unnamed on an ellipsis; both drop coords but keep the
+  descriptors of surviving named axes).
 - **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`scatter_add`/
   `index_add`/`index_copy`/`index_fill`/`where`/`masked_select`.
 - **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
@@ -166,10 +170,11 @@ Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
   (`cat`/`stack`/`matmul`), gather/scatter families, name-as-`dim`, the
   `refine_names`/`align_*` API, and factories — now all on the name-keyed
   `coords` model (#37).
-- **Open batches:** broadcasting-by-name for pointwise ops (R5 / #8, **decided**
-  — xarray-style align-by-name); irregular / namedtuple reducers
-  (`std`/`var`/`norm`, `max`/`min`/`sort`/`topk`, #20); `einsum`/`tensordot`;
-  coordinate **alignment** (xarray inner-join on labels) if pursued.
+- **Open batches:** irregular / namedtuple reducers (`max`/`min`/`sort`/`topk`,
+  #20); axis `unit` propagation (#48, after einsum); coordinate **alignment**
+  (xarray inner-join on labels) if pursued. Landed since: broadcasting-by-name
+  for pointwise ops (#8, xarray-style align-by-name), `std`/`var`/`norm`,
+  `einsum`/`tensordot`, and rich axis descriptors (#39).
 
 ## Gate before a PR
 
