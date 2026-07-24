@@ -479,3 +479,68 @@ def test_name_as_dim_unknown_name_raises():
     x = NamedTensor(torch.zeros(2, 3), names=("a", "b"))
     with pytest.raises(ValueError, match="no axis named 'z'"):
         x.transpose("a", "z")
+
+
+# ----------------------------------------------------------------------
+# reductions: drop / keep the reduced axis' name, accept a name for `dim`
+# ----------------------------------------------------------------------
+
+
+def test_sum_drops_reduced_axis_name():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.sum(dim="b").names == ("a", "c")
+    assert x.sum(dim="b").shape == (2, 4)
+    assert x.sum(dim=1).names == ("a", "c")  # int still works
+
+
+def test_sum_keepdim_preserves_reduced_axis_name():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    y = x.sum(dim="b", keepdim=True)
+    assert y.names == ("a", "b", "c")
+    assert y.shape == (2, 1, 4)
+
+
+def test_reduction_over_multiple_named_axes():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.mean(dim=("a", "c")).names == ("b",)
+
+
+def test_reduce_all_yields_scalar_with_no_names():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    s = x.sum()
+    assert s.names == ()
+    assert s.ndim == 0
+
+
+def test_functional_reduction_carries_names_like_method():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert torch.mean(x, 1).names == x.mean(dim=1).names == ("a", "c")
+
+
+def test_argmax_and_amax_track_names():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.amax(dim="c").names == ("a", "b")
+    assert x.argmax(dim="a").names == ("b", "c")
+
+
+def test_negative_dim_reduction():
+    x = NamedTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.sum(dim=-1).names == ("a", "b")
+
+
+def test_reduction_drops_named_index_metadata_for_reduced_axis():
+    t = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
+        index_dims=(1, 2),
+    )
+    t.names = ("a", "b", "c")
+    # reduce the axis carrying the first index group
+    r = t.sum(dim="b")
+    assert r.names == ("a", "c")
+    assert r.index_dims == (1,)
+    assert r.index_names == (("w", "x", "y", "z"),)
+    # reduce a plain axis: index dims shift down, index names unchanged
+    r2 = t.sum(dim="a")
+    assert r2.index_dims == (0, 1)
+    assert r2.index_names == (("p", "q", "r"), ("w", "x", "y", "z"))
