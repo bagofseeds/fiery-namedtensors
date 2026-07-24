@@ -925,6 +925,149 @@ for _reduction_name in _REDUCTIONS:
     _make_reduction(_reduction_name)
 
 
+# ---- irregular signatures & (values, indices) reducers --------------------
+
+
+def _rebuild(namedtuple: tx.Any, fn: tx.Callable) -> tx.Any:
+    """Apply `fn` to every member of a torch return-type namedtuple."""
+    return type(namedtuple)(tuple(fn(member) for member in namedtuple))
+
+
+def _make_std_var(name: str) -> None:
+    """`std` / `var`: `dim` is the first positional, but a bool there is
+    `unbiased`, not a dim."""
+    base = _torch_func(name)
+
+    def _op(input: XTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        dim = None
+        if "dim" in kwargs:
+            dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+        elif args and not isinstance(args[0], bool):
+            dim = _resolve_dims(names, args[0])
+            args = (dim,) + args[1:]
+        return _reduce_names(input, base(input, *args, **kwargs), dim)
+
+    XTensor.overrides(base)(_op)
+
+
+for _std_var_name in ("std", "var"):
+    _make_std_var(_std_var_name)
+
+
+@XTensor.overrides(_torch_func("norm"))
+def _(input: XTensor, *args, **kwargs) -> tx.Any:
+    # `norm(input, p, dim, keepdim, ...)`: `dim` is the *second* positional
+    # (after `p`) or a keyword.
+    names = input.names
+    dim = None
+    if "dim" in kwargs:
+        dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+    elif len(args) >= 2:
+        dim = _resolve_dims(names, args[1])
+        args = (args[0], dim) + args[2:]
+    return _reduce_names(input, torch.norm(input, *args, **kwargs), dim)
+
+
+def _make_minmax(name: str) -> None:
+    """`max` / `min`: overloaded — `x.max()` (scalar), `x.max(dim)` (a
+    `(values, indices)` namedtuple that reduces `dim`), and `torch.max(a, b)`
+    (elementwise)."""
+    base = _torch_func(name)
+
+    def _op(input: XTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        if args and isinstance(args[0], Tensor):
+            # elementwise max/min(a, b): reconcile names, drop coordinates
+            result = base(input, *args, **kwargs)
+            out = _broadcast_batch_names(names, _names_of(args[0]))
+            return _carry(input, result, _axis_names=out, _coords={})
+        dim = None
+        if "dim" in kwargs:
+            dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+        elif args:
+            dim = _resolve_dims(names, args[0])
+            args = (dim,) + args[1:]
+        result = base(input, *args, **kwargs)
+        if isinstance(result, Tensor):
+            return _reduce_names(input, result, dim)  # scalar (no dim)
+        return _rebuild(result, lambda m: _reduce_names(input, m, dim))
+
+    XTensor.overrides(base)(_op)
+
+
+for _minmax_name in ("max", "min"):
+    _make_minmax(_minmax_name)
+
+
+@XTensor.overrides(_torch_func("median"))
+def _(input: XTensor, *args, **kwargs) -> tx.Any:
+    names = input.names
+    dim = None
+    if "dim" in kwargs:
+        dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+    elif args:
+        dim = _resolve_dims(names, args[0])
+        args = (dim,) + args[1:]
+    result = torch.median(input, *args, **kwargs)
+    if isinstance(result, Tensor):
+        return _reduce_names(input, result, dim)  # median(x) -> scalar
+    return _rebuild(result, lambda m: _reduce_names(input, m, dim))
+
+
+def _make_dim_default_reduction(name: str, dim_pos: int) -> None:
+    """`mode` / `kthvalue`: always return a `(values, indices)` namedtuple
+    reducing one dim (default -1). `dim_pos` is where `dim` sits positionally
+    (0 for `mode`, 1 for `kthvalue`, which takes `k` first)."""
+    base = _torch_func(name)
+
+    def _op(input: XTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        if "dim" in kwargs:
+            dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+        elif len(args) > dim_pos:
+            dim = _resolve_dims(names, args[dim_pos])
+            args = args[:dim_pos] + (dim,) + args[dim_pos + 1 :]
+        else:
+            dim = -1  # torch's default reduced dim
+        result = base(input, *args, **kwargs)
+        return _rebuild(result, lambda m: _reduce_names(input, m, dim))
+
+    XTensor.overrides(base)(_op)
+
+
+_make_dim_default_reduction("mode", 0)
+_make_dim_default_reduction("kthvalue", 1)
+
+
+def _make_sorting(name: str, k_arg: bool) -> None:
+    """`sort` (rank- and size-preserving) / `topk` (keeps rank, resizes the
+    sorted dim). Both return a `(values, indices)` namedtuple; the sorted dim's
+    labels no longer match positions, so its coordinates are dropped."""
+    base = _torch_func(name)
+    dim_pos = 1 if k_arg else 0
+
+    def _op(input: XTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        if "dim" in kwargs:
+            dim = kwargs["dim"] = _resolve_axis(names, kwargs["dim"])
+        elif len(args) > dim_pos:
+            dim = _resolve_axis(names, args[dim_pos])
+            args = args[:dim_pos] + (dim,) + args[dim_pos + 1 :]
+        else:
+            dim = -1
+        result = base(input, *args, **kwargs)
+        coords = dict(input.coords)
+        coords.pop(names[dim % input.ndim], None)
+        return _rebuild(result, lambda m: _carry(input, m, _coords=coords))
+
+    XTensor.overrides(base)(_op)
+
+
+_make_sorting("sort", k_arg=False)
+_make_sorting("topk", k_arg=True)
+
+
 # ======================================================================
 #
 #                       S L I C E   /   S P L I T
