@@ -712,8 +712,9 @@ def test_cat_reconciles_axis_names():
     out = torch.cat([a, b], 0)
     assert out.names == ("r", "c")
     assert out.shape == (6, 3)
-    # a name is usable for the dim
-    assert torch.cat([a, b], "r").names == ("r", "c")
+    # (name-as-dim is not offered for `cat`: it has no method form, and the
+    # functional form rejects a non-int dim at the C dispatcher on newer
+    # PyTorch before `__torch_function__` runs.)
 
 
 def test_cat_conflicting_names_become_unnamed():
