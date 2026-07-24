@@ -4,22 +4,20 @@ import pytest
 import torch
 
 from fiery.namedtensors import (
+    NamedMatrix,
     NamedTensor,
-    TensorWithNamedIndices,
+    NamedVector,
 )
-from fiery.namedtensors._tensors import (
-    _get_sequence_depth,
-    _prepare_index_names,
-    _slice_names,
-    _slice_names_nd,
-)
+from fiery.namedtensors._tensors import _slice_labels, _torch_func
+
+# ----------------------------------------------------------------------
+# dimensions (names)
+# ----------------------------------------------------------------------
 
 
 def test_named_tensor_getitem_with_new_axis_keeps_names():
     x = NamedTensor(torch.arange(6).reshape(2, 3), names=("row", "col"))
-
     y = x[:, None, 1:]
-
     assert isinstance(y, NamedTensor)
     assert y.shape == (2, 1, 2)
     assert y.names == ("row", None, "col")
@@ -30,28 +28,22 @@ def test_named_tensor_T_reverses_axis_order_and_names():
         torch.arange(24).reshape(2, 3, 4),
         names=("batch", "height", "width"),
     )
-
     y = x.T
-
     assert y.shape == (4, 3, 2)
     assert y.names == ("width", "height", "batch")
 
 
 def test_unsqueeze_and_squeeze_round_trip_axis_names():
     x = NamedTensor(torch.arange(6).reshape(2, 3), names=("row", "col"))
-
     y = x.unsqueeze(1)
     z = y.squeeze(1)
-
     assert y.names == ("row", None, "col")
     assert z.names == ("row", "col")
 
 
 def test_squeeze_without_dim_removes_singleton_axis_names():
     x = NamedTensor(torch.ones(1, 3, 1), names=("left", "mid", "right"))
-
     y = x.squeeze()
-
     assert y.shape == (3,)
     assert y.names == ("mid",)
 
@@ -61,160 +53,8 @@ def test_view_keeps_matching_leading_name_and_marks_reshaped_axes_unnamed():
         torch.arange(24).reshape(2, 3, 4),
         names=("batch", "height", "width"),
     )
-
-    y = x.view(2, 12)
-    z = x.view(2, -1)
-
-    assert y.names == ("batch", None)
-    assert z.names == ("batch", None)
-
-
-def test_tensor_with_named_indices_attribute_lookup_by_name_path():
-    x = TensorWithNamedIndices(
-        torch.arange(6).reshape(2, 3),
-        names=("row", "col"),
-        index_names=(("r0", "r1"), ("c0", "c1", "c2")),
-        index_dims=(0, 1),
-    )
-
-    out = x.r1.c2
-
-    assert out.ndim == 0
-    assert out.item() == 5
-
-
-def test_tensor_with_named_indices_unknown_attribute_raises():
-    x = TensorWithNamedIndices(
-        torch.arange(6).reshape(2, 3),
-        names=("row", "col"),
-        index_names=(("r0", "r1"), ("c0", "c1", "c2")),
-        index_dims=(0, 1),
-    )
-
-    with pytest.raises(AttributeError, match="No such index"):
-        _ = x.r2
-
-
-def test_tensor_with_named_indices_getitem_updates_index_metadata():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        names=("batch", "channel", "coord"),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
-    )
-
-    y = x[:, 1, :2]
-
-    assert y.shape == (2, 2)
-    assert y.index_names == (("x", "y"),)
-    assert y.index_dims == (1,)
-
-
-def test_tensor_with_named_indices_index_selects_positions_and_updates_meta():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        names=("batch", "channel", "coord"),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
-    )
-
-    # Select channel c1 (position 1 on dim 1); dim 2 kept in full.
-    y = x.index(1, dims=1)
-
-    assert y.shape == (2, 4)
-    # Dim 1 was consumed; the coord index moves up to dim 1.
-    assert y.index_names == (("x", "y", "z", "t"),)
-    assert y.index_dims == (1,)
-    assert torch.equal(y, x.as_subclass(torch.Tensor)[:, 1, :])
-
-
-def test_tensor_with_named_indices_index_mismatched_lengths_raises():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        names=("batch", "channel", "coord"),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
-    )
-
-    with pytest.raises(ValueError, match="does not match"):
-        x.index((0, 1), dims=(1,))
-
-
-def test_get_sequence_depth_handles_nested_sequences_and_strings():
-    assert _get_sequence_depth(["a", "b"]) == 1
-    assert _get_sequence_depth([["a"], ["b", "c"]]) == 2
-    assert _get_sequence_depth("abc") == 0
-    assert _get_sequence_depth([]) == 1
-
-
-def test_prepare_index_names_unrolls_ellipsis_and_normalizes_dims():
-    names, dims = _prepare_index_names(
-        index_names=(("r0", "r1"), (...,)),
-        index_dims=(0, 2),
-        shape=(2, 3, 4),
-    )
-
-    assert names[0] == ("r0", "r1")
-    assert names[1] == (None, None, None, None)
-    assert dims == (0, 2)
-
-
-def test_prepare_index_names_rejects_invalid_depth():
-    with pytest.raises(ValueError, match="Invalid index_names"):
-        _prepare_index_names(index_names=123, index_dims=0, shape=(2, 3))
-
-
-def test_slice_names_supports_int_slice_bool_and_advanced_indices():
-    names = ("a", "b", "c", "d")
-
-    assert _slice_names(names, 1) == "b"
-    assert _slice_names(names, slice(1, 3)) == ("b", "c")
-    assert _slice_names(names, [True, False, True, False]) == ("a", "c")
-    assert _slice_names(names, [3, 0]) == ("d", "a")
-
-
-def test_slice_names_nd_tracks_output_dims_after_slicing():
-    index_names = (("c0", "c1", "c2"), ("x", "y", "z", "t"))
-    index_dims = (1, 2)
-    slicer = (slice(None), 1, [0, 2])
-
-    new_names, new_dims = _slice_names_nd(index_names, index_dims, slicer)
-
-    assert new_names == (("x", "z"),)
-    assert new_dims == (1,)
-
-
-# --- regression tests for the fiery port -----------------------------------
-
-
-def test_index_metadata_survives_auto_wrapped_ops():
-    # `clone()` has no name-aware override, so it is auto-wrapped by
-    # __torch_function__; the index metadata must be propagated onto the
-    # result rather than dropped.
-    x = TensorWithNamedIndices(
-        torch.arange(6).reshape(2, 3),
-        names=("row", "col"),
-        index_names=(("c0", "c1", "c2"),),
-        index_dims=(1,),
-    )
-
-    y = x.clone()
-
-    assert y.index_names == (("c0", "c1", "c2"),)
-    assert y.index_dims == (1,)
-
-
-def test_tensor_without_named_indices_is_still_sliceable():
-    x = TensorWithNamedIndices(torch.arange(6).reshape(2, 3))
-    # Strip metadata, then slice: must not raise and must report no names.
-    bare = x.clone()
-    bare.__dict__.pop("_index_names", None)
-    bare.__dict__.pop("_index_dims", None)
-
-    y = bare[:, 1]
-
-    assert y.index_names is None
-    assert y.shape == (2,)
+    assert x.view(2, 12).names == ("batch", None)
+    assert x.view(2, -1).names == ("batch", None)
 
 
 def test_view_preserves_trailing_unchanged_axis_name():
@@ -222,60 +62,133 @@ def test_view_preserves_trailing_unchanged_axis_name():
         torch.arange(24).reshape(2, 3, 4),
         names=("batch", "height", "width"),
     )
-
     y = x.view(6, 4)
-
     assert y.shape == (6, 4)
     assert y.names == (None, "width")
 
 
-def test_torch_func_returns_none_for_missing_op():
-    from fiery.namedtensors._tensors import _torch_func
-
-    assert _torch_func("permute") is not None
-    assert _torch_func("this_op_does_not_exist_anywhere") is None
+# ----------------------------------------------------------------------
+# coordinates (labels keyed by dim name)
+# ----------------------------------------------------------------------
 
 
-def test_tensor_with_named_indices_permute_reorders_index_dims():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
+def _labelled():
+    return NamedTensor(
+        torch.arange(12).reshape(3, 4),
+        names=("row", "col"),
+        coords={"col": ("w", "x", "y", "z")},
     )
 
-    y = x.permute(2, 0, 1)
 
-    assert y.shape == (4, 2, 3)
-    # dim 1 -> position 2, dim 2 -> position 0; per-axis names unchanged.
-    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
-    assert y.index_dims == (2, 0)
-    assert torch.equal(y, x.as_subclass(torch.Tensor).permute(2, 0, 1))
+def test_coords_are_keyed_by_dim_name():
+    x = _labelled()
+    assert x.coords == {"col": ("w", "x", "y", "z")}
 
 
-def test_tensor_with_named_indices_index_select_reslices_axis_names():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
+def test_coords_constructor_requires_a_named_axis():
+    with pytest.raises(ValueError, match="no axis named"):
+        NamedTensor(torch.zeros(2, 3), names=("row", None), coords={"col": ()})
+
+
+def test_coords_constructor_checks_label_count():
+    with pytest.raises(ValueError, match="labels for size"):
+        NamedTensor(
+            torch.zeros(2, 3), names=("row", "col"), coords={"col": ("a", "b")}
+        )
+
+
+def test_coords_ellipsis_fills_unlabelled_positions():
+    x = NamedTensor(
+        torch.zeros(2, 4),
+        names=("row", "col"),
+        coords={"col": ("a", ..., "z")},
     )
+    assert x.coords["col"] == ("a", None, None, "z")
 
-    # Method form is the documented API and carries the metadata correctly.
-    # (Functional `torch.index_select(x, ...)` does not yet propagate
-    # override-set metadata through the outer dispatch -- tracked in the
-    # roadmap under unifying propagation.)
-    y = x.index_select(2, torch.tensor([0, 2]))
 
-    assert y.shape == (2, 3, 2)
-    # Only the dim-2 axis names are re-sliced; dim-1 names untouched.
-    assert y.index_names == (("c0", "c1", "c2"), ("x", "z"))
-    assert y.index_dims == (1, 2)
+def test_sel_selects_a_labelled_position_and_drops_the_axis():
+    x = _labelled()
+    y = x.sel(col="y")
+    assert y.shape == (3,)
+    assert y.names == ("row",)
+    assert torch.equal(y, x.as_subclass(torch.Tensor)[:, 2])
+
+
+def test_sel_with_a_list_of_labels_keeps_the_axis():
+    x = _labelled()
+    y = x.sel(col=["w", "y"])
+    assert y.shape == (3, 2)
+    assert y.coords == {"col": ("w", "y")}
+
+
+def test_sel_unknown_label_or_dim_raises():
+    x = _labelled()
+    with pytest.raises(ValueError, match="no label 'nope'"):
+        x.sel(col="nope")
+    with pytest.raises(ValueError, match="no coordinates"):
+        x.sel(row="anything")
+
+
+def test_isel_selects_by_integer_position_along_a_named_dim():
+    x = _labelled()
+    assert x.isel(col=slice(1, 3)).coords == {"col": ("x", "y")}
+    assert x.isel(row=0).names == ("col",)
+
+
+def test_attribute_access_selects_a_single_label():
+    x = _labelled()
+    out = x.x  # label "x" on dim "col"
+    assert out.shape == (3,)
+    assert torch.equal(out, x.as_subclass(torch.Tensor)[:, 1])
+
+
+def test_attribute_access_can_be_chained_across_dims():
+    x = NamedTensor(
+        torch.arange(6).reshape(2, 3),
+        names=("row", "col"),
+        coords={"row": ("r0", "r1"), "col": ("c0", "c1", "c2")},
+    )
+    out = x.r1.c2
+    assert out.ndim == 0
+    assert out.item() == 5
+
+
+def test_attribute_access_unknown_label_raises():
+    with pytest.raises(AttributeError):
+        _ = _labelled().nope
+
+
+def test_getitem_slices_the_labels_of_kept_axes():
+    x = _labelled()
+    y = x[:, 1:3]
+    assert y.coords == {"col": ("x", "y")}
+    # an integer index drops the axis and its labels
+    assert x[:, 1].coords == {}
+
+
+def test_permute_carries_coordinates_unchanged():
+    x = _labelled()
+    assert x.T.coords == {"col": ("w", "x", "y", "z")}
+    assert x.transpose(0, 1).coords == {"col": ("w", "x", "y", "z")}
+
+
+def test_coords_getter_hides_stale_metadata():
+    # A shape-changing op without coordinate handling must not report labels
+    # of the wrong length; the getter guards this.
+    x = _labelled()
+    y = x.clone()
+    y._coords = {"col": ("w", "x")}  # wrong length for size-4 axis
+    assert y.coords == {}
+
+
+# ----------------------------------------------------------------------
+# renaming
+# ----------------------------------------------------------------------
 
 
 def test_rename_out_of_place_sets_and_clears_names():
     x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
-
     y = x.rename("a", "b")
-
     assert y.names == ("a", "b")
     assert x.names == ("row", "col")  # out-of-place: x unchanged
     assert y.rename(None).names == (None, None)
@@ -285,7 +198,6 @@ def test_rename_out_of_place_sets_and_clears_names():
 
 def test_rename_by_map():
     x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
-
     assert x.rename(col="C").names == ("row", "C")
     with pytest.raises(ValueError, match="no axis named"):
         x.rename(nope="X")
@@ -293,31 +205,30 @@ def test_rename_by_map():
 
 def test_rename_in_place_returns_self():
     x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
-
     out = x.rename_("a", "b")
-
     assert out is x
     assert x.names == ("a", "b")
 
 
-def test_rename_preserves_index_metadata():
-    x = TensorWithNamedIndices(
-        torch.arange(6).reshape(2, 3),
-        index_names=(("c0", "c1", "c2"),),
-        index_dims=(1,),
-    )
+def test_rename_moves_coordinates_to_the_new_dim_name():
+    x = _labelled()
+    # positional rename sets the whole name tuple; the labelled axis keeps its
+    # name here, so the coordinates stay under "col"
+    y = x.rename("batch", "col")
+    assert y.coords == {"col": ("w", "x", "y", "z")}
+    # renaming the labelled axis moves its coordinates to the new name
+    z = x.rename(col="feature")
+    assert z.coords == {"feature": ("w", "x", "y", "z")}
 
-    y = x.rename("row", "col")
 
-    assert y.names == ("row", "col")
-    assert y.index_names == (("c0", "c1", "c2"),)
-    assert y.index_dims == (1,)
+# ----------------------------------------------------------------------
+# builtin named-tensor API, re-implemented self-managed
+# ----------------------------------------------------------------------
 
 
 def test_refine_names_only_names_unnamed_axes():
     x = NamedTensor(torch.zeros(2, 3, 4), names=(None, "b", None))
     assert x.refine_names("a", "b", "c").names == ("a", "b", "c")
-    # a given None keeps the current name
     assert x.refine_names(None, "b", None).names == (None, "b", None)
 
 
@@ -337,7 +248,6 @@ def test_align_to_permutes_into_the_given_order():
     y = x.align_to("c", "a", "b")
     assert y.names == ("c", "a", "b")
     assert y.shape == (4, 2, 3)
-    # `...` stands for the remaining axes, in order
     assert x.align_to(..., "a").names == ("b", "c", "a")
 
 
@@ -366,7 +276,14 @@ def test_names_do_not_use_builtin_named_tensors():
     assert torch.Tensor.names.__get__(x) == (None, None)
 
 
-# --- R4: functional-form (torch.op(x, ...)) metadata parity -----------------
+def test_torch_func_returns_none_for_missing_op():
+    assert _torch_func("permute") is not None
+    assert _torch_func("this_op_does_not_exist_anywhere") is None
+
+
+# ----------------------------------------------------------------------
+# functional-form (torch.op(x, ...)) metadata parity
+# ----------------------------------------------------------------------
 
 
 @pytest.mark.skipif(
@@ -382,44 +299,28 @@ def test_functional_permute_matches_method_form():
 def test_functional_unsqueeze_squeeze_match_method_form():
     x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
     assert torch.unsqueeze(x, 1).names == ("row", None, "col")
-
     y = NamedTensor(torch.zeros(1, 3), names=("s", "col"))
     assert torch.squeeze(y).names == ("col",)
-
-
-def test_functional_index_select_matches_method_form():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
-    )
-    idx = torch.tensor([0, 2])
-    func = torch.index_select(x, 2, idx)
-    meth = x.index_select(2, idx)
-    assert (
-        func.index_names
-        == meth.index_names
-        == (("c0", "c1", "c2"), ("x", "z"))
-    )
-    assert func.index_dims == meth.index_dims == (1, 2)
 
 
 @pytest.mark.skipif(
     not hasattr(torch, "permute"),
     reason="torch.permute (functional) was added in torch 1.9",
 )
-def test_functional_permute_carries_index_dims():
-    x = TensorWithNamedIndices(
+def test_functional_permute_carries_coordinates():
+    x = NamedTensor(
         torch.arange(24).reshape(2, 3, 4),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
     y = torch.permute(x, (2, 0, 1))
-    assert y.index_dims == (2, 0)
-    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
+    assert y.names == ("c", "a", "b")
+    assert y.coords == {"c": ("w", "x", "y", "z")}
 
 
-# --- reshape / reorder op family --------------------------------------------
+# ----------------------------------------------------------------------
+# reshape / reorder op family (axis names)
+# ----------------------------------------------------------------------
 
 
 def test_transpose_family_swaps_axis_names():
@@ -427,7 +328,6 @@ def test_transpose_family_swaps_axis_names():
     assert x.transpose(0, 2).names == ("c", "b", "a")
     assert x.swapaxes(0, 1).names == ("b", "a", "c")
     assert x.swapdims(1, 2).names == ("a", "c", "b")
-    # functional form matches the method form
     assert torch.transpose(x, 0, 2).names == ("c", "b", "a")
 
 
@@ -452,17 +352,6 @@ def test_reshape_uses_same_name_rule_as_view():
     assert torch.reshape(x, (2, -1)).names == ("b", None)
 
 
-def test_transpose_carries_index_dims():
-    x = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
-        index_dims=(1, 2),
-    )
-    y = x.transpose(1, 2)
-    assert y.index_dims == (2, 1)
-    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
-
-
 # ----------------------------------------------------------------------
 # name-as-dim: a name may stand in for an integer `dim=`
 # ----------------------------------------------------------------------
@@ -473,7 +362,6 @@ def test_permute_accepts_axis_names():
     y = x.permute("c", "a", "b")
     assert y.names == ("c", "a", "b")
     assert y.shape == (4, 2, 3)
-    # matches the equivalent integer permutation
     assert y.shape == x.permute(2, 0, 1).shape
 
 
@@ -501,19 +389,16 @@ def test_squeeze_accepts_axis_name():
     assert y.shape == (2, 3)
 
 
-def test_index_select_accepts_axis_name():
-    x = TensorWithNamedIndices(
+def test_index_select_accepts_axis_name_and_slices_coords():
+    x = NamedTensor(
         torch.arange(24).reshape(2, 3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(2,),
+        names=("batch", "feat", "chan"),
+        coords={"chan": ("w", "x", "y", "z")},
     )
-    x.names = ("batch", "feat", "chan")
-    # select along the axis addressed by its (axis) name
     by_name = x.index_select("chan", torch.tensor([0, 2]))
     by_int = x.index_select(2, torch.tensor([0, 2]))
     assert by_name.shape == by_int.shape == (2, 3, 2)
-    # the sliced index names match, whichever form was used
-    assert by_name.index_names == by_int.index_names == (("w", "y"),)
+    assert by_name.coords == by_int.coords == {"chan": ("w", "y")}
 
 
 def test_name_as_dim_unknown_name_raises():
@@ -523,7 +408,7 @@ def test_name_as_dim_unknown_name_raises():
 
 
 # ----------------------------------------------------------------------
-# reductions: drop / keep the reduced axis' name, accept a name for `dim`
+# reductions: drop / keep the reduced axis' name (and its coords)
 # ----------------------------------------------------------------------
 
 
@@ -569,22 +454,21 @@ def test_negative_dim_reduction():
     assert x.sum(dim=-1).names == ("a", "b")
 
 
-def test_reduction_drops_named_index_metadata_for_reduced_axis():
-    t = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
-        index_dims=(1, 2),
+def test_reduction_drops_coordinates_of_the_reduced_axis():
+    x = NamedTensor(
+        torch.arange(24.0).reshape(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")},
     )
-    t.names = ("a", "b", "c")
-    # reduce the axis carrying the first index group
-    r = t.sum(dim="b")
+    # reduce the axis carrying the "b" labels
+    r = x.sum(dim="b")
     assert r.names == ("a", "c")
-    assert r.index_dims == (1,)
-    assert r.index_names == (("w", "x", "y", "z"),)
-    # reduce a plain axis: index dims shift down, index names unchanged
-    r2 = t.sum(dim="a")
-    assert r2.index_dims == (0, 1)
-    assert r2.index_names == (("p", "q", "r"), ("w", "x", "y", "z"))
+    assert r.coords == {"c": ("w", "x", "y", "z")}
+    # reduce a plain axis: the other labels are unchanged
+    assert x.sum(dim="a").coords == {
+        "b": ("p", "q", "r"),
+        "c": ("w", "x", "y", "z"),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -596,7 +480,6 @@ def test_select_drops_axis_name():
     x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
     assert x.select("b", 0).names == ("a", "c")
     assert x.select("b", 0).shape == (2, 4)
-    # functional form matches
     assert torch.select(x, 1, 0).names == ("a", "c")
 
 
@@ -632,46 +515,45 @@ def test_flip_and_roll_preserve_names():
     assert x.roll(2).names == ("a", "b", "c")  # flattened roll
 
 
-def test_select_drops_named_index_group():
-    t = TensorWithNamedIndices(
+def test_select_drops_the_coordinates_of_the_selected_axis():
+    x = NamedTensor(
         torch.arange(24).reshape(2, 3, 4),
-        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
-        index_dims=(1, 2),
+        names=("a", "b", "c"),
+        coords={"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")},
     )
-    # select the axis carrying the first index group
-    r = t.select(1, 0)
-    assert r.index_dims == (1,)
-    assert r.index_names == (("w", "x", "y", "z"),)
+    r = x.select("b", 0)
+    assert r.names == ("a", "c")
+    assert r.coords == {"c": ("w", "x", "y", "z")}
 
 
-def test_narrow_and_split_slice_named_indices():
-    t = TensorWithNamedIndices(
+def test_narrow_and_split_slice_coordinates():
+    x = NamedTensor(
         torch.arange(24).reshape(2, 3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(2,),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
-    assert t.narrow(2, 1, 2).index_names == (("x", "y"),)
-    parts = t.split(2, dim=2)
-    assert [p.index_names for p in parts] == [(("w", "x"),), (("y", "z"),)]
+    assert x.narrow("c", 1, 2).coords == {"c": ("x", "y")}
+    parts = x.split(2, dim="c")
+    assert [p.coords for p in parts] == [{"c": ("w", "x")}, {"c": ("y", "z")}]
 
 
-def test_flip_reverses_named_indices_on_flipped_axis():
-    t = TensorWithNamedIndices(
-        torch.arange(24).reshape(2, 3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(2,),
-    )
-    assert t.flip(2).index_names == (("z", "y", "x", "w"),)
-
-
-def test_roll_rolls_named_indices_on_rolled_axis():
-    t = TensorWithNamedIndices(
+def test_flip_reverses_coordinates_on_the_flipped_axis():
+    x = NamedTensor(
         torch.arange(12).reshape(3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(1,),
+        names=("a", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
-    # a right shift of 1 moves each index name one step forward (cyclically)
-    assert t.roll(1, dims=1).index_names == (("z", "w", "x", "y"),)
+    assert x.flip("c").coords == {"c": ("z", "y", "x", "w")}
+
+
+def test_roll_rolls_coordinates_on_the_rolled_axis():
+    x = NamedTensor(
+        torch.arange(12).reshape(3, 4),
+        names=("a", "c"),
+        coords={"c": ("w", "x", "y", "z")},
+    )
+    # a right shift of 1 moves each label one step forward (cyclically)
+    assert x.roll(1, dims="c").coords == {"c": ("z", "w", "x", "y")}
 
 
 # ----------------------------------------------------------------------
@@ -693,8 +575,7 @@ def test_unflatten_marks_split_axes_unnamed():
     y = x.unflatten("a", (2, 3))
     assert y.names == (None, None, "b")
     assert y.shape == (2, 3, 4)
-    # a single-element split is a no-op and keeps the name
-    assert x.unflatten(0, (6,)).names == ("a", "b")
+    assert x.unflatten(0, (6,)).names == ("a", "b")  # single split = no-op
 
 
 def test_expand_and_broadcast_to_prepend_unnamed_axes():
@@ -710,36 +591,35 @@ def test_diagonal_drops_the_two_axes_and_appends_unnamed():
     assert y.shape == (4, 3)
 
 
-def test_flatten_drops_named_index_metadata_in_merged_range():
-    t = TensorWithNamedIndices(
+def test_flatten_drops_coordinates_in_the_merged_range():
+    x = NamedTensor(
         torch.arange(24).reshape(2, 3, 4),
-        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
-        index_dims=(1, 2),
+        names=("a", "b", "c"),
+        coords={"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")},
     )
-    # both named axes are inside the merged range -> index metadata dropped
-    assert t.flatten(1, 2).index_names is None
+    assert x.flatten(1, 2).coords == {}  # both labelled axes merged away
 
 
-def test_expand_shifts_named_index_dims():
-    e = TensorWithNamedIndices(
+def test_expand_keeps_coordinates_of_existing_axes():
+    x = NamedTensor(
         torch.zeros(3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(1,),
+        names=("b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
-    out = e.expand(2, 3, 4)
-    assert out.index_dims == (2,)
-    assert out.index_names == (("w", "x", "y", "z"),)
+    out = x.expand(2, 3, 4)
+    assert out.names == (None, "b", "c")
+    assert out.coords == {"c": ("w", "x", "y", "z")}
 
 
-def test_diagonal_shifts_surviving_named_index_dim():
-    d = TensorWithNamedIndices(
+def test_diagonal_keeps_the_surviving_axis_coordinates():
+    x = NamedTensor(
         torch.zeros(3, 3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(2,),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
-    out = d.diagonal(0, 0, 1)
-    assert out.index_dims == (0,)
-    assert out.index_names == (("w", "x", "y", "z"),)
+    out = x.diagonal(0, 0, 1)
+    assert out.names == ("c", None)
+    assert out.coords == {"c": ("w", "x", "y", "z")}
 
 
 # ----------------------------------------------------------------------
@@ -753,9 +633,6 @@ def test_cat_reconciles_axis_names():
     out = torch.cat([a, b], 0)
     assert out.names == ("r", "c")
     assert out.shape == (6, 3)
-    # (name-as-dim is not offered for `cat`: it has no method form, and the
-    # functional form rejects a non-int dim at the C dispatcher on newer
-    # PyTorch before `__torch_function__` runs.)
 
 
 def test_cat_conflicting_names_become_unnamed():
@@ -771,34 +648,33 @@ def test_stack_inserts_an_unnamed_axis():
     assert torch.stack([a, a], 0).shape == (2, 2, 3)
 
 
-def test_cat_concatenates_index_names_along_index_axis():
-    t1 = TensorWithNamedIndices(
-        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+def test_cat_concatenates_coordinates_along_the_join_axis():
+    a = NamedTensor(
+        torch.zeros(2, 2), names=("r", "c"), coords={"c": ("p", "q")}
     )
-    t2 = TensorWithNamedIndices(
-        torch.zeros(2, 3), index_names=(("r", "s", "u"),), index_dims=(1,)
+    b = NamedTensor(
+        torch.zeros(2, 3), names=("r", "c"), coords={"c": ("x", "y", "z")}
     )
-    out = torch.cat([t1, t2], 1)
-    assert out.index_names == (("p", "q", "r", "s", "u"),)
-    assert out.index_dims == (1,)
+    out = torch.cat([a, b], 1)
+    assert out.coords == {"c": ("p", "q", "x", "y", "z")}
     assert out.shape == (2, 5)
 
 
-def test_cat_with_a_plain_operand_drops_index_metadata():
-    t1 = TensorWithNamedIndices(
-        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+def test_cat_with_a_plain_operand_drops_coordinates():
+    a = NamedTensor(
+        torch.zeros(2, 2), names=("r", "c"), coords={"c": ("p", "q")}
     )
-    out = torch.cat([t1, NamedTensor(torch.zeros(2, 2))], 1)
-    assert out.index_names is None
+    out = torch.cat([a, NamedTensor(torch.zeros(2, 2))], 1)
+    assert out.coords == {}
 
 
-def test_stack_shifts_index_dims_past_the_new_axis():
-    t1 = TensorWithNamedIndices(
-        torch.zeros(2, 2), index_names=(("p", "q"),), index_dims=(1,)
+def test_stack_keeps_the_agreed_coordinates():
+    a = NamedTensor(
+        torch.zeros(2, 2), names=("r", "c"), coords={"c": ("p", "q")}
     )
-    out = torch.stack([t1, t1], 0)
-    assert out.index_dims == (2,)
-    assert out.index_names == (("p", "q"),)
+    out = torch.stack([a, a], 0)
+    assert out.names == (None, "r", "c")
+    assert out.coords == {"c": ("p", "q")}
     assert out.shape == (2, 2, 2)
 
 
@@ -812,8 +688,7 @@ def test_matmul_2d_names_rows_from_a_cols_from_b():
     b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
     assert torch.matmul(a, b).names == ("m", "n")
     assert torch.mm(a, b).names == ("m", "n")
-    # the `@` operator dispatches with `Tensor.matmul`, still name-aware
-    assert (a @ b).names == ("m", "n")
+    assert (a @ b).names == ("m", "n")  # `@` dispatches Tensor.matmul
     assert (a @ b).shape == (2, 4)
 
 
@@ -821,9 +696,9 @@ def test_matmul_vector_cases():
     a = NamedTensor(torch.zeros(2, 3), names=("m", "k"))
     b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
     v = NamedTensor(torch.zeros(3), names=("k",))
-    assert (v @ b).names == ("n",)  # 1-D @ 2-D
-    assert (a @ v).names == ("m",)  # 2-D @ 1-D
-    assert (v @ v).names == ()  # dot product -> scalar
+    assert (v @ b).names == ("n",)
+    assert (a @ v).names == ("m",)
+    assert (v @ v).names == ()
 
 
 def test_matmul_batches_broadcast_and_reconcile_names():
@@ -831,10 +706,8 @@ def test_matmul_batches_broadcast_and_reconcile_names():
     b = NamedTensor(torch.zeros(5, 3, 4), names=("b", "k", "n"))
     assert torch.bmm(a, b).names == ("b", "m", "n")
     assert (a @ b).names == ("b", "m", "n")
-    # broadcasting a 2-D operand keeps the batch name
     flat = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
     assert (a @ flat).names == ("b", "m", "n")
-    # a conflicting batch name becomes unnamed
     a2 = NamedTensor(torch.zeros(5, 2, 3), names=("x", "m", "k"))
     assert (a2 @ b).names == (None, "m", "n")
 
@@ -846,14 +719,14 @@ def test_matmul_with_one_plain_operand():
     assert torch.matmul(a, torch.zeros(3, 4)).names == ("m", None)
 
 
-def test_matmul_drops_named_index_metadata():
-    t = TensorWithNamedIndices(
-        torch.zeros(2, 3), index_names=(("a", "b", "c"),), index_dims=(1,)
+def test_matmul_drops_coordinates():
+    a = NamedTensor(
+        torch.zeros(2, 3), names=("m", "k"), coords={"k": ("a", "b", "c")}
     )
     b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
-    out = t @ b
-    assert out.index_names is None
-    assert out.names == (None, "n")
+    out = a @ b
+    assert out.coords == {}
+    assert out.names == ("m", "n")
 
 
 # ----------------------------------------------------------------------
@@ -875,33 +748,31 @@ def test_gather_keeps_axis_names_and_accepts_name_dim():
 def test_take_along_dim_keeps_names():
     x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
     idx = torch.zeros(2, 3, 1, dtype=torch.long)
-    # name-as-dim on the method form
     assert x.take_along_dim(idx, "c").names == ("a", "b", "c")
 
 
-def test_scatter_preserves_names_and_index_metadata():
-    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+def test_scatter_preserves_names_and_coordinates():
+    x = NamedTensor(
+        torch.arange(24).reshape(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
+    )
     idx = torch.zeros(2, 3, 4, dtype=torch.long)
     src = torch.zeros(2, 3, 4, dtype=x.dtype)
-    assert x.scatter("c", idx, src).names == ("a", "b", "c")
-    t = TensorWithNamedIndices(
-        torch.arange(12).reshape(3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(1,),
-    )
-    zeros = torch.zeros(3, 4, dtype=torch.long)
-    # positions are unchanged, so the index layout survives a scatter
-    assert t.scatter(0, zeros, zeros).index_names == (("w", "x", "y", "z"),)
+    out = x.scatter("c", idx, src)
+    assert out.names == ("a", "b", "c")
+    # positions/sizes are unchanged, so the labels survive
+    assert out.coords == {"c": ("w", "x", "y", "z")}
 
 
-def test_gather_drops_named_index_metadata():
-    t = TensorWithNamedIndices(
+def test_gather_drops_the_gathered_axis_coordinates():
+    x = NamedTensor(
         torch.arange(12).reshape(3, 4),
-        index_names=(("w", "x", "y", "z"),),
-        index_dims=(1,),
+        names=("a", "c"),
+        coords={"c": ("w", "x", "y", "z")},
     )
     idx = torch.zeros(3, 4, dtype=torch.long)
-    assert t.gather(1, idx).index_names is None
+    assert x.gather("c", idx).coords == {}
 
 
 def _where_supports_scalar():
@@ -916,7 +787,6 @@ def test_where_reconciles_operand_names():
     p = NamedTensor(torch.zeros(2, 3), names=("r", "k"))
     q = NamedTensor(torch.ones(2, 3), names=("r", "k"))
     assert torch.where(p > 0.5, p, q).names == ("r", "k")
-    # a conflicting name becomes unnamed
     conflicting = NamedTensor(torch.ones(2, 3), names=("r", "z"))
     assert torch.where(p > 0.5, p, conflicting).names == ("r", None)
 
@@ -927,7 +797,6 @@ def test_where_reconciles_operand_names():
 )
 def test_where_with_a_scalar_operand_keeps_the_tensor_names():
     p = NamedTensor(torch.zeros(2, 3), names=("r", "k"))
-    # a scalar operand contributes no names
     assert torch.where(p > 0.5, p, 0.0).names == ("r", "k")
 
 
@@ -936,3 +805,39 @@ def test_masked_select_collapses_to_one_unnamed_axis():
     out = torch.masked_select(x, x > 5)
     assert out.names == (None,)
     assert out.ndim == 1
+
+
+# ----------------------------------------------------------------------
+# internal helpers
+# ----------------------------------------------------------------------
+
+
+def test_slice_labels_supports_int_slice_bool_and_advanced_indices():
+    labels = ("a", "b", "c", "d")
+    assert _slice_labels(labels, 1) == ("b",)
+    assert _slice_labels(labels, slice(1, 3)) == ("b", "c")
+    assert _slice_labels(labels, [True, False, True, False]) == ("a", "c")
+    assert _slice_labels(labels, [3, 0]) == ("d", "a")
+
+
+# ----------------------------------------------------------------------
+# convenience specializations
+# ----------------------------------------------------------------------
+
+
+def test_named_vector_names_and_labels_the_channel_axis():
+    v = NamedVector(torch.zeros(2, 3), channels=("x", "y", "z"))
+    assert v.names == (None, "channel")
+    assert v.channels == ("x", "y", "z")
+    assert v.coords == {"channel": ("x", "y", "z")}
+    assert v.sel(channel="y").shape == (2,)
+    assert torch.equal(v.y, v.as_subclass(torch.Tensor)[:, 1])
+
+
+def test_named_matrix_labels_row_and_col():
+    m = NamedMatrix(
+        torch.zeros(2, 3), channels=(("r0", "r1"), ("c0", "c1", "c2"))
+    )
+    assert m.names == ("row", "col")
+    assert m.channels == (("r0", "r1"), ("c0", "c1", "c2"))
+    assert m.sel(row="r1", col="c2").ndim == 0
