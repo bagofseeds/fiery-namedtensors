@@ -1,11 +1,11 @@
-"""Tests for fiery.namedtensors._arrayutils."""
+"""Tests for fiery.xtensor._arrayutils."""
 
 # dependencies
 import pytest
 import torch
 
 # fiery
-from fiery.namedtensors._arrayutils import (
+from fiery.xtensor._arrayutils import (
     _count_output_axes,
     _map_axes,
     _map_axes_inverse,

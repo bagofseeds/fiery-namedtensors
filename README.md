@@ -1,31 +1,31 @@
-# fiery-namedtensors
+# fiery-xtensor
 
 Named dimensions and coordinate labels for PyTorch tensors.
 
-`fiery.namedtensors` is a [`fiery`](https://bagofseeds.github.io/fiery/) match
-that makes **names a first-class citizen** of `torch.Tensor`. Its `NamedTensor`
-is an [xarray](https://docs.xarray.dev)-like `DataArray` over a *live* torch
-tensor: it carries named **dimensions** and, optionally, per-dimension
-coordinate **labels** through operations — so you can refer to a dimension by
-name and a position along it by label, without leaving torch (autograd, device,
-and `__torch_function__` all keep working).
+`fiery.xtensor` is a [`fiery`](https://bagofseeds.github.io/fiery/) match
+that makes **names a first-class citizen** of `torch.Tensor`. Its `XTensor`
+(also spelled `xtensor`) is an [xarray](https://docs.xarray.dev)-like
+`DataArray` over a *live* torch tensor: it carries named **dimensions** and,
+optionally, per-dimension coordinate **labels** through operations — so you can
+refer to a dimension by name and a position along it by label, without leaving
+torch (autograd, device, and `__torch_function__` all keep working).
 
 ## Classes
 
 | Class | What it adds |
 | ----- | ------------ |
-| `NamedTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
-| `NamedVector` / `NamedMatrix` | Convenience specializations that pre-name and label their channel axes (`"channel"`; `"row"`/`"col"`). |
+| `XTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
+| `XVector` / `XMatrix` | Convenience specializations that pre-name and label their channel axes (`"channel"`; `"row"`/`"col"`). |
 
 Labels are keyed by dimension **name**, so — like xarray — they simply follow
 their dimension through a `permute`/`transpose`/reduction with no bookkeeping.
 
 ```python
 import torch
-from fiery.namedtensors import NamedTensor
+from fiery.xtensor import XTensor
 
 # Named dimensions
-x = NamedTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
+x = XTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
 x.T.names                       # ('width', 'height', 'batch')
 x.unsqueeze(1).names            # ('batch', None, 'height', 'width')
 
@@ -35,7 +35,7 @@ x.sum(dim="batch").names               # ('height', 'width')
 x.mean(dim="height", keepdim=True).names  # ('batch', 'height', 'width')
 
 # Coordinate labels: address positions along a dimension by label
-m = NamedTensor(
+m = XTensor(
     torch.arange(6).reshape(2, 3),
     names=("row", "channel"),
     coords={"channel": ("x", "y", "z")},
@@ -95,7 +95,7 @@ at all (`torch.cat`, `torch.stack`) take an integer `dim` only.
 ## Installation
 
 ```sh
-pip install fiery-namedtensors
+pip install fiery-xtensor
 ```
 
 ## Status

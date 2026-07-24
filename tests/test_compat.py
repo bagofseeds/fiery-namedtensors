@@ -1,9 +1,9 @@
-"""Tests for fiery.namedtensors._compat."""
+"""Tests for fiery.xtensor._compat."""
 
 import pytest
 import torch
 
-from fiery.namedtensors._compat import (
+from fiery.xtensor._compat import (
     EllipsisType,
     broadcast_shape,
     torch_func,

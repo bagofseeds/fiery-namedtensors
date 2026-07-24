@@ -15,11 +15,11 @@ import typing_extensions as tx
 from torch import Tensor
 
 # internals
-from fiery.namedtensors import _arrayutils as arrayutils
-from fiery.namedtensors._arrayutils import SmartSlicerT, _SmartSlicerT
-from fiery.namedtensors._compat import EllipsisType
-from fiery.namedtensors._compat import no_dispatch as _no_dispatch
-from fiery.namedtensors._compat import torch_func as _torch_func
+from fiery.xtensor import _arrayutils as arrayutils
+from fiery.xtensor._arrayutils import SmartSlicerT, _SmartSlicerT
+from fiery.xtensor._compat import EllipsisType
+from fiery.xtensor._compat import no_dispatch as _no_dispatch
+from fiery.xtensor._compat import torch_func as _torch_func
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription).
 # The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
@@ -59,7 +59,7 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     """
     Resolve an axis specifier, or a sequence of them, to integer position(s).
 
-    Wraps [`_resolve_axis`][fiery.namedtensors._tensors._resolve_axis]: a
+    Wraps [`_resolve_axis`][fiery.xtensor._tensors._resolve_axis]: a
     single specifier is resolved directly; a `tuple`/`list` is resolved
     element-wise (keeping its container type); anything else passes through.
     """
@@ -114,7 +114,7 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         Decorator to register a function override.
 
         `func` may be `None` (e.g. when resolved through
-        [`torch_func`][fiery.namedtensors._compat.torch_func] for an op
+        [`torch_func`][fiery.xtensor._compat.torch_func] for an op
         that does not exist in the running PyTorch version); in that case
         the override is silently skipped so that we never overload a
         function that is missing from this PyTorch build.
@@ -183,7 +183,7 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
 # ======================================================================
 
 
-class NamedTensor(ExtendedTensor):
+class XTensor(ExtendedTensor):
     """
     A tensor with named dimensions and, optionally, per-dimension coordinate
     **labels** -- an [xarray](https://docs.xarray.dev)-like `DataArray` over a
@@ -524,7 +524,7 @@ class NamedTensor(ExtendedTensor):
         """
         return self.permute(*self._align_order(names))
 
-    def align_as(self, other: NamedTensor) -> tx.Self:
+    def align_as(self, other: XTensor) -> tx.Self:
         """
         Return a view aligned to `other`'s named axes.
 
@@ -555,12 +555,12 @@ class NamedTensor(ExtendedTensor):
 
 def _coords_of(tensor: tx.Any) -> dict:
     """The coordinate labels of `tensor` (empty for a plain / non tensor)."""
-    if isinstance(tensor, NamedTensor):
+    if isinstance(tensor, XTensor):
         return tensor.coords
     return {}
 
 
-def _coords_for(input: NamedTensor, result_names: tuple) -> dict:
+def _coords_for(input: XTensor, result_names: tuple) -> dict:
     """
     Keep only the coordinates whose dimension survives (by name) into
     `result_names`. Merged / split / removed axes lose their name and so drop
@@ -607,8 +607,8 @@ def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:
 # `_carry`; no per-op coordinate bookkeeping is needed.
 
 
-@NamedTensor.overrides(_torch_func("permute"))
-def _(input: NamedTensor, *dims: int | str | tuple) -> NamedTensor:
+@XTensor.overrides(_torch_func("permute"))
+def _(input: XTensor, *dims: int | str | tuple) -> XTensor:
     if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
         dims = tuple(dims[0])
     names = input.names
@@ -617,18 +617,16 @@ def _(input: NamedTensor, *dims: int | str | tuple) -> NamedTensor:
     return _carry(input, result, _axis_names=tuple(names[dim] for dim in dims))
 
 
-@NamedTensor.overrides(_torch_func("unsqueeze"))
-def _(input: NamedTensor, dim: int) -> NamedTensor:
+@XTensor.overrides(_torch_func("unsqueeze"))
+def _(input: XTensor, dim: int) -> XTensor:
     names = list(input.names)
     result = Tensor.unsqueeze(input, dim)
     names.insert(dim, None)
     return _carry(input, result, _axis_names=tuple(names))
 
 
-@NamedTensor.overrides(_torch_func("squeeze"))
-def _(
-    input: NamedTensor, dim: int | str | tx.Sequence | None = None
-) -> NamedTensor:
+@XTensor.overrides(_torch_func("squeeze"))
+def _(input: XTensor, dim: int | str | tx.Sequence | None = None) -> XTensor:
     ndim = input.ndim
     names = list(input.names)
     if dim is not None:
@@ -652,7 +650,7 @@ def _(
     )
 
 
-def _normalize_shape(input: NamedTensor, shape: tuple) -> list:
+def _normalize_shape(input: XTensor, shape: tuple) -> list:
     """Flatten a `(shape,)` tuple arg and resolve a single `-1` entry."""
     if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)):
         shape = tuple(shape[0])
@@ -696,21 +694,21 @@ def _reshape_names(
     return tuple(new_names)
 
 
-def _reshape(input: NamedTensor, result: Tensor, shape: list) -> NamedTensor:
+def _reshape(input: XTensor, result: Tensor, shape: list) -> XTensor:
     names = _reshape_names(list(input.shape), list(input.names), shape)
     return _carry(
         input, result, _axis_names=names, _coords=_coords_for(input, names)
     )
 
 
-@NamedTensor.overrides(_torch_func("view"))
-def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
+@XTensor.overrides(_torch_func("view"))
+def _(input: XTensor, *shape: int | tuple[int, ...]) -> XTensor:
     shape = _normalize_shape(input, shape)
     return _reshape(input, Tensor.view(input, *shape), shape)
 
 
-@NamedTensor.overrides(_torch_func("reshape"))
-def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
+@XTensor.overrides(_torch_func("reshape"))
+def _(input: XTensor, *shape: int | tuple[int, ...]) -> XTensor:
     shape = _normalize_shape(input, shape)
     return _reshape(input, Tensor.reshape(input, shape), shape)
 
@@ -737,37 +735,37 @@ def _movedim_order(
     return order
 
 
-@NamedTensor.overrides(_torch_func("transpose"))
-def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+@XTensor.overrides(_torch_func("transpose"))
+def _(input: XTensor, dim0: int | str, dim1: int | str) -> XTensor:
     names = input.names
     dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
-@NamedTensor.overrides(_torch_func("swapaxes"))
-def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+@XTensor.overrides(_torch_func("swapaxes"))
+def _(input: XTensor, dim0: int | str, dim1: int | str) -> XTensor:
     names = input.names
     dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
-@NamedTensor.overrides(_torch_func("swapdims"))
-def _(input: NamedTensor, dim0: int | str, dim1: int | str) -> NamedTensor:
+@XTensor.overrides(_torch_func("swapdims"))
+def _(input: XTensor, dim0: int | str, dim1: int | str) -> XTensor:
     names = input.names
     dim0, dim1 = _resolve_axis(names, dim0), _resolve_axis(names, dim1)
     return input.permute(*_transpose_order(input.ndim, dim0, dim1))
 
 
-@NamedTensor.overrides(_torch_func("movedim"))
-def _(input: NamedTensor, source, destination) -> NamedTensor:
+@XTensor.overrides(_torch_func("movedim"))
+def _(input: XTensor, source, destination) -> XTensor:
     # `source` names an existing axis (resolvable); `destination` is a target
     # position, so it stays an integer.
     source = _resolve_dims(input.names, source)
     return input.permute(*_movedim_order(input.ndim, source, destination))
 
 
-@NamedTensor.overrides(_torch_func("moveaxis"))
-def _(input: NamedTensor, source, destination) -> NamedTensor:
+@XTensor.overrides(_torch_func("moveaxis"))
+def _(input: XTensor, source, destination) -> XTensor:
     source = _resolve_dims(input.names, source)
     return input.permute(*_movedim_order(input.ndim, source, destination))
 
@@ -775,18 +773,18 @@ def _(input: NamedTensor, source, destination) -> NamedTensor:
 # -- rank-changing reshape --------------------------------------------------
 
 
-def _prepend_axes_meta(input: NamedTensor, n_new: int) -> dict:
+def _prepend_axes_meta(input: XTensor, n_new: int) -> dict:
     """`_carry` overrides for an op that prepends `n_new` unnamed axes."""
     # Existing axes keep their name and size, so their coordinates stay valid.
     return {"_axis_names": (None,) * n_new + input.names}
 
 
-@NamedTensor.overrides(_torch_func("flatten"))
+@XTensor.overrides(_torch_func("flatten"))
 def _(
-    input: NamedTensor,
+    input: XTensor,
     start_dim: int | str = 0,
     end_dim: int | str = -1,
-) -> NamedTensor:
+) -> XTensor:
     ndim = input.ndim
     start = _resolve_axis(input.names, start_dim) % ndim
     end = _resolve_axis(input.names, end_dim) % ndim
@@ -800,8 +798,8 @@ def _(
     )
 
 
-@NamedTensor.overrides(_torch_func("unflatten"))
-def _(input: NamedTensor, dim: int | str, sizes: tx.Sequence) -> NamedTensor:
+@XTensor.overrides(_torch_func("unflatten"))
+def _(input: XTensor, dim: int | str, sizes: tx.Sequence) -> XTensor:
     ndim = input.ndim
     dim = _resolve_axis(input.names, dim) % ndim
     result = Tensor.unflatten(input, dim, sizes)
@@ -814,8 +812,8 @@ def _(input: NamedTensor, dim: int | str, sizes: tx.Sequence) -> NamedTensor:
     )
 
 
-@NamedTensor.overrides(_torch_func("expand"))
-def _(input: NamedTensor, *sizes: int | tx.Sequence) -> NamedTensor:
+@XTensor.overrides(_torch_func("expand"))
+def _(input: XTensor, *sizes: int | tx.Sequence) -> XTensor:
     if len(sizes) == 1 and isinstance(sizes[0], (tuple, list, torch.Size)):
         sizes = tuple(sizes[0])
     result = Tensor.expand(input, *sizes)
@@ -824,21 +822,21 @@ def _(input: NamedTensor, *sizes: int | tx.Sequence) -> NamedTensor:
     )
 
 
-@NamedTensor.overrides(_torch_func("broadcast_to"))
-def _(input: NamedTensor, shape: tx.Sequence) -> NamedTensor:
+@XTensor.overrides(_torch_func("broadcast_to"))
+def _(input: XTensor, shape: tx.Sequence) -> XTensor:
     result = Tensor.broadcast_to(input, shape)
     return _carry(
         input, result, **_prepend_axes_meta(input, result.ndim - input.ndim)
     )
 
 
-@NamedTensor.overrides(_torch_func("diagonal"))
+@XTensor.overrides(_torch_func("diagonal"))
 def _(
-    input: NamedTensor,
+    input: XTensor,
     offset: int = 0,
     dim1: int | str = 0,
     dim2: int | str = 1,
-) -> NamedTensor:
+) -> XTensor:
     d1 = _resolve_axis(input.names, dim1) % input.ndim
     d2 = _resolve_axis(input.names, dim2) % input.ndim
     result = Tensor.diagonal(input, offset, d1, d2)
@@ -864,7 +862,7 @@ def _(
 # remove the reduced axes or keep them as size-1.
 
 
-def _reduce_names(input: NamedTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
+def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     """Recompute the name metadata for a dimension-reducing op's result."""
     if not isinstance(result, Tensor):
         # e.g. a (values, indices) namedtuple: left to a bespoke override.
@@ -889,7 +887,7 @@ def _make_reduction(name: str) -> None:
     """Register a name-aware override for a dimension-reducing torch op."""
     base = _torch_func(name)
 
-    def _reduction(input: NamedTensor, *args, **kwargs) -> tx.Any:
+    def _reduction(input: XTensor, *args, **kwargs) -> tx.Any:
         names = input.names
         # Resolve a name given for `dim` (positional arg 0 or keyword) and
         # remember the (resolved) value so the output names can be computed.
@@ -903,7 +901,7 @@ def _make_reduction(name: str) -> None:
         return _reduce_names(input, base(input, *args, **kwargs), dim)
 
     # `overrides(None)` is a no-op, so ops missing from this torch are skipped.
-    NamedTensor.overrides(base)(_reduction)
+    XTensor.overrides(base)(_reduction)
 
 
 # `dim` is the first optional positional for each; version-guarded via
@@ -938,35 +936,35 @@ for _reduction_name in _REDUCTIONS:
 # `flip` / `roll` keep the rank, but reorder the labels of the axes they touch.
 
 
-def _slice_axis(input: NamedTensor, dim: int, index: tx.Any) -> tx.Any:
+def _slice_axis(input: XTensor, dim: int, index: tx.Any) -> tx.Any:
     """Index a single axis (`input[:, ..., index, ..., :]`)."""
     slicer = [slice(None)] * input.ndim
     slicer[dim] = index
     return input[tuple(slicer)]
 
 
-@NamedTensor.overrides(_torch_func("narrow"))
-def _(input: NamedTensor, dim: int | str, start: int, length: int) -> tx.Any:
+@XTensor.overrides(_torch_func("narrow"))
+def _(input: XTensor, dim: int | str, start: int, length: int) -> tx.Any:
     dim = _resolve_axis(input.names, dim) % input.ndim
     return _slice_axis(input, dim, slice(start, start + length))
 
 
-@NamedTensor.overrides(_torch_func("select"))
-def _(input: NamedTensor, dim: int | str, index: int) -> tx.Any:
+@XTensor.overrides(_torch_func("select"))
+def _(input: XTensor, dim: int | str, index: int) -> tx.Any:
     # `select(dim, i)` == `x[..., i, ...]`: the integer index drops the axis.
     dim = _resolve_axis(input.names, dim) % input.ndim
     return _slice_axis(input, dim, index)
 
 
-@NamedTensor.overrides(_torch_func("unbind"))
-def _(input: NamedTensor, dim: int | str = 0) -> tuple:
+@XTensor.overrides(_torch_func("unbind"))
+def _(input: XTensor, dim: int | str = 0) -> tuple:
     dim = _resolve_axis(input.names, dim) % input.ndim
     return tuple(_slice_axis(input, dim, i) for i in range(input.shape[dim]))
 
 
-@NamedTensor.overrides(_torch_func("split"))
+@XTensor.overrides(_torch_func("split"))
 def _(
-    input: NamedTensor,
+    input: XTensor,
     split_size_or_sections: int | tx.Sequence,
     dim: int | str = 0,
 ) -> tuple:
@@ -986,8 +984,8 @@ def _(
     return tuple(pieces)
 
 
-@NamedTensor.overrides(_torch_func("chunk"))
-def _(input: NamedTensor, chunks: int, dim: int | str = 0) -> tuple:
+@XTensor.overrides(_torch_func("chunk"))
+def _(input: XTensor, chunks: int, dim: int | str = 0) -> tuple:
     dim = _resolve_axis(input.names, dim) % input.ndim
     size = input.shape[dim]
     # `torch.chunk(n, chunks)` splits into pieces of ceil(n / chunks); the
@@ -996,8 +994,8 @@ def _(input: NamedTensor, chunks: int, dim: int | str = 0) -> tuple:
     return input.split(step, dim)
 
 
-@NamedTensor.overrides(_torch_func("flip"))
-def _(input: NamedTensor, dims: int | str | tx.Sequence) -> NamedTensor:
+@XTensor.overrides(_torch_func("flip"))
+def _(input: XTensor, dims: int | str | tx.Sequence) -> XTensor:
     resolved = _resolve_dims(input.names, dims)
     dlist = resolved if isinstance(resolved, (tuple, list)) else (resolved,)
     result = Tensor.flip(input, list(dlist))
@@ -1011,12 +1009,12 @@ def _(input: NamedTensor, dims: int | str | tx.Sequence) -> NamedTensor:
     return _carry(input, result, _coords=coords)
 
 
-@NamedTensor.overrides(_torch_func("roll"))
+@XTensor.overrides(_torch_func("roll"))
 def _(
-    input: NamedTensor,
+    input: XTensor,
     shifts: int | tx.Sequence,
     dims: int | str | tx.Sequence | None = None,
-) -> NamedTensor:
+) -> XTensor:
     if dims is None:
         # Flattened roll: axis names are unchanged, but per-axis label order
         # can no longer be tracked, so coordinates are dropped.
@@ -1068,8 +1066,8 @@ def _reconcile_axis_names(all_names: list, ndim: int) -> tuple:
     return tuple(reconciled)
 
 
-@NamedTensor.overrides(_torch_func("cat"))
-def _(tensors: tx.Sequence, dim: int | str = 0, **kwargs) -> NamedTensor:
+@XTensor.overrides(_torch_func("cat"))
+def _(tensors: tx.Sequence, dim: int | str = 0, **kwargs) -> XTensor:
     tensors = list(tensors)
     ref = tensors[0]
     dim = _resolve_axis(ref.names, dim) % ref.ndim
@@ -1092,8 +1090,8 @@ def _(tensors: tx.Sequence, dim: int | str = 0, **kwargs) -> NamedTensor:
     return _carry(ref, result, _axis_names=names, _coords=coords)
 
 
-@NamedTensor.overrides(_torch_func("stack"))
-def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> NamedTensor:
+@XTensor.overrides(_torch_func("stack"))
+def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> XTensor:
     tensors = list(tensors)
     ref = tensors[0]
     out_ndim = ref.ndim + 1
@@ -1123,10 +1121,10 @@ def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> NamedTensor:
 
 def _names_of(tensor: tx.Any) -> tuple:
     """
-    Axis names of a tensor: its `names` if a `NamedTensor`, all-`None` for a
+    Axis names of a tensor: its `names` if a `XTensor`, all-`None` for a
     plain tensor, and `()` for a non-tensor (e.g. a Python scalar operand).
     """
-    if isinstance(tensor, NamedTensor):
+    if isinstance(tensor, XTensor):
         return tensor.names
     if isinstance(tensor, Tensor):
         return (None,) * tensor.ndim
@@ -1163,7 +1161,7 @@ def _make_matmul(name: str) -> None:
 
     def _matmul(input: tx.Any, other: tx.Any, **kwargs) -> tx.Any:
         result = base(input, other, **kwargs)
-        ref = input if isinstance(input, NamedTensor) else other
+        ref = input if isinstance(input, XTensor) else other
         # The contraction invalidates the coordinate layout.
         return _carry(
             ref,
@@ -1172,13 +1170,13 @@ def _make_matmul(name: str) -> None:
             _coords={},
         )
 
-    registered = NamedTensor.overrides(base)(_matmul)
+    registered = XTensor.overrides(base)(_matmul)
     # The `@` operator dispatches with the *bound method* `Tensor.matmul`,
     # a different callable than the function `torch.matmul`, so register the
     # method too (when it exists and differs) or `a @ b` would miss it.
     method = getattr(Tensor, name, None)
     if base is not None and method is not None and method is not base:
-        NamedTensor._OVERRIDES[method] = registered
+        XTensor._OVERRIDES[method] = registered
 
 
 for _matmul_name in ("matmul", "mm", "bmm"):
@@ -1192,8 +1190,8 @@ for _matmul_name in ("matmul", "mm", "bmm"):
 # ======================================================================
 
 
-@NamedTensor.overrides(_torch_func("index_select"))
-def _(input: NamedTensor, dim: int | str, index: Tensor) -> tx.Any:
+@XTensor.overrides(_torch_func("index_select"))
+def _(input: XTensor, dim: int | str, index: Tensor) -> tx.Any:
     dim = _resolve_axis(input.names, dim) % input.ndim
     result = Tensor.index_select(input, dim, index)
     # Rank is unchanged; only the selected axis' labels are re-sliced.
@@ -1204,8 +1202,8 @@ def _(input: NamedTensor, dim: int | str, index: Tensor) -> tx.Any:
     return _carry(input, result, _coords=coords)
 
 
-@NamedTensor.overrides(_torch_func("gather"))
-def _(input: NamedTensor, dim: int | str, index: Tensor, **kwargs) -> tx.Any:
+@XTensor.overrides(_torch_func("gather"))
+def _(input: XTensor, dim: int | str, index: Tensor, **kwargs) -> tx.Any:
     dim = _resolve_axis(input.names, dim) % input.ndim
     result = torch.gather(input, dim, index, **kwargs)
     # Rank (and each axis' name) is preserved; the gathered positions change
@@ -1215,9 +1213,9 @@ def _(input: NamedTensor, dim: int | str, index: Tensor, **kwargs) -> tx.Any:
     return _carry(input, result, _coords=coords)
 
 
-@NamedTensor.overrides(_torch_func("take_along_dim"))
+@XTensor.overrides(_torch_func("take_along_dim"))
 def _(
-    input: NamedTensor, indices: Tensor, dim: int | str = None, **kwargs
+    input: XTensor, indices: Tensor, dim: int | str = None, **kwargs
 ) -> tx.Any:
     result = torch.take_along_dim(
         input, indices, _resolve_axis(input.names, dim), **kwargs
@@ -1232,9 +1230,9 @@ def _(
     return _carry(input, result, _coords=coords)
 
 
-@NamedTensor.overrides(_torch_func("scatter"))
+@XTensor.overrides(_torch_func("scatter"))
 def _(
-    input: NamedTensor, dim: int | str, index: Tensor, *args, **kwargs
+    input: XTensor, dim: int | str, index: Tensor, *args, **kwargs
 ) -> tx.Any:
     dim = _resolve_axis(input.names, dim)
     result = torch.scatter(input, dim, index, *args, **kwargs)
@@ -1242,16 +1240,16 @@ def _(
     return _carry(input, result)
 
 
-@NamedTensor.overrides(_torch_func("scatter_add"))
+@XTensor.overrides(_torch_func("scatter_add"))
 def _(
-    input: NamedTensor, dim: int | str, index: Tensor, src: Tensor, **kwargs
+    input: XTensor, dim: int | str, index: Tensor, src: Tensor, **kwargs
 ) -> tx.Any:
     dim = _resolve_axis(input.names, dim)
     result = torch.scatter_add(input, dim, index, src, **kwargs)
     return _carry(input, result)
 
 
-@NamedTensor.overrides(_torch_func("where"))
+@XTensor.overrides(_torch_func("where"))
 def _(condition: Tensor, *args) -> tx.Any:
     # The 1-argument form `torch.where(cond)` returns indices (like nonzero);
     # leave it to the generic path.
@@ -1265,17 +1263,17 @@ def _(condition: Tensor, *args) -> tx.Any:
         _names_of(y),
     )
     ref = next(
-        (t for t in (condition, x, y) if isinstance(t, NamedTensor)),
+        (t for t in (condition, x, y) if isinstance(t, XTensor)),
         condition,
     )
     # Reconciling coordinates across broadcast operands is out of scope; drop.
     return _carry(ref, result, _axis_names=names, _coords={})
 
 
-@NamedTensor.overrides(_torch_func("masked_select"))
-def _(input: NamedTensor, mask: Tensor, **kwargs) -> tx.Any:
+@XTensor.overrides(_torch_func("masked_select"))
+def _(input: XTensor, mask: Tensor, **kwargs) -> tx.Any:
     result = torch.masked_select(input, mask, **kwargs)
-    ref = input if isinstance(input, NamedTensor) else mask
+    ref = input if isinstance(input, XTensor) else mask
     # The result is 1-D and its length is data-dependent: a single unnamed
     # axis, and no coordinates.
     return _carry(ref, result, _axis_names=(None,), _coords={})
@@ -1288,11 +1286,11 @@ def _(input: NamedTensor, mask: Tensor, **kwargs) -> tx.Any:
 # ======================================================================
 
 
-class NamedVector(NamedTensor):
+class XVector(XTensor):
     """
     A vector with a single labelled **channel** axis.
 
-    Convenience over `NamedTensor`: names one axis (default `"channel"`) and
+    Convenience over `XTensor`: names one axis (default `"channel"`) and
     labels it. `x.channels` reads those labels; `x.<label>` and
     `x.sel(channel=...)` select by them.
     """
@@ -1330,11 +1328,11 @@ class NamedVector(NamedTensor):
         self.coords = coords
 
 
-class NamedMatrix(NamedTensor):
+class XMatrix(XTensor):
     """
     A matrix with two labelled axes, `"row"` and `"col"`.
 
-    Convenience over `NamedTensor`, analogous to `NamedVector`.
+    Convenience over `XTensor`, analogous to `XVector`.
     """
 
     _ROW, _COL = "row", "col"

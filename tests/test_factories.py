@@ -2,8 +2,8 @@
 
 import torch
 
-from fiery.namedtensors import (
-    NamedTensor,
+from fiery.xtensor import (
+    XTensor,
     named_arange,
     named_eye,
     named_full,
@@ -14,7 +14,7 @@ from fiery.namedtensors import (
 
 def test_named_zeros_sets_names_and_returns_named_tensor():
     x = named_zeros(2, 3, names=("row", "col"))
-    assert isinstance(x, NamedTensor)
+    assert isinstance(x, XTensor)
     assert x.names == ("row", "col")
     assert x.shape == (2, 3)
 

@@ -9,7 +9,7 @@ import typing_extensions as tx
 from torch import Tensor
 
 # internals
-from fiery.namedtensors._compat import (
+from fiery.xtensor._compat import (
     EllipsisType,
     broadcast_shape,
 )
