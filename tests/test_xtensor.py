@@ -906,6 +906,137 @@ def test_matmul_drops_coordinates():
 
 
 # ----------------------------------------------------------------------
+# einsum / tensordot
+# ----------------------------------------------------------------------
+
+
+def test_einsum_explicit_equation_names_output_from_operands():
+    a = XTensor(torch.zeros(2, 3), names=("m", "k"))
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = torch.einsum("ij,jk->ik", a, b)
+    assert out.names == ("m", "n")
+    assert out.shape == (2, 4)
+
+
+def test_einsum_operands_as_a_single_list():
+    a = XTensor(torch.zeros(2, 3), names=("m", "k"))
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = torch.einsum("ij,jk->ik", [a, b])
+    assert out.names == ("m", "n")
+
+
+def test_einsum_batched_equation():
+    a = XTensor(torch.zeros(5, 2, 3), names=("b", "i", "j"))
+    b = XTensor(torch.zeros(5, 3, 4), names=("b", "j", "k"))
+    out = torch.einsum("bij,bjk->bik", a, b)
+    assert out.names == ("b", "i", "k")
+    assert out.shape == (5, 2, 4)
+
+
+def test_einsum_summed_axis_is_dropped_from_the_output():
+    a = XTensor(torch.zeros(2, 3), names=("row", "col"))
+    out = torch.einsum("ij->i", a)
+    assert out.names == ("row",)
+    assert out.shape == (2,)
+
+
+def test_einsum_implicit_output_matches_explicit():
+    a = XTensor(torch.zeros(2, 3), names=("m", "k"))
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    assert torch.einsum("ij,jk", a, b).names == ("m", "n")
+
+
+def test_einsum_ellipsis_falls_back_to_unnamed():
+    a = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    b = XTensor(torch.zeros(2, 4, 5), names=("a", "c", "d"))
+    out = torch.einsum("...bc,...cd->...bd", a, b)
+    assert out.names == (None, None, None)
+    assert out.shape == (2, 3, 5)
+
+
+def test_einsum_with_a_plain_operand():
+    a = XTensor(torch.zeros(2, 3), names=("m", "k"))
+    out = torch.einsum("ij,jk->ik", a, torch.zeros(3, 4))
+    assert out.names == ("m", None)
+
+
+def test_einsum_drops_coordinates():
+    a = XTensor(
+        torch.zeros(2, 3), names=("m", "k"), coords={"k": ("x", "y", "z")}
+    )
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = torch.einsum("ij,jk->ik", a, b)
+    assert out.coords == {}
+
+
+def test_tensordot_int_dims_contracts_trailing_leading_axes():
+    a = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    b = XTensor(torch.zeros(3, 4, 5), names=("b", "c", "d"))
+    out = torch.tensordot(a, b, dims=2)
+    assert out.names == ("a", "d")
+    assert out.shape == (2, 5)
+
+
+def test_tensordot_dims_as_a_pair_of_axis_lists():
+    a = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    b = XTensor(torch.zeros(3, 4, 5), names=("b", "c", "d"))
+    out = torch.tensordot(a, b, dims=([1, 2], [0, 1]))
+    assert out.names == ("a", "d")
+    assert out.shape == (2, 5)
+
+
+def test_tensordot_with_a_plain_operand():
+    a = XTensor(torch.zeros(2, 3), names=("a", "k"))
+    out = torch.tensordot(a, torch.zeros(3, 4), dims=1)
+    assert out.names == ("a", None)
+    b = XTensor(torch.zeros(3, 2), names=("k", "a2"))
+    out2 = torch.tensordot(torch.zeros(2, 3), b, dims=1)
+    assert out2.names == (None, "a2")
+
+
+def test_tensordot_drops_coordinates():
+    a = XTensor(
+        torch.zeros(2, 3), names=("a", "k"), coords={"k": ("p", "q", "r")}
+    )
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = torch.tensordot(a, b, dims=1)
+    assert out.coords == {}
+    assert out.names == ("a", "n")
+
+
+def test_einsum_keeps_descriptors_of_surviving_axes_only():
+    # a preserved axis keeps its descriptor (type/…); a contracted one's
+    # descriptor is dropped with the axis — no leak onto the survivor.
+    a = XTensor(
+        torch.zeros(5, 2, 3),
+        names=[
+            {"name": "b", "type": "batch"},
+            "i",
+            {"name": "j", "type": "k"},
+        ],
+    )
+    b = XTensor(torch.zeros(5, 3, 4), names=("b", "j", "k"))
+    out = torch.einsum("bij,bjk->bik", a, b)
+    assert out.names == ("b", "i", "k")
+    assert out.axes == (
+        {"name": "b", "type": "batch"},
+        {"name": "i"},
+        {"name": "k"},
+    )
+
+
+def test_tensordot_keeps_descriptors_of_surviving_axes_only():
+    a = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "a", "type": "space"}, {"name": "k", "type": "chan"}],
+    )
+    b = XTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = torch.tensordot(a, b, dims=1)
+    assert out.names == ("a", "n")
+    assert out.axes == ({"name": "a", "type": "space"}, {"name": "n"})
+
+
+# ----------------------------------------------------------------------
 # gather / scatter / where / masked_select
 # ----------------------------------------------------------------------
 

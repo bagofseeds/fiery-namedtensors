@@ -1617,6 +1617,121 @@ for _matmul_name in ("matmul", "mm", "bmm"):
     _make_matmul(_matmul_name)
 
 
+# ---- einsum / tensordot ----------------------------------------------------
+#
+# Both contract axes across operands in a way that's driven by an equation
+# string (`einsum`) or explicit axis positions (`tensordot`), rather than by
+# position/broadcasting like `matmul`. Neither has a `Tensor` method form, so
+# (unlike `_make_matmul`) only the free function needs registering. A
+# contraction invalidates the coordinate layout, so both drop coords.
+
+
+def _einsum_output_names(
+    equation: str, operand_names: tx.Sequence[tuple], out_ndim: int
+) -> tuple:
+    """
+    Best-effort output axis names for `torch.einsum(equation, *operands)`.
+
+    Parses both the explicit (`"ij,jk->ik"`) and implicit (no `->`; the
+    output is whichever subscripts appear exactly once across all input
+    operands, sorted alphabetically) forms. For each output subscript, the
+    names of every operand axis bound to that subscript are reconciled via
+    `_reconcile_axis_names` (unique non-`None` agreed name, else `None`).
+
+    Falls back to an all-`None` tuple of length `out_ndim` for anything this
+    simple parser can't confidently handle -- most notably an ellipsis
+    (`"..."`, whose expanded rank depends on the operand shapes) -- so a
+    name-aware `einsum` never raises where a plain `torch.einsum` would not.
+    """
+    fallback = (None,) * out_ndim
+    if "." in equation:  # ellipsis ("...") -> width depends on operand shapes
+        return fallback
+
+    if "->" in equation:
+        parts = equation.split("->")
+        if len(parts) != 2:
+            return fallback
+        in_part, out_part = parts
+    else:
+        in_part, out_part = equation, None
+
+    in_subscripts = [s.strip() for s in in_part.split(",")]
+    if len(in_subscripts) != len(operand_names):
+        return fallback
+    for subscript, names in zip(in_subscripts, operand_names):
+        if len(subscript) != len(names):
+            return fallback
+        if subscript and not subscript.isalpha():
+            return fallback
+
+    if out_part is None:
+        counts: dict = {}
+        for subscript in in_subscripts:
+            for letter in subscript:
+                counts[letter] = counts.get(letter, 0) + 1
+        out_subscript = "".join(sorted(c for c, n in counts.items() if n == 1))
+    else:
+        out_subscript = out_part.strip()
+        if out_subscript and not out_subscript.isalpha():
+            return fallback
+
+    if len(out_subscript) != out_ndim:
+        return fallback
+
+    names_by_letter: dict = {}
+    for subscript, names in zip(in_subscripts, operand_names):
+        for letter, name in zip(subscript, names):
+            names_by_letter.setdefault(letter, []).append(name)
+
+    output_names = []
+    for letter in out_subscript:
+        matches = names_by_letter.get(letter, [])
+        reconciled = _reconcile_axis_names([(name,) for name in matches], 1)
+        output_names.append(reconciled[0])
+    return tuple(output_names)
+
+
+def _einsum_operands(args: tuple) -> list:
+    """
+    The operand tensors, whether passed as varargs (`einsum(eq, a, b)`) or
+    as the older single-list form (`einsum(eq, [a, b])`).
+    """
+    if len(args) == 1 and isinstance(args[0], (list, tuple)):
+        return list(args[0])
+    return list(args)
+
+
+@XTensor.overrides(_torch_func("einsum"))
+def _(equation: str, *operands: tx.Any, **kwargs) -> tx.Any:
+    flat = _einsum_operands(operands)
+    result = torch.einsum(equation, *flat, **kwargs)
+    ref = next((t for t in flat if isinstance(t, XTensor)), None)
+    if ref is None:
+        return result
+    names = _einsum_output_names(
+        equation, [_names_of(t) for t in flat], getattr(result, "ndim", 0)
+    )
+    return _carry(ref, result, _axis_names=names, _coords={})
+
+
+@XTensor.overrides(_torch_func("tensordot"))
+def _(a: tx.Any, b: tx.Any, dims: tx.Any = 2, **kwargs) -> tx.Any:
+    result = torch.tensordot(a, b, dims=dims, **kwargs)
+    ref = a if isinstance(a, XTensor) else b
+    a_names, b_names = _names_of(a), _names_of(b)
+    if isinstance(dims, int):
+        a_contracted = set(range(len(a_names) - dims, len(a_names)))
+        b_contracted = set(range(dims))
+    else:
+        a_dims, b_dims = dims
+        a_contracted = {d % len(a_names) for d in a_dims}
+        b_contracted = {d % len(b_names) for d in b_dims}
+    names = tuple(
+        n for i, n in enumerate(a_names) if i not in a_contracted
+    ) + tuple(n for i, n in enumerate(b_names) if i not in b_contracted)
+    return _carry(ref, result, _axis_names=names, _coords={})
+
+
 # ======================================================================
 #
 #                     G A T H E R   /   S C A T T E R
