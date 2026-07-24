@@ -20,6 +20,14 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   bookkeeping. A labelled dim must be named.
 - `XVector` / `XMatrix` — conveniences that pre-name+label their channel
   axes (`"channel"`; `"row"`/`"col"`).
+- **axis descriptors** (OME-NGFF-style, #39): a name may be given as a dict
+  `{"name": "x", "type": "space", "orientation": "left-to-right"}` instead of a
+  bare string. The extra fields (`type`/`unit`/`orientation`) live in
+  `_axis_meta`, **keyed by dim name** (so they follow the dim exactly like
+  coords). `.names` stays the bare view; `.axes` returns the full descriptors.
+  `flip` reverses a flipped axis' `orientation`; `rename` remaps meta keys.
+  (Descriptor-*query* resolution — `movedim({"type":"space"}, -1)` — is a
+  follow-up.)
 
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
