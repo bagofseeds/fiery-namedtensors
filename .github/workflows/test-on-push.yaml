@@ -1,0 +1,20 @@
+name: Test on push
+description: Test on push
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+      - tests/**
+      - pyproject.toml
+      - .github/workflows/test*.yaml
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test-matrix.yaml

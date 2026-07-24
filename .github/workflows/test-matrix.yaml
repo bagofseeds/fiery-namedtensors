@@ -1,0 +1,52 @@
+name: Run matrix of tests
+description: Run matrix of tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # CPU-only torch wheels; numpy pinned <2 where the torch build
+          # predates the numpy 2 C-ABI (older torch cannot use numpy>=2).
+          - python-version: "3.7"
+            os: "ubuntu-22.04"
+            pip-install: "torch==1.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.7"
+            os: "ubuntu-22.04"
+            pip-install: "torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.9"
+            os: "ubuntu-22.04"
+            pip-install: "torch==1.11.0+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.11"
+            os: "ubuntu-latest"
+            pip-install: "torch==2.0.1+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"
+          - python-version: "3.x"
+            os: "ubuntu-latest"
+            pip-install: "torch --index-url https://download.pytorch.org/whl/cpu"
+    uses: bagofseeds/actions/.github/workflows/test.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      python-version: ${{ matrix.python-version }}
+      os: ${{ matrix.os }}
+      requirements-file: tests/requirements.txt
+      pip-install: ${{ matrix.pip-install }}

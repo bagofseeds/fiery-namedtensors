@@ -1,0 +1,42 @@
+name: Lint and spellcheck
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  
+  ruff:
+    uses: bagofseeds/actions/.github/workflows/ruff.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      python-version: ${{ inputs.python-version }}
+
+  spellcheck:
+    uses: bagofseeds/actions/.github/workflows/codespell.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      python-version: ${{ inputs.python-version }}

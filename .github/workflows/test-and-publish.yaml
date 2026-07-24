@@ -1,0 +1,72 @@
+name: Test package and publish
+description: Test package and publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+      test:
+        description: Run tests
+        required: false
+        default: true
+        type: boolean
+      publish:
+        description: Publish
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - "none"
+          - "pypi"
+          - "test"
+          - "test+pypi"
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+      test:
+        description: Run tests
+        required: false
+        default: true
+        type: boolean
+      publish:
+        description: Publish
+        required: false
+        default: "none"
+        type: string
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+        type: string
+    secrets:
+      PYPI_TOKEN:
+        required: true
+      TEST_PYPI_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-publish:
+    uses: bagofseeds/actions/.github/workflows/test-and-publish.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      test: ${{ inputs.test }}
+      publish: ${{ inputs.publish }}
+      python-version: ${{ inputs.python-version }}
+    secrets:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      TEST_PYPI_TOKEN: ${{ secrets.TEST_PYPI_TOKEN }}

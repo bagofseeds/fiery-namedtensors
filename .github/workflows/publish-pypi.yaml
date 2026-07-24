@@ -1,0 +1,37 @@
+name: Publish to PyPI
+description: Publish to PyPI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+        type: string
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+      test:
+        description: Test PyPI
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      password:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish-pypi:
+    uses: bagofseeds/actions/.github/workflows/publish-pypi.yaml@main
+    with:
+      python-version: ${{ inputs.python-version }}
+      tag: ${{ inputs.tag }}
+      test: ${{ inputs.test }}
+    secrets:
+      password: ${{ secrets.password }}

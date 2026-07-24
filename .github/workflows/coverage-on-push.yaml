@@ -1,0 +1,21 @@
+name: Test with coverage on push
+description: Test with coverage on push
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+      - tests/**
+      - pyproject.toml
+      - .github/workflows/test*.yaml
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/coverage.yaml
+    secrets: inherit

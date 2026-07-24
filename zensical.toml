@@ -1,0 +1,109 @@
+[project]
+
+extra_css = ["stylesheets/extra.css"]
+
+nav = [
+  {"All the Matches" = "https://bagofseeds.github.io/fiery/"},
+  {"Fiery Things" = "index.md"},
+]
+
+# The site_name is shown in the page header and the browser window title
+#
+# Read more: https://zensical.org/docs/setup/basics/#site_name
+site_name = "fiery-things"
+
+site_description = "A template repository for fiery PyTorch matches."
+
+# The site_author attribute. This is used in the HTML head element.
+#
+# Read more: https://zensical.org/docs/setup/basics/#site_author
+site_author = "Yael Balbastre"
+
+site_url = "https://bagofseeds.github.io/fiery-things/"
+repo_url = "https://github.com/bagofseeds/fiery-things"
+repo_name = "bagofseeds/fiery-things"
+
+copyright = """
+Copyright &copy; 2026 The authors
+"""
+
+[project.theme]
+
+language = "en"
+
+features = [
+  "content.code.copy",
+  "content.code.select",
+  "navigation.indexes",
+]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to light mode"
+
+# ----------------------------------------------------------------------------
+# Logo & icons
+# ----------------------------------------------------------------------------
+[project.theme.icon]
+logo =  "material/fire"
+repo = "fontawesome/brands/github"
+
+# ----------------------------------------------------------------------------
+# mkdocstrings
+# ----------------------------------------------------------------------------
+[project.plugins.mkdocstrings.handlers.python]
+inventories = [
+  "https://docs.python.org/3/objects.inv",
+  "https://pytorch.org/docs/stable/objects.inv",
+]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "numpy"
+inherited_members = false
+show_source = false
+merge_init_into_class = true
+separate_signature = true
+members_order = "source"
+show_root_heading = true
+show_overloads = true
+overloads_only = true
+relative_crossrefs = true
+scoped_crossrefs = true
+show_if_no_docstring = false
+allow_inspection = true
+filters = "public"
+group_by_category = true
+show_category_heading = true
+modernize_annotations = true
+show_signature_annotations = true
+signature_crossrefs = true
+
+# ----------------------------------------------------------------------------
+# Markdown extras
+# ----------------------------------------------------------------------------
+[project.markdown_extensions.admonition]
+[project.markdown_extensions.attr_list]
+[project.markdown_extensions.pymdownx.highlight]
+anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+[project.markdown_extensions.pymdownx.inlinehilite]
+[project.markdown_extensions.pymdownx.snippets]
+[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.details]
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+[project.markdown_extensions.pymdownx.emoji]
+emoji_generator = "zensical.extensions.emoji.to_svg"
+emoji_index = "zensical.extensions.emoji.twemoji"
+[project.markdown_extensions.pymdownx.keys]
+[project.markdown_extensions.tables]
+[project.markdown_extensions.toc]
+toc_depth = 3

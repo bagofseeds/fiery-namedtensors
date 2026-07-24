@@ -1,0 +1,19 @@
+name: Publish to PyPI on release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-publish:
+    uses: ./.github/workflows/test-and-publish.yaml
+    with:
+      tag: ${{ github.ref }}
+      test: true
+      publish: test+pypi
+    secrets:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      TEST_PYPI_TOKEN: ${{ secrets.TEST_PYPI_TOKEN }}

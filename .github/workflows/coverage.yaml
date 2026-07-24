@@ -1,0 +1,43 @@
+name: Run tests with coverage
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+        type: string
+    secrets:
+      CODECOV_TOKEN: 
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: bagofseeds/actions/.github/workflows/coverage.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      python-version: ${{ inputs.python-version }}
+      requirements-file: tests/requirements.txt
+      codecov: true
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      

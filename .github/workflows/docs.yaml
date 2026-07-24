@@ -1,0 +1,78 @@
+name: Build and deploy docs with zensical
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+      requirements-file:
+        description: Path to docs requirements file
+        required: false
+        default: "docs/requirements.txt"
+      pip-install:
+        description: Pip dependencies to install
+        required: false
+        default: ""
+      build-command:
+        description: Command that builds docs into the Pages artifact directory
+        required: false
+        default: "zensical build --clean"
+      site-path:
+        description: Path of generated static site to publish
+        required: false
+        default: "site"
+
+  workflow_call:
+    inputs:
+      tag:
+        description: Commit / Branch / Tag / SHA to checkout
+        required: false
+        default: ""
+        type: string
+      python-version:
+        description: Python version
+        required: false
+        default: "3.x"
+        type: string
+      requirements-file:
+        description: Path to docs requirements file
+        required: false
+        default: "docs/requirements.txt"
+        type: string
+      pip-install:
+        description: Pip dependencies to install
+        required: false
+        default: ""
+        type: string
+      build-command:
+        description: Command that builds docs into the Pages artifact directory
+        required: false
+        default: "zensical build --clean"
+        type: string
+      site-path:
+        description: Path of generated static site to publish
+        required: false
+        default: "site"
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    uses: bagofseeds/actions/.github/workflows/docs.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+      python-version: ${{ inputs.python-version }}
+      requirements-file: ${{ inputs.requirements-file }}
+      pip-install: ${{ inputs.pip-install }}
+      build-command: ${{ inputs.build-command }}
+      site-path: ${{ inputs.site-path }}
