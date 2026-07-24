@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # stdlib
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 # dependencies
@@ -9,26 +8,11 @@ import torch
 import typing_extensions as tx
 from torch import Tensor
 
-# EllipsisType lives in `types` only since Python 3.10; fall back to the
-# concrete type of `...` on older interpreters. Re-exported for _tensors.py.
-try:
-    from types import EllipsisType
-except ImportError:  # Python < 3.10
-    EllipsisType = type(...)
-
-# torch.broadcast_shapes was added in torch 1.8; provide a small fallback so
-# the utilities work across a wider PyTorch range.
-try:
-    from torch import broadcast_shapes
-except ImportError:  # torch < 1.8
-
-    def broadcast_shapes(*shapes):  # noqa: ANN001, ANN201
-        return tuple(
-            torch.broadcast_tensors(
-                *[torch.empty(s, device="meta") for s in shapes]
-            )[0].shape
-        )
-
+# internals
+from fiery.namedtensors._compat import (
+    EllipsisType,
+    broadcast_shapes,
+)
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription)
 _SlicerT = tx.Union[int, slice, EllipsisType, None]
@@ -47,7 +31,7 @@ def _is_basic_index(value: tx.Any) -> bool:
 def _is_boolean_index(value: tx.Any) -> bool:
     if torch.is_tensor(value):
         return value.dtype == torch.bool
-    elif isinstance(value, Sequence) and not isinstance(value, str):
+    elif isinstance(value, tx.Sequence) and not isinstance(value, str):
         return all(isinstance(v, bool) for v in value)
     return False
 
@@ -55,7 +39,7 @@ def _is_boolean_index(value: tx.Any) -> bool:
 def _is_advanced_index(value: tx.Any) -> bool:
     if torch.is_tensor(value):
         return value.dtype == torch.long
-    elif isinstance(value, Sequence) and not isinstance(value, str):
+    elif isinstance(value, tx.Sequence) and not isinstance(value, str):
         return all(isinstance(v, int) for v in value)
     return False
 
@@ -89,7 +73,7 @@ def _count_input_axes(values: SmartSlicerT) -> int:
             else:
                 count += 1
 
-        elif isinstance(value, (int, slice, Sequence)):
+        elif isinstance(value, (int, slice, tx.Sequence)):
             count += 1
 
         else:
@@ -126,7 +110,7 @@ def _count_output_axes(values: SmartSlicerT) -> int:
             else:
                 shapes += [value.shape]
 
-        elif isinstance(value, Sequence):
+        elif isinstance(value, tx.Sequence):
             shapes += [(len(value),)]
 
         else:
@@ -138,12 +122,12 @@ def _count_output_axes(values: SmartSlicerT) -> int:
 
 
 def _unroll(
-    values: Sequence,
+    values: tx.Sequence,
     nb_values: int,
     side: tx.Literal["left", "right"] = "right",
     insert: tx.Any = None,
     ignore: tx.Any = _UNSET,
-) -> Sequence:
+) -> tx.Sequence:
     """
     Unroll a list by replacing an ellipsis with as many `insert` values
     as needed to reach a target number of values.
@@ -157,9 +141,9 @@ def _unroll(
     the input (or output) sequence.
 
     !!! example "Expand an array slicer"
-        ```python
-        _unroll((..., 0), 3, insert=slice(None), ignore=None)
-        # Output: (slice(None), slice(None), 0)
+        ```pycon
+        >>> _unroll((..., 0), 3, insert=slice(None), ignore=None)
+        (slice(None), slice(None), 0)
         ```
 
     Parameters
@@ -232,7 +216,7 @@ def _unroll_slicer(
     side: tx.Literal["left", "right"] = "right",
     insert: tx.Any = slice(None),
     ignore: tx.Any = _count_input_axes,
-) -> Sequence:
+) -> tx.Sequence:
     """Specialized version of `_unroll` for array slicers."""
     if not isinstance(values, tuple):
         values = (values,)
@@ -381,44 +365,44 @@ def _map_axes(
     axis will contain all matching input axes in a tuple.
 
     !!! example "Dropped axis"
-        ```python
-        _map_axes((slice(None), 0, slice(None)))
-        # Output: (0, 2)
+        ```pycon
+        >>> _map_axes((slice(None), 0, slice(None)))
+        (0, 2)
         ```
 
     !!! example "New axis"
-        ```python
-        _map_axes((slice(None), None, slice(None)))
-        # Output: (0, None, 1)
+        ```pycon
+        >>> _map_axes((slice(None), None, slice(None)))
+        (0, None, 1)
         ```
 
     !!! example "Boolean indexing"
-        ```python
-        _map_axes((slice(None), torch.ones([5, 6], dtype=torch.bool)))
-        # Output: (0, (1, 2))
+        ```pycon
+        >>> _map_axes((slice(None), torch.ones([5, 6], dtype=torch.bool)))
+        (0, (1, 2))
         # NOTE: two dimensions are indexed by the same boolean tensor.
         ```
 
     !!! example "Advanced indexing"
-        ```python
-        _map_axes((slice(None), range(5), range(5)))
-        # Output: (0, (1, 2))
+        ```pycon
+        >>> _map_axes((slice(None), range(5), range(5)))
+        (0, (1, 2))
         # NOTE: the two advanced indices (range) broadcast together.
         ```
 
     !!! example "Advanced multidimensional indexing"
-        ```python
-        i = torch.arange(5).view(5, 1)
-        j = torch.arange(6).view(1, 6)
-        _map_axes((slice(None), i, j))
-        # Output: (0, (1, 2), (1, 2))
+        ```pycon
+        >>> i = torch.arange(5).view(5, 1)
+        >>> j = torch.arange(6).view(1, 6)
+        >>> _map_axes((slice(None), i, j))
+        (0, (1, 2), (1, 2))
         # NOTE: the two advanced indices (tensors) broadcast together.
         ```
 
     !!! example "Non-contiguous advanced indexing"
-        ```python
-        _map_axes((slice(None), range(5), None, range(5)))
-        # Output: ((1, 2), 0, None)
+        ```pycon
+        >>> _map_axes((slice(None), range(5), None, range(5)))
+        ((1, 2), 0, None)
         # NOTE: advanced axes end up on the left of the output tensor.
         ```
     """
@@ -446,44 +430,45 @@ def _map_axes_inverse(
     with >= 2 dimensions), it will map to multiple output axes.
 
     !!! example "Dropped axis"
-        ```python
-        _map_axes_inverse((slice(None), 0, slice(None)))
-        # Output: (0, None, 1)
+        ```pycon
+        >>> _map_axes_inverse((slice(None), 0, slice(None)))
+        (0, None, 1)
         ```
 
     !!! example "New axis"
-        ```python
-        _map_axes_inverse((slice(None), None, slice(None)))
-        # Output: (0, 2)
+        ```pycon
+        >>> _map_axes_inverse((slice(None), None, slice(None)))
+        (0, 2)
         ```
 
     !!! example "Boolean indexing"
-        ```python
-        _map_axes_inverse((slice(None), torch.ones([5, 6], dtype=torch.bool)))
-        # Output: (0, 1, 1)
+        ```pycon
+        >>> mask = torch.ones([5, 6], dtype=torch.bool)
+        >>> _map_axes_inverse((slice(None), mask))
+        (0, 1, 1)
         # NOTE: two dimensions are indexed by the same boolean tensor.
         ```
 
     !!! example "Advanced indexing"
-        ```python
-        _map_axes_inverse((slice(None), range(5), range(5)))
-        # Output: (0, 1, 1)
+        ```pycon
+        >>> _map_axes_inverse((slice(None), range(5), range(5)))
+        (0, 1, 1)
         # NOTE: the two advanced indices (range) broadcast together.
         ```
 
     !!! example "Advanced multidimensional indexing"
-        ```python
-        i = torch.arange(5).view(5, 1)
-        j = torch.arange(6).view(1, 6)
-        _map_axes_inverse((slice(None), i, j))
-        # Output: (0, (1, 2), (1, 2))
+        ```pycon
+        >>> i = torch.arange(5).view(5, 1)
+        >>> j = torch.arange(6).view(1, 6)
+        >>> _map_axes_inverse((slice(None), i, j))
+        (0, (1, 2), (1, 2))
         # NOTE: the two advanced indices (tensors) broadcast together.
         ```
 
     !!! example "Non-contiguous advanced indexing"
-        ```python
-        _map_axes_inverse((slice(None), range(5), None, range(5)))
-        # Output: (1, 0, 0)
+        ```pycon
+        >>> _map_axes_inverse((slice(None), range(5), None, range(5)))
+        (1, 0, 0)
         # NOTE: advanced axes end up on the left of the output tensor.
         ```
     """
@@ -582,7 +567,7 @@ def _get_slicer_by_index(
                     return value
                 index -= 1
 
-        elif isinstance(value, Sequence):
+        elif isinstance(value, tx.Sequence):
             if index == 0:
                 return value
             index -= 1

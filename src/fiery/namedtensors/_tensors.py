@@ -1,13 +1,12 @@
 # `from __future__ import annotations` keeps every annotation a lazy string,
 # so only values *evaluated at runtime* -- the type aliases below -- must avoid
-# PEP 585/604/695. Those use `typing_extensions` (imported as `tx`), never
-# abc/builtin subscription (e.g. `collections.abc.Sequence[...]`, which is not
-# subscriptable before Python 3.9). `collections.abc` is imported only for the
-# runtime isinstance checks.
+# PEP 585/604/695. All typing goes through `typing_extensions` (imported as
+# `tx`), never abc/builtin subscription (e.g. `collections.abc.Sequence[...]`,
+# which is not subscriptable before Python 3.9). `tx.Sequence` also works for
+# the runtime isinstance checks.
 from __future__ import annotations
 
 # stdlib
-from collections.abc import Sequence
 from functools import wraps
 from warnings import filterwarnings
 
@@ -18,7 +17,8 @@ from torch import Tensor
 
 # internals
 from fiery.namedtensors import _arrayutils as arrayutils
-from fiery.namedtensors._arrayutils import EllipsisType
+from fiery.namedtensors._compat import EllipsisType
+from fiery.namedtensors._compat import torch_func as _torch_func
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription)
 _SlicerT = tx.Union[int, slice, EllipsisType, None]
@@ -35,22 +35,6 @@ T = tx.TypeVar("T")
 
 # warnings
 filterwarnings("ignore", ".*(Named tensors).*", UserWarning)
-
-
-def _torch_func(name: str) -> tx.Optional[tx.Callable]:
-    """
-    Resolve a torch callable by name, preferring the functional form
-    (`torch.<name>`) and falling back to the tensor method
-    (`torch.Tensor.<name>`).
-
-    Returns `None` if neither exists in the running PyTorch version, so
-    that overrides can be registered conditionally and we only ever
-    overload functions that actually exist.
-    """
-    func = getattr(torch, name, None)
-    if func is None:
-        func = getattr(torch.Tensor, name, None)
-    return func
 
 
 class ExtendedTensorMeta(type(Tensor)):
@@ -296,7 +280,7 @@ class TensorWithNamedIndices(NamedTensor):
         data: Tensor,
         *,
         index_names: ArgIndexNamesT = (...,),
-        index_dims: int | Sequence[int] = -1,
+        index_dims: int | tx.Sequence[int] = -1,
         **kwargs,
     ) -> None:
         """
@@ -342,7 +326,7 @@ class TensorWithNamedIndices(NamedTensor):
         return self.__dict__.get("_index_dims", None)
 
     @index_dims.setter
-    def index_dims(self, value: int | Sequence[int]) -> None:
+    def index_dims(self, value: int | tx.Sequence[int]) -> None:
         self._index_names, self._index_dims = _prepare_index_names(
             self.index_names, value, self.shape
         )
@@ -457,7 +441,7 @@ class NamedVector(TensorWithNamedIndices):
         self,
         data: Tensor,
         *,
-        channels: Sequence[str | EllipsisType | None] = (...,),
+        channels: tx.Sequence[str | EllipsisType | None] = (...,),
         channel_dim: int = -1,
         **kwargs,
     ) -> None:
@@ -482,7 +466,7 @@ class NamedVector(TensorWithNamedIndices):
         return self.index_names[0]
 
     @channels.setter
-    def channels(self, value: Sequence[str | None]) -> None:
+    def channels(self, value: tx.Sequence[str | None]) -> None:
         self.index_names = (tuple(value),)
 
     @property
@@ -509,7 +493,9 @@ class NamedMatrix(TensorWithNamedIndices):
         self,
         data: Tensor,
         *,
-        channels: tuple[Sequence[ArgIndexNameT], Sequence[ArgIndexNameT]] = (
+        channels: tuple[
+            tx.Sequence[ArgIndexNameT], tx.Sequence[ArgIndexNameT]
+        ] = (
             (...,),
             (...,),
         ),
@@ -537,7 +523,7 @@ class NamedMatrix(TensorWithNamedIndices):
         return self.index_names
 
     @channels.setter
-    def channels(self, value: Sequence[Sequence[str | None]]) -> None:
+    def channels(self, value: tx.Sequence[tx.Sequence[str | None]]) -> None:
         self.index_names = tuple(map(tuple, value))
 
     @property
@@ -545,7 +531,7 @@ class NamedMatrix(TensorWithNamedIndices):
         return self.index_dims
 
     @channel_dims.setter
-    def channel_dims(self, value: Sequence[int]) -> None:
+    def channel_dims(self, value: tx.Sequence[int]) -> None:
         self.index_dims = tuple(value)
 
 
@@ -599,9 +585,9 @@ def _(input: TensorWithNamedIndices, dim: int, index: Tensor) -> Tensor:
 # ======================================================================
 
 
-def _get_sequence_depth(seq: Sequence) -> int:
+def _get_sequence_depth(seq: tx.Sequence) -> int:
     """Compute the depth of a nested sequence."""
-    if not isinstance(seq, Sequence) or isinstance(seq, (str, bytes)):
+    if not isinstance(seq, tx.Sequence) or isinstance(seq, (str, bytes)):
         return 0
     elif not seq:
         return 1
@@ -611,7 +597,7 @@ def _get_sequence_depth(seq: Sequence) -> int:
 
 def _prepare_index_names(
     index_names: ArgIndexNamesT,
-    index_dims: int | Sequence[int],
+    index_dims: int | tx.Sequence[int],
     shape: tuple[int, ...],  # Shape of the tensor
 ) -> tuple[tuple[ArgIndexNameT, ...], tuple[int, ...]]:
     """Ensure names and dims are tuples with the same length."""
