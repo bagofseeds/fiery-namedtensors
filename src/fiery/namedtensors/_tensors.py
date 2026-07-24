@@ -1050,6 +1050,120 @@ def _(
 
 # ======================================================================
 #
+#                       R E S H A P E   ( R A N K )
+#
+# ======================================================================
+#
+# Rank-changing reshape ops. Merging/splitting axes is inherently lossy for
+# names, so the conservative rule from `view`/`reshape` applies: a merged or
+# split axis becomes unnamed (unless the op is a no-op on that axis).
+
+
+def _prepend_axes_meta(input: NamedTensor, n_new: int) -> dict:
+    """`_carry` overrides for an op that prepends `n_new` unnamed axes."""
+    overrides = {"_axis_names": (None,) * n_new + input.names}
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is not None and idx_dims is not None:
+        overrides["_index_names"] = idx_names
+        overrides["_index_dims"] = tuple(
+            (d % input.ndim) + n_new for d in idx_dims
+        )
+    return overrides
+
+
+@NamedTensor.overrides(_torch_func("flatten"))
+def _(
+    input: NamedTensor,
+    start_dim: int | str = 0,
+    end_dim: int | str = -1,
+) -> NamedTensor:
+    ndim = input.ndim
+    start = _resolve_axis(input.names, start_dim) % ndim
+    end = _resolve_axis(input.names, end_dim) % ndim
+    result = Tensor.flatten(input, start, end)
+    in_names = input.names
+    if start == end:
+        return _carry(input, result)  # no-op: names unchanged
+    span = end - start
+    overrides = {
+        "_axis_names": in_names[:start] + (None,) + in_names[end + 1 :]
+    }
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is not None and idx_dims is not None:
+        new_names, new_dims = [], []
+        for names, dim in zip(idx_names, idx_dims):
+            dim %= ndim
+            if start <= dim <= end:
+                continue  # merged into the unnamed axis -> dropped
+            new_names.append(names)
+            new_dims.append(dim - span if dim > end else dim)
+        overrides["_index_names"] = tuple(new_names) or None
+        overrides["_index_dims"] = tuple(new_dims) or None
+    return _carry(input, result, **overrides)
+
+
+@NamedTensor.overrides(_torch_func("unflatten"))
+def _(input: NamedTensor, dim: int | str, sizes: tx.Sequence) -> NamedTensor:
+    ndim = input.ndim
+    dim = _resolve_axis(input.names, dim) % ndim
+    result = Tensor.unflatten(input, dim, sizes)
+    k = len(sizes)
+    in_names = input.names
+    split = (in_names[dim],) if k == 1 else (None,) * k
+    overrides = {"_axis_names": in_names[:dim] + split + in_names[dim + 1 :]}
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is not None and idx_dims is not None:
+        new_names, new_dims = [], []
+        for names, d in zip(idx_names, idx_dims):
+            d %= ndim
+            if d == dim and k != 1:
+                continue  # split axis -> unnamed, index group dropped
+            new_names.append(names)
+            new_dims.append(d + k - 1 if d > dim else d)
+        overrides["_index_names"] = tuple(new_names) or None
+        overrides["_index_dims"] = tuple(new_dims) or None
+    return _carry(input, result, **overrides)
+
+
+@NamedTensor.overrides(_torch_func("expand"))
+def _(input: NamedTensor, *sizes: int | tx.Sequence) -> NamedTensor:
+    if len(sizes) == 1 and isinstance(sizes[0], (tuple, list, torch.Size)):
+        sizes = tuple(sizes[0])
+    result = Tensor.expand(input, *sizes)
+    return _carry(
+        input, result, **_prepend_axes_meta(input, result.ndim - input.ndim)
+    )
+
+
+@NamedTensor.overrides(_torch_func("broadcast_to"))
+def _(input: NamedTensor, shape: tx.Sequence) -> NamedTensor:
+    result = Tensor.broadcast_to(input, shape)
+    return _carry(
+        input, result, **_prepend_axes_meta(input, result.ndim - input.ndim)
+    )
+
+
+@NamedTensor.overrides(_torch_func("diagonal"))
+def _(
+    input: NamedTensor,
+    offset: int = 0,
+    dim1: int | str = 0,
+    dim2: int | str = 1,
+) -> NamedTensor:
+    d1 = _resolve_axis(input.names, dim1) % input.ndim
+    d2 = _resolve_axis(input.names, dim2) % input.ndim
+    result = Tensor.diagonal(input, offset, d1, d2)
+    # `dim1`/`dim2` are removed; the new diagonal axis is appended (unnamed).
+    meta = _axes_removed_meta(input, {d1, d2})
+    meta["_axis_names"] = meta["_axis_names"] + (None,)
+    return _carry(input, result, **meta)
+
+
+# ======================================================================
+#
 #                               U T I L S
 #
 # ======================================================================
