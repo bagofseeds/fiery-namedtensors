@@ -1263,6 +1263,73 @@ def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> NamedTensor:
     return _carry(ref, result, **overrides)
 
 
+# ---- matrix multiplication ------------------------------------------------
+#
+# `matmul` / `mm` / `bmm` (and the `@` operator, which dispatches as `matmul`)
+# follow torch's broadcasting rules: the contracted axes vanish, the batch
+# axes broadcast, and the result's trailing axes are `(a[-2], b[-1])`.
+
+
+def _names_of(tensor: tx.Any) -> tuple:
+    """Axis names of a tensor (all-`None` for a plain, unnamed tensor)."""
+    if isinstance(tensor, NamedTensor):
+        return tensor.names
+    return (None,) * tensor.ndim
+
+
+def _broadcast_batch_names(x: tuple, y: tuple) -> tuple:
+    """Reconcile two batch-name tuples under right-aligned broadcasting."""
+    width = max(len(x), len(y))
+    x = (None,) * (width - len(x)) + tuple(x)
+    y = (None,) * (width - len(y)) + tuple(y)
+    reconciled = []
+    for xn, yn in zip(x, y):
+        distinct = {xn, yn} - {None}
+        reconciled.append(distinct.pop() if len(distinct) == 1 else None)
+    return tuple(reconciled)
+
+
+def _matmul_names(a: tuple, b: tuple) -> tuple:
+    """Result axis names for `matmul(a, b)` given each operand's names."""
+    na, nb = len(a), len(b)
+    if na == 1 and nb == 1:
+        return ()  # dot product -> scalar
+    if na == 1:  # [k] @ [..., k, n] -> [..., n]
+        return _broadcast_batch_names((), b[:-2]) + (b[-1],)
+    if nb == 1:  # [..., m, k] @ [k] -> [..., m]
+        return _broadcast_batch_names(a[:-2], ()) + (a[-2],)
+    return _broadcast_batch_names(a[:-2], b[:-2]) + (a[-2], b[-1])
+
+
+def _make_matmul(name: str) -> None:
+    """Register a name-aware override for a matrix-multiplication op."""
+    base = _torch_func(name)
+
+    def _matmul(input: tx.Any, other: tx.Any, **kwargs) -> tx.Any:
+        result = base(input, other, **kwargs)
+        ref = input if isinstance(input, NamedTensor) else other
+        overrides = {
+            "_axis_names": _matmul_names(_names_of(input), _names_of(other))
+        }
+        if isinstance(ref, TensorWithNamedIndices):
+            # the contraction invalidates the index layout
+            overrides["_index_names"] = None
+            overrides["_index_dims"] = None
+        return _carry(ref, result, **overrides)
+
+    registered = NamedTensor.overrides(base)(_matmul)
+    # The `@` operator dispatches with the *bound method* `Tensor.matmul`,
+    # a different callable than the function `torch.matmul`, so register the
+    # method too (when it exists and differs) or `a @ b` would miss it.
+    method = getattr(Tensor, name, None)
+    if base is not None and method is not None and method is not base:
+        NamedTensor._OVERRIDES[method] = registered
+
+
+for _matmul_name in ("matmul", "mm", "bmm"):
+    _make_matmul(_matmul_name)
+
+
 # ======================================================================
 #
 #                               U T I L S

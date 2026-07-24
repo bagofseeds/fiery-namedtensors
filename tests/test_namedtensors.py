@@ -759,3 +759,57 @@ def test_stack_shifts_index_dims_past_the_new_axis():
     assert out.index_dims == (2,)
     assert out.index_names == (("p", "q"),)
     assert out.shape == (2, 2, 2)
+
+
+# ----------------------------------------------------------------------
+# matmul family: matmul / mm / bmm / @  (axis names)
+# ----------------------------------------------------------------------
+
+
+def test_matmul_2d_names_rows_from_a_cols_from_b():
+    a = NamedTensor(torch.zeros(2, 3), names=("m", "k"))
+    b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
+    assert torch.matmul(a, b).names == ("m", "n")
+    assert torch.mm(a, b).names == ("m", "n")
+    # the `@` operator dispatches with `Tensor.matmul`, still name-aware
+    assert (a @ b).names == ("m", "n")
+    assert (a @ b).shape == (2, 4)
+
+
+def test_matmul_vector_cases():
+    a = NamedTensor(torch.zeros(2, 3), names=("m", "k"))
+    b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
+    v = NamedTensor(torch.zeros(3), names=("k",))
+    assert (v @ b).names == ("n",)  # 1-D @ 2-D
+    assert (a @ v).names == ("m",)  # 2-D @ 1-D
+    assert (v @ v).names == ()  # dot product -> scalar
+
+
+def test_matmul_batches_broadcast_and_reconcile_names():
+    a = NamedTensor(torch.zeros(5, 2, 3), names=("b", "m", "k"))
+    b = NamedTensor(torch.zeros(5, 3, 4), names=("b", "k", "n"))
+    assert torch.bmm(a, b).names == ("b", "m", "n")
+    assert (a @ b).names == ("b", "m", "n")
+    # broadcasting a 2-D operand keeps the batch name
+    flat = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
+    assert (a @ flat).names == ("b", "m", "n")
+    # a conflicting batch name becomes unnamed
+    a2 = NamedTensor(torch.zeros(5, 2, 3), names=("x", "m", "k"))
+    assert (a2 @ b).names == (None, "m", "n")
+
+
+def test_matmul_with_one_plain_operand():
+    b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
+    assert torch.matmul(torch.zeros(2, 3), b).names == (None, "n")
+    a = NamedTensor(torch.zeros(2, 3), names=("m", "k"))
+    assert torch.matmul(a, torch.zeros(3, 4)).names == ("m", None)
+
+
+def test_matmul_drops_named_index_metadata():
+    t = TensorWithNamedIndices(
+        torch.zeros(2, 3), index_names=(("a", "b", "c"),), index_dims=(1,)
+    )
+    b = NamedTensor(torch.zeros(3, 4), names=("k", "n"))
+    out = t @ b
+    assert out.index_names is None
+    assert out.names == (None, "n")
