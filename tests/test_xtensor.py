@@ -898,3 +898,60 @@ def test_named_matrix_labels_row_and_col():
     assert m.names == ("row", "col")
     assert m.channels == (("r0", "r1"), ("c0", "c1", "c2"))
     assert m.sel(row="r1", col="c2").ndim == 0
+
+
+# ----------------------------------------------------------------------
+# pointwise: broadcast-by-name (xarray-style)
+# ----------------------------------------------------------------------
+
+
+def test_add_aligns_transposed_operands_by_name():
+    a = XTensor(torch.arange(6.0).reshape(2, 3), names=("x", "y"))
+    b = XTensor(
+        torch.arange(6.0).reshape(3, 2), names=("y", "x")
+    )  # transposed
+    out = a + b
+    assert out.names == ("x", "y")
+    assert out.shape == (2, 3)
+    # aligning b to (x, y) is b.T; the sum matches
+    assert torch.equal(out, a + b.rename("y", "x").T.rename("x", "y"))
+
+
+def test_disjoint_named_dims_broadcast_to_the_outer_grid():
+    c = XTensor(torch.arange(2.0), names=("x",))
+    d = XTensor(torch.arange(3.0), names=("y",))
+    out = c + d
+    assert out.names == ("x", "y")
+    assert out.shape == (2, 3)
+
+
+def test_shared_name_broadcasts_size_one():
+    e = XTensor(torch.arange(3.0).reshape(1, 3), names=("x", "y"))
+    f = XTensor(torch.arange(6.0).reshape(2, 3), names=("x", "y"))
+    assert (e + f).names == ("x", "y")
+    assert (e + f).shape == (2, 3)
+
+
+def test_scalar_and_plain_operands_keep_the_tensor_names():
+    a = XTensor(torch.arange(6.0).reshape(2, 3), names=("x", "y"))
+    assert (a + 1).names == ("x", "y")
+    assert (a * 2).names == ("x", "y")
+    assert (a + torch.ones(2, 3)).names == ("x", "y")
+    assert (a == a).names == ("x", "y")  # comparisons too
+
+
+def test_unnamed_axis_falls_back_to_positional():
+    g = XTensor(torch.zeros(2, 3), names=("x", None))
+    assert (g + g).names == ("x", None)
+
+
+def test_pointwise_aligns_coordinates_by_name():
+    p = XTensor(
+        torch.zeros(2, 3), names=("x", "y"), coords={"y": ("a", "b", "c")}
+    )
+    q = XTensor(
+        torch.zeros(3, 2), names=("y", "x"), coords={"y": ("a", "b", "c")}
+    )
+    out = p + q
+    assert out.names == ("x", "y")
+    assert out.coords == {"y": ("a", "b", "c")}

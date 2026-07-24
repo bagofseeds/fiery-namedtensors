@@ -105,7 +105,12 @@ matching section (or a new one):
 - **COMBINE** — `cat`/`stack` (name reconciliation across operands; `cat`
   concatenates the join-axis labels) and `matmul`/`mm`/`bmm`.
 - **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`where`/
-  `masked_select`, and `XVector`/`XMatrix`.
+  `masked_select`.
+- **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
+  when **both** operands are fully-named, axes align **by name** (`_align_by_name`
+  → transpose + size-1 expand to the union of dims), else positional fallback.
+  Registers both `torch.<op>` and `Tensor.<op>` (operators dispatch the latter).
+- **CONVENIENCE** — `XVector`/`XMatrix`.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 (1-D label slicer), `_reconcile_axis_names` (multi-operand), `_matmul_names`.

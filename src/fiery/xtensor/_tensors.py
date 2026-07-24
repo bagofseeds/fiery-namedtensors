@@ -1424,6 +1424,114 @@ def _(input: XTensor, mask: Tensor, **kwargs) -> tx.Any:
 
 # ======================================================================
 #
+#                     P O I N T W I S E   ( B Y   N A M E )
+#
+# ======================================================================
+#
+# Binary/pointwise ops (`+`, `*`, comparisons, ...) combine names the
+# xarray way: when **both** operands are fully-named `XTensor`s, their axes are
+# aligned **by name** (union of dims, shared names broadcast together, axes
+# transposed to match) rather than by position. Any unnamed axis (or a plain
+# tensor / scalar operand) falls back to positional broadcasting.
+
+
+def _reshape_to_order(x: XTensor, order: list) -> XTensor:
+    """Permute/expand `x`'s named axes onto `order` (size-1 where absent)."""
+    x_names = x.names
+    present = [n for n in order if n in x_names]
+    out = x.permute(*[x_names.index(n) for n in present])
+    for pos, name in enumerate(order):
+        if name not in x_names:
+            out = out.unsqueeze(pos)
+    return out
+
+
+def _align_by_name(a: XTensor, b: XTensor) -> tuple:
+    """Align two fully-named tensors by dim name; return `(a', b', names,
+    coords)` ready for a positional (now name-matched) op."""
+    a_names, b_names = a.names, b.names
+    order = list(a_names) + [n for n in b_names if n not in a_names]
+    a_coords, b_coords = a.coords, b.coords
+    coords = {}
+    for name in order:
+        ca, cb = a_coords.get(name), b_coords.get(name)
+        if ca is not None and cb is not None:
+            if ca == cb:  # shared label set kept; a conflict drops it
+                coords[name] = ca
+        elif ca is not None:
+            coords[name] = ca
+        elif cb is not None:
+            coords[name] = cb
+    return (
+        _reshape_to_order(a, order),
+        _reshape_to_order(b, order),
+        tuple(order),
+        coords,
+    )
+
+
+def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
+    a_named = isinstance(a, XTensor) and None not in a.names
+    b_named = isinstance(b, XTensor) and None not in b.names
+    if a_named and b_named:
+        a2, b2, names, coords = _align_by_name(a, b)
+        result = base(a2, b2, *args, **kwargs)
+        return _carry(a, result, _axis_names=names, _coords=coords)
+    # positional fallback (unnamed axis, plain tensor, or scalar operand)
+    result = base(a, b, *args, **kwargs)
+    if not isinstance(result, Tensor):
+        return result
+    ref = a if isinstance(a, XTensor) else b
+    names = _broadcast_batch_names(_names_of(a), _names_of(b))
+    coords = _coords_of(ref) if result.ndim == getattr(ref, "ndim", -1) else {}
+    return _carry(ref, result, _axis_names=names, _coords=coords)
+
+
+def _make_pointwise(name: str) -> None:
+    """Register a broadcast-by-name override for a binary/pointwise op."""
+    base = _torch_func(name)
+
+    def _op(a: tx.Any, b: tx.Any, *args, **kwargs) -> tx.Any:
+        return _binary(a, b, base, args, kwargs)
+
+    registered = XTensor.overrides(base)(_op)
+    # Operators (`a + b`, `a == b`, ...) dispatch with the bound method
+    # `Tensor.<name>` -- a different callable than the function `torch.<name>`
+    # -- so register both (as for `matmul`).
+    method = getattr(Tensor, name, None)
+    if base is not None and method is not None and method is not base:
+        XTensor._OVERRIDES[method] = registered
+
+
+# Elementwise ops whose result should align by name. `dim`-less, two-operand.
+_POINTWISE = (
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "pow",
+    "remainder",
+    "floor_divide",
+    "atan2",
+    "hypot",
+    "maximum",
+    "minimum",
+    "eq",
+    "ne",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+)
+for _pointwise_name in _POINTWISE:
+    _make_pointwise(_pointwise_name)
+
+
+# ======================================================================
+#
 #             C O N V E N I E N C E   S P E C I A L I Z A T I O N S
 #
 # ======================================================================

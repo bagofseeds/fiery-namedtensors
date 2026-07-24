@@ -80,6 +80,28 @@ through the result (`torch.sum(x, 1).names == x.sum(dim=1).names`); only the
 name-*as*-dim convenience is method-only. Operations that have no method form
 at all (`torch.cat`, `torch.stack`) take an integer `dim` only.
 
+## Broadcast by name
+
+When **both** operands of a pointwise op (`+`, `-`, `*`, `/`, comparisons, …)
+are fully-named `XTensor`s, their axes are aligned **by name** — the xarray way
+— instead of by position:
+
+```python
+a = xtensor(torch.arange(6).reshape(2, 3), names=("x", "y"))
+b = xtensor(torch.arange(6).reshape(3, 2), names=("y", "x"))  # transposed
+(a + b).names            # ('x', 'y')  — b is transposed to match, then added
+
+c = xtensor(torch.arange(2), names=("x",))
+d = xtensor(torch.arange(3), names=("y",))
+(c + d).shape            # (2, 3)  — disjoint dims broadcast to the outer grid
+```
+
+The result's dimensions are the **union** of the operands' names; a shared name
+is broadcast together (its sizes must match, or one must be 1) and coordinates
+that agree are carried through. If **any** axis is unnamed — or an operand is a
+plain tensor or a scalar — the op falls back to ordinary positional
+broadcasting.
+
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or
