@@ -269,6 +269,11 @@ class NamedTensor(ExtendedTensor):
         dims = reversed(range(self.ndim))
         return self.permute(*dims)
 
+    @property
+    def mT(self) -> tx.Self:
+        """Transpose of the last two dimensions (names included)."""
+        return self.transpose(-2, -1)
+
 
 @NamedTensor.overrides(_torch_func("permute"))
 def _(input: NamedTensor, *dims: int | tuple[int, ...]) -> NamedTensor:
@@ -307,28 +312,33 @@ def _(input: NamedTensor, dim: int | list[int] | None = None) -> NamedTensor:
     return _carry(input, result, _axis_names=tuple(names))
 
 
-@NamedTensor.overrides(_torch_func("view"))
-def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
-    if len(shape) == 1 and isinstance(shape[0], tuple):
-        shape = shape[0]
+def _normalize_shape(input: NamedTensor, shape: tuple) -> list:
+    """Flatten a `(shape,)` tuple arg and resolve a single `-1` entry."""
+    if len(shape) == 1 and isinstance(shape[0], (tuple, list, torch.Size)):
+        shape = tuple(shape[0])
     shape = list(shape)
     if -1 in shape:
         known_numel = torch.Size([s for s in shape if s != -1]).numel()
         shape[shape.index(-1)] = input.numel() // known_numel
+    return shape
 
-    # Name-tracking through an arbitrary reshape is inherently ambiguous
-    # (a dimension may be split or merged). We take the conservative and
-    # predictable rule: a name is preserved only for output dimensions that
-    # align exactly with an input dimension in an unbroken run from either
-    # the front or the back. Every reshaped axis becomes unnamed.
-    old_shape = list(input.shape)
-    old_names = list(input.names)
-    n_new, n_old = len(shape), len(old_shape)
-    new_names = [None] * n_new
+
+def _reshape_names(
+    old_shape: list, old_names: list, new_shape: list
+) -> tuple[str | None, ...]:
+    """
+    Names for a reshape/view. Name-tracking through an arbitrary reshape is
+    inherently ambiguous (a dimension may be split or merged), so we take the
+    conservative, predictable rule: a name is preserved only for output
+    dimensions that align exactly with an input dimension in an unbroken run
+    from either the front or the back. Every reshaped axis becomes unnamed.
+    """
+    n_new, n_old = len(new_shape), len(old_shape)
+    new_names: list = [None] * n_new
 
     # Leading run of exactly-matching dimensions.
     i = 0
-    while i < n_new and i < n_old and shape[i] == old_shape[i]:
+    while i < n_new and i < n_old and new_shape[i] == old_shape[i]:
         new_names[i] = old_names[i]
         i += 1
 
@@ -338,13 +348,78 @@ def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
     while (
         j < n_new - i
         and j < n_old - i
-        and shape[n_new - 1 - j] == old_shape[n_old - 1 - j]
+        and new_shape[n_new - 1 - j] == old_shape[n_old - 1 - j]
     ):
         new_names[n_new - 1 - j] = old_names[n_old - 1 - j]
         j += 1
 
-    result = Tensor.view(input, *shape)
-    return _carry(input, result, _axis_names=tuple(new_names))
+    return tuple(new_names)
+
+
+@NamedTensor.overrides(_torch_func("view"))
+def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
+    shape = _normalize_shape(input, shape)
+    names = _reshape_names(list(input.shape), list(input.names), shape)
+    return _carry(input, Tensor.view(input, *shape), _axis_names=names)
+
+
+@NamedTensor.overrides(_torch_func("reshape"))
+def _(input: NamedTensor, *shape: int | tuple[int, ...]) -> NamedTensor:
+    shape = _normalize_shape(input, shape)
+    names = _reshape_names(list(input.shape), list(input.names), shape)
+    return _carry(input, Tensor.reshape(input, shape), _axis_names=names)
+
+
+# Reorder ops are all special cases of `permute`; delegating to it means they
+# inherit correct axis-name AND named-index behaviour (and functional/method
+# parity) for free.
+
+
+def _transpose_order(ndim: int, dim0: int, dim1: int) -> list:
+    order = list(range(ndim))
+    d0, d1 = dim0 % ndim, dim1 % ndim
+    order[d0], order[d1] = order[d1], order[d0]
+    return order
+
+
+def _movedim_order(
+    ndim: int,
+    source: int | tuple[int, ...],
+    destination: int | tuple[int, ...],
+) -> list:
+    src = [source] if isinstance(source, int) else list(source)
+    dst = [destination] if isinstance(destination, int) else list(destination)
+    src = [s % ndim for s in src]
+    dst = [d % ndim for d in dst]
+    order = [d for d in range(ndim) if d not in src]
+    for dest, s in sorted(zip(dst, src)):
+        order.insert(dest, s)
+    return order
+
+
+@NamedTensor.overrides(_torch_func("transpose"))
+def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+    return input.permute(*_transpose_order(input.ndim, dim0, dim1))
+
+
+@NamedTensor.overrides(_torch_func("swapaxes"))
+def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+    return input.permute(*_transpose_order(input.ndim, dim0, dim1))
+
+
+@NamedTensor.overrides(_torch_func("swapdims"))
+def _(input: NamedTensor, dim0: int, dim1: int) -> NamedTensor:
+    return input.permute(*_transpose_order(input.ndim, dim0, dim1))
+
+
+@NamedTensor.overrides(_torch_func("movedim"))
+def _(input: NamedTensor, source, destination) -> NamedTensor:
+    return input.permute(*_movedim_order(input.ndim, source, destination))
+
+
+@NamedTensor.overrides(_torch_func("moveaxis"))
+def _(input: NamedTensor, source, destination) -> NamedTensor:
+    return input.permute(*_movedim_order(input.ndim, source, destination))
 
 
 # ======================================================================
