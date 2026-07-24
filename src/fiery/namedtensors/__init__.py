@@ -3,15 +3,15 @@
 `fiery.namedtensors` provides `torch.Tensor` subclasses that make names a
 first-class citizen:
 
-- [`NamedTensor`][fiery.namedtensors.NamedTensor] carries **self-managed** axis
-  names (independent of PyTorch's experimental builtin named-tensor feature)
-  through a wide range of operations (`permute`, `view`, `squeeze`, reductions,
-  `matmul`, ...).
-- [`TensorWithNamedIndices`][fiery.namedtensors.TensorWithNamedIndices]
-  allows individual positions along an axis to be indexed by name.
+- [`NamedTensor`][fiery.namedtensors.NamedTensor] is an
+  [xarray](https://docs.xarray.dev)-like `DataArray` over a live
+  `torch.Tensor`: it carries **self-managed** named dimensions and, optionally,
+  per-dimension coordinate **labels** (`coords`, keyed by dimension name)
+  through a wide range of operations. Select by label with `.sel`, by position
+  with `.isel`, or reach a single label by attribute (`x.red`).
 - [`NamedVector`][fiery.namedtensors.NamedVector] and
   [`NamedMatrix`][fiery.namedtensors.NamedMatrix] are convenience
-  specializations for 1D and 2D named-index axes.
+  specializations that pre-name and label their channel axes.
 
 The `named_*` helpers ([`named_zeros`][fiery.namedtensors.named_zeros], ...)
 build a `NamedTensor` directly from the matching `torch.*` factory.
@@ -32,7 +32,6 @@ from fiery.namedtensors._tensors import (
     NamedMatrix,
     NamedTensor,
     NamedVector,
-    TensorWithNamedIndices,
 )
 
 try:
@@ -43,7 +42,6 @@ except ImportError:  # pragma: no cover - only during editable/source use
 __all__ = [
     "ExtendedTensor",
     "NamedTensor",
-    "TensorWithNamedIndices",
     "NamedVector",
     "NamedMatrix",
     "named_zeros",

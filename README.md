@@ -1,26 +1,30 @@
 # fiery-namedtensors
 
-Named dimensions and named indices for PyTorch tensors.
+Named dimensions and coordinate labels for PyTorch tensors.
 
 `fiery.namedtensors` is a [`fiery`](https://bagofseeds.github.io/fiery/) match
-that makes **names a first-class citizen** of `torch.Tensor`. It provides thin
-`torch.Tensor` subclasses that carry naming metadata through operations, so you
-can refer to *dimensions* and *individual positions* by name rather than by
-integer index.
+that makes **names a first-class citizen** of `torch.Tensor`. Its `NamedTensor`
+is an [xarray](https://docs.xarray.dev)-like `DataArray` over a *live* torch
+tensor: it carries named **dimensions** and, optionally, per-dimension
+coordinate **labels** through operations — so you can refer to a dimension by
+name and a position along it by label, without leaving torch (autograd, device,
+and `__torch_function__` all keep working).
 
 ## Classes
 
 | Class | What it adds |
 | ----- | ------------ |
-| `NamedTensor` | Named **axes**, self-managed (independent of PyTorch's experimental builtin named tensors) so it works across a wide torch range. Names propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). |
-| `TensorWithNamedIndices` | Named **indices**: individual positions along an axis can be addressed by name (e.g. `x.c1`), and the naming metadata is tracked through slicing. |
-| `NamedVector` / `NamedMatrix` | Convenience specializations for 1-D and 2-D named-index axes (channels). |
+| `NamedTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
+| `NamedVector` / `NamedMatrix` | Convenience specializations that pre-name and label their channel axes (`"channel"`; `"row"`/`"col"`). |
+
+Labels are keyed by dimension **name**, so — like xarray — they simply follow
+their dimension through a `permute`/`transpose`/reduction with no bookkeeping.
 
 ```python
 import torch
-from fiery.namedtensors import NamedTensor, TensorWithNamedIndices
+from fiery.namedtensors import NamedTensor
 
-# Named axes
+# Named dimensions
 x = NamedTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
 x.T.names                       # ('width', 'height', 'batch')
 x.unsqueeze(1).names            # ('batch', None, 'height', 'width')
@@ -30,13 +34,17 @@ x.transpose("height", "width").names   # ('batch', 'width', 'height')
 x.sum(dim="batch").names               # ('height', 'width')
 x.mean(dim="height", keepdim=True).names  # ('batch', 'height', 'width')
 
-# Named indices: address positions along an axis by name
-m = TensorWithNamedIndices(
+# Coordinate labels: address positions along a dimension by label
+m = NamedTensor(
     torch.arange(6).reshape(2, 3),
-    index_names=(("x", "y", "z"),),
-    index_dims=(1,),
+    names=("row", "channel"),
+    coords={"channel": ("x", "y", "z")},
 )
-m.y                             # selects position 1 along dim 1
+m.sel(channel="y")              # selects position 1 along "channel"
+m.y                             # ... same, by attribute
+m.isel(channel=1)               # ... same, by integer position
+m.coords                        # {'channel': ('x', 'y', 'z')}
+m.T.coords                      # {'channel': ('x', 'y', 'z')} — follows the dim
 ```
 
 ## Referring to a dimension by name
@@ -93,8 +101,8 @@ pip install fiery-namedtensors
 ## Status
 
 Alpha — ported from a work-in-progress in
-[`balbasty/magnetix`](https://github.com/balbasty/magnetix). Axis names are
-**self-managed**, independent of PyTorch's experimental builtin named tensors
-(which have been dropped in some torch builds), so the package spans a wide
-torch range. See the tracking issues for the roadmap (per-op name coverage,
-reductions, gather/scatter, …).
+[`balbasty/magnetix`](https://github.com/balbasty/magnetix). Names and
+coordinates are **self-managed**, independent of PyTorch's experimental builtin
+named tensors (which have been dropped in some torch builds), so the package
+spans a wide torch range. See the tracking issues for the roadmap
+(broadcasting-by-name for pointwise ops, `einsum`, coordinate alignment, …).
