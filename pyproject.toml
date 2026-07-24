@@ -50,10 +50,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bagofseeds/fiery-namedtensors"
-Documentation = "https://bagofseeds.github.io/fiery-namedtensors/"
-Issues = "https://github.com/bagofseeds/fiery-namedtensors/issues"
-Repository = "https://github.com/bagofseeds/fiery-namedtensors"
+Homepage = "https://github.com/bagofseeds/fiery-xtensor"
+Documentation = "https://bagofseeds.github.io/fiery-xtensor/"
+Issues = "https://github.com/bagofseeds/fiery-xtensor/issues"
+Repository = "https://github.com/bagofseeds/fiery-xtensor"
 
 [project.optional-dependencies]
 test = [

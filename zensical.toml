@@ -11,7 +11,7 @@ nav = [
 # The site_name is shown in the page header and the browser window title
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_name
-site_name = "fiery-namedtensors"
+site_name = "fiery-xtensor"
 
 site_description = "xarray-like named dimensions and coordinate labels for PyTorch tensors."
 
@@ -20,9 +20,9 @@ site_description = "xarray-like named dimensions and coordinate labels for PyTor
 # Read more: https://zensical.org/docs/setup/basics/#site_author
 site_author = "Yael Balbastre"
 
-site_url = "https://bagofseeds.github.io/fiery-namedtensors/"
-repo_url = "https://github.com/bagofseeds/fiery-namedtensors"
-repo_name = "bagofseeds/fiery-namedtensors"
+site_url = "https://bagofseeds.github.io/fiery-xtensor/"
+repo_url = "https://github.com/bagofseeds/fiery-xtensor"
+repo_name = "bagofseeds/fiery-xtensor"
 
 copyright = """
 Copyright &copy; 2026 The authors
