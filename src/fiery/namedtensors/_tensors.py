@@ -16,22 +16,26 @@ from torch import Tensor
 
 # internals
 from fiery.namedtensors import _arrayutils as arrayutils
+from fiery.namedtensors._arrayutils import SmartSlicerT, _SmartSlicerT
 from fiery.namedtensors._compat import EllipsisType
 from fiery.namedtensors._compat import no_dispatch as _no_dispatch
 from fiery.namedtensors._compat import torch_func as _torch_func
 
-# typing (evaluated at import time -> use tx, never abc/builtin subscription)
-_SlicerT = tx.Union[int, slice, EllipsisType, None]
-_SmartSlicerT = tx.Union[_SlicerT, tx.List[int], Tensor]
-CardinalSlicerT = tx.Union[_SlicerT, tx.Tuple[_SlicerT, ...]]
-SmartSlicerT = tx.Union[_SmartSlicerT, tx.Tuple[_SmartSlicerT, ...]]
+# typing (evaluated at import time -> use tx, never abc/builtin subscription).
+# The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
 ArgIndexNameT = tx.Union[str, EllipsisType, None]
+"""An index name: a string, `...` (any run of unnamed indices), or `None`."""
+
 ArgIndexNamesT = tx.Sequence[
     tx.Union[ArgIndexNameT, tx.Sequence[ArgIndexNameT]]
 ]
+"""Index names for one axis, or a sequence of such (one per named axis)."""
+
 ChannelNameT = tx.Optional[str]
+"""One channel name (`None` if unnamed)."""
+
 ChannelNamesT = tx.Tuple[ChannelNameT, ...]
-T = tx.TypeVar("T")
+"""The ordered channel names of a `NamedVector` / `NamedMatrix` axis."""
 
 
 def _carry(source: Tensor, result: Tensor, **overrides: tx.Any) -> Tensor:
@@ -78,7 +82,7 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         Decorator to register a function override.
 
         `func` may be `None` (e.g. when resolved through
-        [`_torch_func`][fiery.namedtensors._tensors._torch_func] for an op
+        [`torch_func`][fiery.namedtensors._compat.torch_func] for an op
         that does not exist in the running PyTorch version); in that case
         the override is silently skipped so that we never overload a
         function that is missing from this PyTorch build.
