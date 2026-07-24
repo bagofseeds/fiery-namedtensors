@@ -806,6 +806,107 @@ def _(input: TensorWithNamedIndices, dim: int | str, index: Tensor) -> Tensor:
 
 # ======================================================================
 #
+#                           R E D U C T I O N S
+#
+# ======================================================================
+#
+# Dimension-reducing ops (`sum`, `mean`, `amax`, ...) drop the reduced axis'
+# name (or keep it as a size-1 axis under `keepdim=True`), and accept a name
+# in place of an integer `dim=`. They share one factory: the ops below all
+# take `dim` as their first optional positional argument and either remove
+# the reduced axes or keep them as size-1.
+
+
+def _reduce_index_meta(
+    input: TensorWithNamedIndices, removed: set, overrides: dict
+) -> None:
+    """Drop/shift named-index metadata for axes removed by a reduction."""
+    idx_names = input.__dict__.get("_index_names")
+    idx_dims = input.__dict__.get("_index_dims")
+    if idx_names is None or idx_dims is None:
+        return
+    ndim = input.ndim
+    new_names, new_dims = [], []
+    for names, dim in zip(idx_names, idx_dims):
+        dim %= ndim
+        if dim in removed:
+            continue
+        # each surviving named axis shifts left by the removed axes before it
+        new_names.append(names)
+        new_dims.append(dim - sum(1 for r in removed if r < dim))
+    overrides["_index_names"] = tuple(new_names) or None
+    overrides["_index_dims"] = tuple(new_dims) or None
+
+
+def _reduce_names(input: NamedTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
+    """Recompute the name metadata for a dimension-reducing op's result."""
+    if not isinstance(result, Tensor):
+        # e.g. a (values, indices) namedtuple: left to a bespoke override.
+        return result
+    in_names = input.names
+    ndim = input.ndim
+    # `keepdim` is inferable from the output rank: a reduction either removes
+    # the reduced axes or keeps them as size-1.
+    if dim is not None and result.ndim == ndim:
+        return _carry(input, result, _axis_names=in_names)
+    if dim is None:
+        removed = set(range(ndim))
+    else:
+        dims = dim if isinstance(dim, (tuple, list)) else (dim,)
+        removed = {d % ndim for d in dims}
+    overrides = {
+        "_axis_names": tuple(
+            name for i, name in enumerate(in_names) if i not in removed
+        )
+    }
+    _reduce_index_meta(input, removed, overrides)
+    return _carry(input, result, **overrides)
+
+
+def _make_reduction(name: str) -> None:
+    """Register a name-aware override for a dimension-reducing torch op."""
+    base = _torch_func(name)
+
+    def _reduction(input: NamedTensor, *args, **kwargs) -> tx.Any:
+        names = input.names
+        # Resolve a name given for `dim` (positional arg 0 or keyword) and
+        # remember the (resolved) value so the output names can be computed.
+        if "dim" in kwargs:
+            dim = kwargs["dim"] = _resolve_dims(names, kwargs["dim"])
+        elif args:
+            dim = _resolve_dims(names, args[0])
+            args = (dim,) + args[1:]
+        else:
+            dim = None
+        return _reduce_names(input, base(input, *args, **kwargs), dim)
+
+    # `overrides(None)` is a no-op, so ops missing from this torch are skipped.
+    NamedTensor.overrides(base)(_reduction)
+
+
+# `dim` is the first optional positional for each; version-guarded via
+# `_torch_func`, so absent ops (e.g. `nanmean` on very old torch) are skipped.
+_REDUCTIONS = (
+    "sum",
+    "mean",
+    "nansum",
+    "nanmean",
+    "prod",
+    "amax",
+    "amin",
+    "all",
+    "any",
+    "argmax",
+    "argmin",
+    "logsumexp",
+    "count_nonzero",
+)
+for _reduction_name in _REDUCTIONS:
+    _make_reduction(_reduction_name)
+
+
+# ======================================================================
+#
 #                               U T I L S
 #
 # ======================================================================
