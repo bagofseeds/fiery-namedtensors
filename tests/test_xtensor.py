@@ -803,6 +803,58 @@ def test_stack_keeps_the_agreed_coordinates():
 
 
 # ----------------------------------------------------------------------
+# combine ops: hstack / vstack / dstack (conservative: names reconciled only
+# when every operand already has the result's rank; coordinates always drop)
+# ----------------------------------------------------------------------
+
+
+def test_hstack_reconciles_names_when_ranks_already_align():
+    a = XTensor(torch.zeros(2, 3), names=("r", "c"))
+    b = XTensor(torch.zeros(2, 3), names=("r", "c"))
+    out = torch.hstack([a, b])
+    assert out.names == ("r", "c")
+    assert out.coords == {}
+    assert out.shape == (2, 6)
+
+
+def test_vstack_reconciles_names_when_ranks_already_align():
+    a = XTensor(torch.zeros(2, 3), names=("r", "c"))
+    b = XTensor(torch.zeros(2, 3), names=("r", "c"))
+    out = torch.vstack([a, b])
+    assert out.names == ("r", "c")
+    assert out.coords == {}
+    assert out.shape == (4, 3)
+
+
+def test_dstack_reconciles_names_when_ranks_already_align():
+    a = XTensor(torch.zeros(2, 3, 5), names=("r", "c", "d"))
+    b = XTensor(torch.zeros(2, 3, 5), names=("r", "c", "d"))
+    out = torch.dstack([a, b])
+    assert out.names == ("r", "c", "d")
+    assert out.coords == {}
+    assert out.shape == (2, 3, 10)
+
+
+def test_vstack_drops_names_when_an_operand_is_promoted():
+    # a plain 1-D vector is promoted to 2-D by `vstack`, shifting its axis
+    # relative to the already-2-D operand -- positional alignment is not
+    # trustworthy here, so the conservative result is fully unnamed.
+    a = XTensor(torch.zeros(3), names=("c",))
+    b = XTensor(torch.zeros(2, 3), names=("r", "c"))
+    out = torch.vstack([a, b])
+    assert out.names == (None, None)
+    assert out.coords == {}
+    assert out.shape == (3, 3)
+
+
+def test_dstack_conflicting_names_become_unnamed():
+    a = XTensor(torch.zeros(2, 3, 5), names=("r", "c", "d"))
+    conflicting = XTensor(torch.zeros(2, 3, 5), names=("r", "c", "x"))
+    out = torch.dstack([a, conflicting])
+    assert out.names == ("r", "c", None)
+
+
+# ----------------------------------------------------------------------
 # matmul family: matmul / mm / bmm / @  (axis names)
 # ----------------------------------------------------------------------
 
@@ -929,6 +981,56 @@ def test_masked_select_collapses_to_one_unnamed_axis():
     out = torch.masked_select(x, x > 5)
     assert out.names == (None,)
     assert out.ndim == 1
+
+
+# ----------------------------------------------------------------------
+# index_add / index_copy / index_fill (name-as-dim, method-form only)
+# ----------------------------------------------------------------------
+
+
+def test_index_fill_keeps_names_and_coordinates():
+    x = XTensor(
+        torch.zeros(2, 4),
+        names=("a", "b"),
+        coords={"b": ("w", "x", "y", "z")},
+    )
+    idx = torch.tensor([1, 3])
+    out = x.index_fill("b", idx, 5.0)
+    assert out.names == ("a", "b")
+    # positions/sizes are unchanged, so the labels survive
+    assert out.coords == {"b": ("w", "x", "y", "z")}
+    assert torch.equal(out[:, 1], torch.full((2,), 5.0))
+    assert torch.equal(out[:, 3], torch.full((2,), 5.0))
+
+
+def test_index_add_keeps_names_and_coordinates():
+    x = XTensor(
+        torch.zeros(2, 4),
+        names=("a", "b"),
+        coords={"b": ("w", "x", "y", "z")},
+    )
+    idx = torch.tensor([1, 3])
+    src = torch.ones(2, 2)
+    out = x.index_add("b", idx, src)
+    assert out.names == ("a", "b")
+    assert out.coords == {"b": ("w", "x", "y", "z")}
+    assert torch.equal(out[:, 1], torch.ones(2))
+    assert torch.equal(out[:, 0], torch.zeros(2))
+
+
+def test_index_copy_keeps_names_and_coordinates():
+    x = XTensor(
+        torch.zeros(2, 4),
+        names=("a", "b"),
+        coords={"b": ("w", "x", "y", "z")},
+    )
+    idx = torch.tensor([1, 3])
+    src = torch.full((2, 2), 7.0)
+    out = x.index_copy("b", idx, src)
+    assert out.names == ("a", "b")
+    assert out.coords == {"b": ("w", "x", "y", "z")}
+    assert torch.equal(out[:, 1], torch.full((2,), 7.0))
+    assert torch.equal(out[:, 3], torch.full((2,), 7.0))
 
 
 # ----------------------------------------------------------------------

@@ -1320,6 +1320,57 @@ def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> XTensor:
     return _carry(ref, result, _axis_names=names, _coords=coords)
 
 
+# ---- promoting stacks (hstack / vstack / dstack) ---------------------------
+#
+# Unlike `cat`/`stack`, these promote lower-rank operands first (`hstack`
+# treats 1-D tensors specially; `vstack`/`dstack` reshape via
+# `atleast_2d`/`atleast_3d`), which can shift a promoted operand's axes
+# relative to the joined result. Positional name reconciliation is only
+# sound when *every* operand already has the result's rank -- i.e. nothing
+# was promoted -- so that is the only case handled; otherwise the result is
+# left fully unnamed. Coordinate labels are always dropped: even in the
+# aligned case, the join axis' positions are data-dependent per operand and
+# the promotion rules make general label tracking unsafe.
+
+
+def _promoted_stack_names(tensors: tx.Sequence, out_ndim: int) -> tuple:
+    """
+    Positional axis-name reconciliation for `hstack`/`vstack`/`dstack`.
+
+    Reuses `_operand_axis_names` / `_reconcile_axis_names` (the same
+    machinery `cat`/`stack` use), but only when every operand already has
+    `out_ndim` dimensions -- i.e. the op didn't need to promote any operand's
+    rank to join them, so each axis position lines up across operands. When
+    ranks differ, promotion may have inserted axes ahead of an operand's own,
+    so positional alignment can't be trusted: names are dropped (all `None`).
+    """
+    if all(getattr(t, "ndim", None) == out_ndim for t in tensors):
+        return _reconcile_axis_names(_operand_axis_names(tensors), out_ndim)
+    return (None,) * out_ndim
+
+
+def _make_promoting_stack(name: str) -> None:
+    """Register a conservative name-aware override for a promoting stack op
+    (`hstack`/`vstack`/`dstack`): reconcile names positionally when ranks
+    already align, else leave the result unnamed; coordinates always drop."""
+    base = _torch_func(name)
+    if base is None:
+        return
+
+    def _stack(tensors: tx.Sequence, **kwargs) -> tx.Any:
+        tensors = list(tensors)
+        ref = tensors[0]
+        result = base(tensors, **kwargs)
+        names = _promoted_stack_names(tensors, result.ndim)
+        return _carry(ref, result, _axis_names=names, _coords={})
+
+    XTensor.overrides(base)(_stack)
+
+
+for _promoting_stack_name in ("hstack", "vstack", "dstack"):
+    _make_promoting_stack(_promoting_stack_name)
+
+
 # ---- matrix multiplication ------------------------------------------------
 #
 # `matmul` / `mm` / `bmm` (and the `@` operator, which dispatches as `matmul`)
@@ -1454,6 +1505,47 @@ def _(
 ) -> tx.Any:
     dim = _resolve_axis(input.names, dim)
     result = torch.scatter_add(input, dim, index, src, **kwargs)
+    return _carry(input, result)
+
+
+@XTensor.overrides(_torch_func("index_add"))
+def _(
+    input: XTensor,
+    dim: int | str,
+    index: Tensor,
+    source: Tensor,
+    *,
+    alpha: tx.Any = 1,
+    **kwargs,
+) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    # `alpha` was added to `index_add` in a later torch; only pass it when it
+    # is non-default so the override still works on older versions.
+    if alpha != 1:
+        kwargs["alpha"] = alpha
+    result = torch.index_add(input, dim, index, source, **kwargs)
+    # Rank and per-axis positions are unchanged (values at the indexed
+    # positions are accumulated into), so names and coordinates survive.
+    return _carry(input, result)
+
+
+@XTensor.overrides(_torch_func("index_copy"))
+def _(
+    input: XTensor, dim: int | str, index: Tensor, source: Tensor, **kwargs
+) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    result = torch.index_copy(input, dim, index, source, **kwargs)
+    # Same shape, same positions -- only the values change.
+    return _carry(input, result)
+
+
+@XTensor.overrides(_torch_func("index_fill"))
+def _(
+    input: XTensor, dim: int | str, index: Tensor, value: tx.Any, **kwargs
+) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    result = torch.index_fill(input, dim, index, value, **kwargs)
+    # Same shape, same positions -- only the values change.
     return _carry(input, result)
 
 

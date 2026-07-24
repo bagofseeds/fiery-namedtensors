@@ -103,9 +103,12 @@ matching section (or a new one):
 - **SLICE / SPLIT** — `select`/`narrow`/`unbind`/`split`/`chunk` (single-axis
   `__getitem__`, so coords track for free) and `flip`/`roll` (reorder labels).
 - **COMBINE** — `cat`/`stack` (name reconciliation across operands; `cat`
-  concatenates the join-axis labels) and `matmul`/`mm`/`bmm`.
-- **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`where`/
-  `masked_select`.
+  concatenates the join-axis labels), `hstack`/`vstack`/`dstack` (same
+  reconciliation, but only when every operand already has the result's rank
+  — these promote lower-rank operands first, which can shift axes; always
+  drop coordinates), and `matmul`/`mm`/`bmm`.
+- **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`scatter_add`/
+  `index_add`/`index_copy`/`index_fill`/`where`/`masked_select`.
 - **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
   when **both** operands are fully-named, axes align **by name** (`_align_by_name`
   → transpose + size-1 expand to the union of dims), else positional fallback.
