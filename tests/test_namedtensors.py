@@ -631,3 +631,71 @@ def test_roll_rolls_named_indices_on_rolled_axis():
     )
     # a right shift of 1 moves each index name one step forward (cyclically)
     assert t.roll(1, dims=1).index_names == (("z", "w", "x", "y"),)
+
+
+# ----------------------------------------------------------------------
+# reshape-family (rank-changing): flatten / unflatten / expand / diagonal
+# ----------------------------------------------------------------------
+
+
+def test_flatten_marks_merged_axis_unnamed():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.flatten(0, 1).names == (None, "c")
+    assert x.flatten(0, 1).shape == (6, 4)
+    assert x.flatten("a", "b").names == (None, "c")  # by name
+    assert x.flatten(1, 1).names == ("a", "b", "c")  # no-op keeps names
+    assert torch.flatten(x, 1, 2).names == ("a", None)  # functional form
+
+
+def test_unflatten_marks_split_axes_unnamed():
+    x = NamedTensor(torch.arange(24).reshape(6, 4), names=("a", "b"))
+    y = x.unflatten("a", (2, 3))
+    assert y.names == (None, None, "b")
+    assert y.shape == (2, 3, 4)
+    # a single-element split is a no-op and keeps the name
+    assert x.unflatten(0, (6,)).names == ("a", "b")
+
+
+def test_expand_and_broadcast_to_prepend_unnamed_axes():
+    x = NamedTensor(torch.zeros(3, 4), names=("b", "c"))
+    assert x.expand(2, 3, 4).names == (None, "b", "c")
+    assert torch.broadcast_to(x, (2, 3, 4)).names == (None, "b", "c")
+
+
+def test_diagonal_drops_the_two_axes_and_appends_unnamed():
+    x = NamedTensor(torch.zeros(3, 3, 4), names=("a", "b", "c"))
+    y = x.diagonal(0, "a", "b")
+    assert y.names == ("c", None)
+    assert y.shape == (4, 3)
+
+
+def test_flatten_drops_named_index_metadata_in_merged_range():
+    t = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("p", "q", "r"), ("w", "x", "y", "z")),
+        index_dims=(1, 2),
+    )
+    # both named axes are inside the merged range -> index metadata dropped
+    assert t.flatten(1, 2).index_names is None
+
+
+def test_expand_shifts_named_index_dims():
+    e = TensorWithNamedIndices(
+        torch.zeros(3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(1,),
+    )
+    out = e.expand(2, 3, 4)
+    assert out.index_dims == (2,)
+    assert out.index_names == (("w", "x", "y", "z"),)
+
+
+def test_diagonal_shifts_surviving_named_index_dim():
+    d = TensorWithNamedIndices(
+        torch.zeros(3, 3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(2,),
+    )
+    out = d.diagonal(0, 0, 1)
+    assert out.index_dims == (0,)
+    assert out.index_names == (("w", "x", "y", "z"),)
