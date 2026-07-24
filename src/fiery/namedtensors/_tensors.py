@@ -317,6 +317,88 @@ class NamedTensor(ExtendedTensor):
         """Transpose of the last two dimensions (names included)."""
         return self.transpose(-2, -1)
 
+    def refine_names(self, *names: str | None) -> tx.Self:
+        """
+        Return a view with names assigned to (only) the unnamed axes.
+
+        Naming an already-named axis to a *different* name is an error; a
+        given `None` keeps the current name. A single `...` keeps the names
+        of the axes it spans. Self-managed (not the builtin op).
+        """
+        current = list(self.names)
+        if Ellipsis in names:
+            i = names.index(Ellipsis)
+            n_explicit = len(names) - 1
+            span = self.ndim - n_explicit
+            if span < 0:
+                raise ValueError(
+                    f"refine_names: too many names for {self.ndim} axes"
+                )
+            names = names[:i] + tuple(current[i : i + span]) + names[i + 1 :]
+        if len(names) != self.ndim:
+            raise ValueError(
+                f"refine_names: expected {self.ndim} names, got {len(names)}"
+            )
+        refined = []
+        for cur, given in zip(current, names):
+            if given is None:
+                refined.append(cur)
+            elif cur is not None and cur != given:
+                raise ValueError(
+                    f"refine_names: cannot rename axis {cur!r} to {given!r}"
+                )
+            else:
+                refined.append(given)
+        return self.rename(*refined)
+
+    def _align_order(self, names: tuple) -> list:
+        """Resolve a name order (possibly with `...`) to a permutation."""
+        current = list(self.names)
+        if Ellipsis in names:
+            explicit = [n for n in names if n is not Ellipsis]
+            rest = [n for n in current if n not in explicit]
+            i = names.index(Ellipsis)
+            names = names[:i] + tuple(rest) + names[i + 1 :]
+        if len(names) != self.ndim:
+            raise ValueError(
+                f"align: expected {self.ndim} names, got {len(names)}"
+            )
+        return [_resolve_axis(self.names, n) for n in names]
+
+    def align_to(self, *names: str) -> tx.Self:
+        """
+        Return a view with the axes permuted into the given name order.
+
+        A single `...` stands for all the other axes, in their current
+        order (e.g. `x.align_to(..., "channel")`). Self-managed.
+        """
+        return self.permute(*self._align_order(names))
+
+    def align_as(self, other: NamedTensor) -> tx.Self:
+        """
+        Return a view aligned to `other`'s named axes.
+
+        This tensor's axes are permuted into `other`'s order, and a size-1
+        axis is inserted for every name that only `other` has. Every axis of
+        `self` must be named and present in `other`. Self-managed.
+        """
+        target = _names_of(other)
+        mine = self.names
+        for name in mine:
+            if name is None or name not in target:
+                raise ValueError(
+                    f"align_as: axis {name!r} is not in the target names "
+                    f"{tuple(target)}"
+                )
+        # permute self's axes into the order they appear in `other`
+        order = [mine.index(name) for name in target if name in mine]
+        out = self.permute(*order)
+        # insert size-1 axes for the names only `other` has
+        for pos, name in enumerate(target):
+            if name not in mine:
+                out = out.unsqueeze(pos)
+        return out.rename(*target)
+
 
 @NamedTensor.overrides(_torch_func("permute"))
 def _(input: NamedTensor, *dims: int | str | tuple) -> NamedTensor:
