@@ -127,6 +127,18 @@ follow their dimension through `permute`, reductions, `rename`, etc. An
 `orientation` must read `"{a}-to-{b}"`; flipping the axis rewrites it to
 `"{b}-to-{a}"`.
 
+A descriptor is also a way to **address** axes. Anywhere you can pass a `dim`
+(method form), a query dict selects *every* axis whose descriptor matches — so
+one call can act on a whole group of axes at once:
+
+```python
+x.movedim({"type": "space"}, -1)   # all space axes to the back, order kept
+x.sum(dim={"type": "channel"})     # reduce every channel axis
+```
+
+A query that matches a single axis behaves exactly like naming it (so it still
+works with single-`dim`-only ops such as `prod`).
+
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or
