@@ -28,12 +28,11 @@ jobs:
         include:
           # CPU-only torch wheels; numpy pinned <2 where the torch build
           # predates the numpy 2 C-ABI (older torch cannot use numpy>=2).
+          # torch floor is 1.8: named-tensor subclassing needs
+          # `__torch_function__` and the utilities need `broadcast_shapes`.
           - python-version: "3.7"
             os: "ubuntu-22.04"
-            pip-install: "torch==1.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html"
-          - python-version: "3.7"
-            os: "ubuntu-22.04"
-            pip-install: "torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html"
+            pip-install: "torch==1.8.1+cpu numpy==1.21.6 -f https://download.pytorch.org/whl/torch_stable.html"
           - python-version: "3.9"
             os: "ubuntu-22.04"
             pip-install: "torch==1.11.0+cpu numpy==1.26.4 -f https://download.pytorch.org/whl/torch_stable.html"

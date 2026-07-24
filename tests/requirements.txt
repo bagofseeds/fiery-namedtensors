@@ -1,2 +1,3 @@
 pytest>=7
 numpy
+typing_extensions>=4.0
