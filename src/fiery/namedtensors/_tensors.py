@@ -1271,10 +1271,15 @@ def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> NamedTensor:
 
 
 def _names_of(tensor: tx.Any) -> tuple:
-    """Axis names of a tensor (all-`None` for a plain, unnamed tensor)."""
+    """
+    Axis names of a tensor: its `names` if a `NamedTensor`, all-`None` for a
+    plain tensor, and `()` for a non-tensor (e.g. a Python scalar operand).
+    """
     if isinstance(tensor, NamedTensor):
         return tensor.names
-    return (None,) * tensor.ndim
+    if isinstance(tensor, Tensor):
+        return (None,) * tensor.ndim
+    return ()
 
 
 def _broadcast_batch_names(x: tuple, y: tuple) -> tuple:
@@ -1328,6 +1333,91 @@ def _make_matmul(name: str) -> None:
 
 for _matmul_name in ("matmul", "mm", "bmm"):
     _make_matmul(_matmul_name)
+
+
+# ======================================================================
+#
+#                     G A T H E R   /   S C A T T E R
+#
+# ======================================================================
+
+
+def _drop_index_meta(input: NamedTensor) -> dict:
+    """Overrides that clear a `TensorWithNamedIndices`' index metadata."""
+    if isinstance(input, TensorWithNamedIndices):
+        return {"_index_names": None, "_index_dims": None}
+    return {}
+
+
+@NamedTensor.overrides(_torch_func("gather"))
+def _(input: NamedTensor, dim: int | str, index: Tensor, **kwargs) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    result = torch.gather(input, dim, index, **kwargs)
+    # Rank (and each axis' name) is preserved; the gathered positions change
+    # per-slice, so any named-index layout is dropped.
+    return _carry(input, result, **_drop_index_meta(input))
+
+
+@NamedTensor.overrides(_torch_func("take_along_dim"))
+def _(
+    input: NamedTensor, indices: Tensor, dim: int | str = None, **kwargs
+) -> tx.Any:
+    if dim is not None:
+        dim = _resolve_axis(input.names, dim)
+    result = torch.take_along_dim(input, indices, dim, **kwargs)
+    return _carry(input, result, **_drop_index_meta(input))
+
+
+@NamedTensor.overrides(_torch_func("scatter"))
+def _(
+    input: NamedTensor, dim: int | str, index: Tensor, *args, **kwargs
+) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    result = torch.scatter(input, dim, index, *args, **kwargs)
+    # Positions and sizes are unchanged, so names and index metadata survive.
+    return _carry(input, result)
+
+
+@NamedTensor.overrides(_torch_func("scatter_add"))
+def _(
+    input: NamedTensor, dim: int | str, index: Tensor, src: Tensor, **kwargs
+) -> tx.Any:
+    dim = _resolve_axis(input.names, dim)
+    result = torch.scatter_add(input, dim, index, src, **kwargs)
+    return _carry(input, result)
+
+
+@NamedTensor.overrides(_torch_func("where"))
+def _(condition: Tensor, *args) -> tx.Any:
+    # The 1-argument form `torch.where(cond)` returns indices (like nonzero);
+    # leave it to the generic path.
+    if not args:
+        with _no_dispatch():
+            return torch.where(condition)
+    x, y = args
+    result = torch.where(condition, x, y)
+    names = _broadcast_batch_names(
+        _broadcast_batch_names(_names_of(condition), _names_of(x)),
+        _names_of(y),
+    )
+    ref = next(
+        (t for t in (condition, x, y) if isinstance(t, NamedTensor)),
+        condition,
+    )
+    overrides = {"_axis_names": names}
+    overrides.update(_drop_index_meta(ref))
+    return _carry(ref, result, **overrides)
+
+
+@NamedTensor.overrides(_torch_func("masked_select"))
+def _(input: NamedTensor, mask: Tensor, **kwargs) -> tx.Any:
+    result = torch.masked_select(input, mask, **kwargs)
+    ref = input if isinstance(input, NamedTensor) else mask
+    # The result is 1-D and its length is data-dependent: a single unnamed
+    # axis, and no index layout.
+    overrides = {"_axis_names": (None,)}
+    overrides.update(_drop_index_meta(ref))
+    return _carry(ref, result, **overrides)
 
 
 # ======================================================================

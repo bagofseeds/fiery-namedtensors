@@ -813,3 +813,85 @@ def test_matmul_drops_named_index_metadata():
     out = t @ b
     assert out.index_names is None
     assert out.names == (None, "n")
+
+
+# ----------------------------------------------------------------------
+# gather / scatter / where / masked_select
+# ----------------------------------------------------------------------
+
+
+def test_gather_keeps_axis_names_and_accepts_name_dim():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    idx = torch.zeros(2, 3, 4, dtype=torch.long)
+    assert x.gather("c", idx).names == ("a", "b", "c")
+    assert torch.gather(x, 2, idx).names == ("a", "b", "c")
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "take_along_dim"),
+    reason="take_along_dim not in this torch",
+)
+def test_take_along_dim_keeps_names():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    idx = torch.zeros(2, 3, 1, dtype=torch.long)
+    # name-as-dim on the method form
+    assert x.take_along_dim(idx, "c").names == ("a", "b", "c")
+
+
+def test_scatter_preserves_names_and_index_metadata():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    idx = torch.zeros(2, 3, 4, dtype=torch.long)
+    src = torch.zeros(2, 3, 4, dtype=x.dtype)
+    assert x.scatter("c", idx, src).names == ("a", "b", "c")
+    t = TensorWithNamedIndices(
+        torch.arange(12).reshape(3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(1,),
+    )
+    zeros = torch.zeros(3, 4, dtype=torch.long)
+    # positions are unchanged, so the index layout survives a scatter
+    assert t.scatter(0, zeros, zeros).index_names == (("w", "x", "y", "z"),)
+
+
+def test_gather_drops_named_index_metadata():
+    t = TensorWithNamedIndices(
+        torch.arange(12).reshape(3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(1,),
+    )
+    idx = torch.zeros(3, 4, dtype=torch.long)
+    assert t.gather(1, idx).index_names is None
+
+
+def _where_supports_scalar():
+    try:
+        torch.where(torch.tensor([True]), torch.tensor([1.0]), 0.0)
+    except (RuntimeError, TypeError):
+        return False
+    return True
+
+
+def test_where_reconciles_operand_names():
+    p = NamedTensor(torch.zeros(2, 3), names=("r", "k"))
+    q = NamedTensor(torch.ones(2, 3), names=("r", "k"))
+    assert torch.where(p > 0.5, p, q).names == ("r", "k")
+    # a conflicting name becomes unnamed
+    conflicting = NamedTensor(torch.ones(2, 3), names=("r", "z"))
+    assert torch.where(p > 0.5, p, conflicting).names == ("r", None)
+
+
+@pytest.mark.skipif(
+    not _where_supports_scalar(),
+    reason="scalar `where` operand not supported in this torch",
+)
+def test_where_with_a_scalar_operand_keeps_the_tensor_names():
+    p = NamedTensor(torch.zeros(2, 3), names=("r", "k"))
+    # a scalar operand contributes no names
+    assert torch.where(p > 0.5, p, 0.0).names == ("r", "k")
+
+
+def test_masked_select_collapses_to_one_unnamed_axis():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("a", "b", "c"))
+    out = torch.masked_select(x, x > 5)
+    assert out.names == (None,)
+    assert out.ndim == 1
