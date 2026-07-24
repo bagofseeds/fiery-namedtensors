@@ -314,6 +314,47 @@ def test_rename_preserves_index_metadata():
     assert y.index_dims == (1,)
 
 
+def test_refine_names_only_names_unnamed_axes():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=(None, "b", None))
+    assert x.refine_names("a", "b", "c").names == ("a", "b", "c")
+    # a given None keeps the current name
+    assert x.refine_names(None, "b", None).names == (None, "b", None)
+
+
+def test_refine_names_ellipsis_keeps_spanned_names():
+    x = NamedTensor(torch.zeros(2, 3, 4, 5), names=(None, "b", "c", None))
+    assert x.refine_names("a", ..., "d").names == ("a", "b", "c", "d")
+
+
+def test_refine_names_rejects_renaming_a_named_axis():
+    x = NamedTensor(torch.zeros(2, 3), names=("a", "b"))
+    with pytest.raises(ValueError, match="cannot rename"):
+        x.refine_names("a", "X")
+
+
+def test_align_to_permutes_into_the_given_order():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    y = x.align_to("c", "a", "b")
+    assert y.names == ("c", "a", "b")
+    assert y.shape == (4, 2, 3)
+    # `...` stands for the remaining axes, in order
+    assert x.align_to(..., "a").names == ("b", "c", "a")
+
+
+def test_align_as_reorders_and_inserts_size_one_axes():
+    x = NamedTensor(torch.zeros(4, 2), names=("c", "a"))
+    other = NamedTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
+    y = x.align_as(other)
+    assert y.names == ("a", "b", "c", "d")
+    assert y.shape == (2, 1, 4, 1)
+
+
+def test_align_as_requires_every_axis_present_in_target():
+    other = NamedTensor(torch.zeros(2, 3), names=("a", "b"))
+    with pytest.raises(ValueError, match="not in the target"):
+        NamedTensor(torch.zeros(2), names=("q",)).align_as(other)
+
+
 @pytest.mark.skipif(
     not hasattr(torch.Tensor, "names"),
     reason="builtin named-tensor API not present in this torch build",
