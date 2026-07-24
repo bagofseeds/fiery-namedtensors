@@ -420,3 +420,62 @@ def test_transpose_carries_index_dims():
     y = x.transpose(1, 2)
     assert y.index_dims == (2, 1)
     assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
+
+
+# ----------------------------------------------------------------------
+# name-as-dim: a name may stand in for an integer `dim=`
+# ----------------------------------------------------------------------
+
+
+def test_permute_accepts_axis_names():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    y = x.permute("c", "a", "b")
+    assert y.names == ("c", "a", "b")
+    assert y.shape == (4, 2, 3)
+    # matches the equivalent integer permutation
+    assert y.shape == x.permute(2, 0, 1).shape
+
+
+def test_transpose_family_accepts_axis_names():
+    # Name-as-dim is a method-form feature: the functional form
+    # (`torch.transpose(x, "a", ...)`) cannot be relied on because newer
+    # PyTorch rejects a non-int dim at the C dispatcher before
+    # `__torch_function__` runs.
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    assert x.transpose("a", "c").names == ("c", "b", "a")
+    assert x.swapaxes("a", "b").names == ("b", "a", "c")
+    assert x.swapdims("b", "c").names == ("a", "c", "b")
+
+
+def test_movedim_accepts_axis_names_for_source():
+    x = NamedTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
+    assert x.movedim("a", 2).names == ("b", "c", "a", "d")
+    assert x.moveaxis(("a", "b"), (2, 3)).names == ("c", "d", "a", "b")
+
+
+def test_squeeze_accepts_axis_name():
+    x = NamedTensor(torch.ones(2, 1, 3), names=("a", "one", "b"))
+    y = x.squeeze("one")
+    assert y.names == ("a", "b")
+    assert y.shape == (2, 3)
+
+
+def test_index_select_accepts_axis_name():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("w", "x", "y", "z"),),
+        index_dims=(2,),
+    )
+    x.names = ("batch", "feat", "chan")
+    # select along the axis addressed by its (axis) name
+    by_name = x.index_select("chan", torch.tensor([0, 2]))
+    by_int = x.index_select(2, torch.tensor([0, 2]))
+    assert by_name.shape == by_int.shape == (2, 3, 2)
+    # the sliced index names match, whichever form was used
+    assert by_name.index_names == by_int.index_names == (("w", "y"),)
+
+
+def test_name_as_dim_unknown_name_raises():
+    x = NamedTensor(torch.zeros(2, 3), names=("a", "b"))
+    with pytest.raises(ValueError, match="no axis named 'z'"):
+        x.transpose("a", "z")
