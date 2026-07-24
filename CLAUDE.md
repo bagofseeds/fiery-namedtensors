@@ -28,9 +28,11 @@ src/fiery/namedtensors/
   __init__.py       # public API re-exports
   _tensors.py       # the tensor subclasses + torch-function overrides
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
+  _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
 tests/
   test_namedtensors.py
   test_arrayutils.py
+  test_compat.py
 ```
 
 ## How the subclassing works
@@ -47,16 +49,21 @@ tests/
 
 1. **Wide Python (3.7+).** Runtime code must stay old-compatible: no PEP 695
    `type` statements, no walrus, no `zip(strict=)`, no runtime PEP 604 `|` /
-   PEP 585 `list[...]` in values. Put modern typing in **annotations only**
-   (they are lazy strings thanks to `from __future__ import annotations`) and
-   build runtime type aliases from `typing` generics. Import `Self` / `Literal`
-   / `Final` from `typing_extensions`.
+   PEP 585 `list[...]` in values, and **never subscript an abc/builtin generic
+   at runtime** (`collections.abc.Sequence[...]` is not subscriptable before
+   3.9). Modern typing lives in **annotations only** (lazy strings thanks to
+   `from __future__ import annotations`). All typing — annotations *and* the
+   runtime type aliases — goes through **`import typing_extensions as tx`**
+   (`tx.Union`, `tx.Sequence`, `tx.Self`, …); do not import from `typing` or
+   `collections.abc` (`tx.Sequence` also works for `isinstance`). This matches
+   the bagof-hints house style.
 2. **Wide PyTorch.** Never register an override for a function that may be
-   absent: resolve it through `_torch_func("name")` (returns `None` if the op
-   does not exist in the running torch) and pass that to `overrides()`, which
-   skips `None`. Bespoke methods that are *not* torch ops (e.g.
-   `TensorWithNamedIndices.index`) are defined as plain methods, never via the
-   version-guarded override path.
+   absent: resolve it through `_torch_func("name")` (from `_compat`, returns
+   `None` if the op does not exist in the running torch) and pass that to
+   `overrides()`, which skips `None`. Bespoke methods that are *not* torch ops
+   (e.g. `TensorWithNamedIndices.index`) are defined as plain methods, never via
+   the version-guarded override path. Version shims (an `EllipsisType` fallback,
+   a pure-shape `broadcast_shape` that allocates nothing) live in `_compat`.
 3. **Index metadata is canonical when set directly.** Internal code that
    already holds `(names, dims)` assigns `out._index_names` / `out._index_dims`
    directly; going through the public setters re-runs `_prepare_index_names`
