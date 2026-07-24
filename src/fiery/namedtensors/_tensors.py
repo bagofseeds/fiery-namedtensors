@@ -135,6 +135,12 @@ class NamedTensor(ExtendedTensor):
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
         kwargs.pop("names", None)
+        # Wrapping an existing tensor via `Tensor.__new__(cls, t)` is not
+        # portable: some PyTorch versions reject a non-default dtype there
+        # (e.g. a Long tensor raises "expected Float"). `as_subclass` re-tags
+        # an existing tensor as this subclass across versions without a copy.
+        if len(args) == 1 and not kwargs and isinstance(args[0], Tensor):
+            return args[0].as_subclass(cls)
         return super().__new__(cls, *args, **kwargs)
 
     def __init__(self, *args, **kwargs) -> None:

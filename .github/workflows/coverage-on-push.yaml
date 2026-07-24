@@ -11,11 +11,17 @@ on:
       - pyproject.toml
       - .github/workflows/test*.yaml
   pull_request:
+    # `ready_for_review` so marking a draft ready triggers the suite.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
 
 jobs:
   tests:
+    # Skip on draft PRs; pushes to main and ready PRs still run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft == false
     uses: ./.github/workflows/coverage.yaml
     secrets: inherit

@@ -59,13 +59,6 @@ def broadcast_shape(*shapes: tx.Sequence[int]) -> torch.Size:
     return torch.Size(result)
 
 
-# Prefer the C implementation when it exists; otherwise use ours.
-try:
-    from torch import broadcast_shapes
-except ImportError:  # torch < 1.8
-    broadcast_shapes = broadcast_shape
-
-
 def torch_func(name: str) -> tx.Optional[tx.Callable]:
     """
     Resolve a torch callable by name, preferring the functional form

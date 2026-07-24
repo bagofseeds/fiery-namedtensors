@@ -11,7 +11,7 @@ from torch import Tensor
 # internals
 from fiery.namedtensors._compat import (
     EllipsisType,
-    broadcast_shapes,
+    broadcast_shape,
 )
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription)
@@ -117,7 +117,7 @@ def _count_output_axes(values: SmartSlicerT) -> int:
             raise ValueError(f"Invalid slicer value: {value}")
 
     if shapes:
-        count += len(broadcast_shapes(*shapes))
+        count += len(broadcast_shape(*shapes))
     return count
 
 
@@ -318,7 +318,7 @@ def _parse_slicer(
         raise ValueError(f"Invalid slicer value: {value}")
 
     # Compute brodcasted shape of all advanced indices.
-    adv_shape = broadcast_shapes(
+    adv_shape = broadcast_shape(
         *[axis.shape for axis in output_axes if axis.shape is not None]
     )
     adv_ndim = len(adv_shape)
