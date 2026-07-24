@@ -376,3 +376,47 @@ def test_functional_permute_carries_index_dims():
     y = torch.permute(x, (2, 0, 1))
     assert y.index_dims == (2, 0)
     assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
+
+
+# --- reshape / reorder op family --------------------------------------------
+
+
+def test_transpose_family_swaps_axis_names():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    assert x.transpose(0, 2).names == ("c", "b", "a")
+    assert x.swapaxes(0, 1).names == ("b", "a", "c")
+    assert x.swapdims(1, 2).names == ("a", "c", "b")
+    # functional form matches the method form
+    assert torch.transpose(x, 0, 2).names == ("c", "b", "a")
+
+
+def test_mT_transposes_last_two_axis_names():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    assert x.mT.names == ("a", "c", "b")
+    assert x.mT.shape == (2, 4, 3)
+
+
+def test_movedim_reorders_axis_names_like_torch():
+    x = NamedTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
+    y = x.movedim(0, 2)
+    assert y.names == ("b", "c", "a", "d")
+    assert y.shape == tuple(torch.movedim(torch.zeros(2, 3, 4, 5), 0, 2).shape)
+    assert x.moveaxis((0, 1), (2, 3)).names == ("c", "d", "a", "b")
+
+
+def test_reshape_uses_same_name_rule_as_view():
+    x = NamedTensor(torch.arange(24).reshape(2, 3, 4), names=("b", "h", "w"))
+    assert x.reshape(2, 12).names == ("b", None)
+    assert x.reshape(6, 4).names == (None, "w")
+    assert torch.reshape(x, (2, -1)).names == ("b", None)
+
+
+def test_transpose_carries_index_dims():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
+        index_dims=(1, 2),
+    )
+    y = x.transpose(1, 2)
+    assert y.index_dims == (2, 1)
+    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))
