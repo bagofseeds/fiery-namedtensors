@@ -323,3 +323,56 @@ def test_names_do_not_use_builtin_named_tensors():
     # (C-level) names -- that is what keeps us portable across torch versions.
     x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
     assert torch.Tensor.names.__get__(x) == (None, None)
+
+
+# --- R4: functional-form (torch.op(x, ...)) metadata parity -----------------
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "permute"),
+    reason="torch.permute (functional) was added in torch 1.9",
+)
+def test_functional_permute_matches_method_form():
+    x = NamedTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
+    assert torch.permute(x, (2, 0, 1)).names == x.permute(2, 0, 1).names
+    assert torch.permute(x, (2, 0, 1)).names == ("c", "a", "b")
+
+
+def test_functional_unsqueeze_squeeze_match_method_form():
+    x = NamedTensor(torch.zeros(2, 3), names=("row", "col"))
+    assert torch.unsqueeze(x, 1).names == ("row", None, "col")
+
+    y = NamedTensor(torch.zeros(1, 3), names=("s", "col"))
+    assert torch.squeeze(y).names == ("col",)
+
+
+def test_functional_index_select_matches_method_form():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
+        index_dims=(1, 2),
+    )
+    idx = torch.tensor([0, 2])
+    func = torch.index_select(x, 2, idx)
+    meth = x.index_select(2, idx)
+    assert (
+        func.index_names
+        == meth.index_names
+        == (("c0", "c1", "c2"), ("x", "z"))
+    )
+    assert func.index_dims == meth.index_dims == (1, 2)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "permute"),
+    reason="torch.permute (functional) was added in torch 1.9",
+)
+def test_functional_permute_carries_index_dims():
+    x = TensorWithNamedIndices(
+        torch.arange(24).reshape(2, 3, 4),
+        index_names=(("c0", "c1", "c2"), ("x", "y", "z", "t")),
+        index_dims=(1, 2),
+    )
+    y = torch.permute(x, (2, 0, 1))
+    assert y.index_dims == (2, 0)
+    assert y.index_names == (("c0", "c1", "c2"), ("x", "y", "z", "t"))

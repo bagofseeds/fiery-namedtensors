@@ -17,6 +17,17 @@ try:
 except ImportError:  # Python < 3.10
     EllipsisType = type(...)
 
+# Context manager that disables (subclass) torch-function dispatch while a
+# name-aware override runs, so the plain torch ops it calls do not recurse.
+# It was renamed `DisableTorchFunction` -> `DisableTorchFunctionSubclass`
+# around torch 1.13; support both.
+try:
+    from torch._C import (
+        DisableTorchFunctionSubclass as no_dispatch,  # noqa: F401
+    )
+except ImportError:  # torch < ~1.13
+    from torch._C import DisableTorchFunction as no_dispatch  # noqa: F401
+
 
 def broadcast_shape(*shapes: tx.Sequence[int]) -> torch.Size:
     """
