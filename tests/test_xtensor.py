@@ -472,6 +472,71 @@ def test_reduction_drops_coordinates_of_the_reduced_axis():
 
 
 # ----------------------------------------------------------------------
+# irregular / (values, indices) reducers
+# ----------------------------------------------------------------------
+
+
+def _named():
+    return XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+
+
+def test_std_var_reduce_and_accept_a_name():
+    x = _named()
+    assert x.std(dim="b").names == ("a", "c")
+    assert x.var(dim="c").names == ("a", "b")
+    # a positional bool is `unbiased`, not a dim -> reduces everything
+    assert x.std(False).names == ()
+    assert x.std(False).ndim == 0
+
+
+def test_norm_reduces_the_named_dim():
+    x = _named()
+    assert x.norm(dim="b").names == ("a", "c")
+    assert torch.norm(x, 2, 1).names == ("a", "c")
+
+
+def test_max_min_return_named_values_and_indices():
+    x = _named()
+    out = x.max(dim="b")
+    assert out.values.names == out.indices.names == ("a", "c")
+    assert x.max().names == ()  # scalar form
+    # the two-tensor (elementwise) form reconciles names, keeps rank
+    assert torch.max(x, x * 2).names == ("a", "b", "c")
+
+
+def test_median_mode_kthvalue_track_names():
+    x = _named()
+    assert torch.median(x).names == ()  # global median -> scalar
+    assert torch.median(x, 1).values.names == ("a", "c")
+    assert x.mode(dim="b").values.names == ("a", "c")
+    assert x.kthvalue(2, dim="b").values.names == ("a", "c")
+
+
+def test_sort_preserves_names_and_drops_the_sorted_coordinate():
+    x = XTensor(
+        torch.randn(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")},
+    )
+    s = x.sort(dim="c")
+    assert s.values.names == s.indices.names == ("a", "b", "c")
+    # the sorted axis' labels no longer match positions -> dropped
+    assert s.values.coords == {"b": ("p", "q", "r")}
+
+
+def test_topk_keeps_names_resizes_and_drops_the_dim_coordinate():
+    x = XTensor(
+        torch.randn(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
+    )
+    t = x.topk(2, dim="c")
+    assert t.values.names == ("a", "b", "c")
+    assert t.values.shape == (2, 3, 2)
+    assert t.values.coords == {}
+
+
+# ----------------------------------------------------------------------
 # slice / split ops: select / narrow / unbind / split / chunk / flip / roll
 # ----------------------------------------------------------------------
 
