@@ -537,6 +537,71 @@ def test_topk_keeps_names_resizes_and_drops_the_dim_coordinate():
 
 
 # ----------------------------------------------------------------------
+# scans: cumsum / cumprod / softmax / log_softmax / logcumsumexp / cummax /
+# cummin -- dimension-preserving (rank, sizes, names, coords all unchanged)
+# ----------------------------------------------------------------------
+
+
+def test_cumsum_keeps_names_and_accepts_a_name_dim():
+    x = XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    y = x.cumsum("a")
+    assert isinstance(y, XTensor)
+    assert y.names == ("a", "b", "c")
+    assert y.shape == (2, 3, 4)
+    assert y[1, 0, 0].item() == x[0, 0, 0].item() + x[1, 0, 0].item()
+    assert x.cumsum(1).names == ("a", "b", "c")  # int still works
+
+
+def test_functional_softmax_keeps_names():
+    x = XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    y = torch.softmax(x, 1)
+    assert isinstance(y, XTensor)
+    assert y.names == ("a", "b", "c")
+    assert y.shape == (2, 3, 4)
+
+
+def test_log_softmax_keeps_names():
+    x = XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.log_softmax("c").names == ("a", "b", "c")
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "logcumsumexp"),
+    reason="logcumsumexp added in a newer torch",
+)
+def test_logcumsumexp_keeps_names():
+    x = XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
+    assert x.logcumsumexp("b").names == ("a", "b", "c")
+
+
+def test_cumsum_keeps_the_labelled_dims_coordinates():
+    x = XTensor(
+        torch.arange(24.0).reshape(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")},
+    )
+    y = x.cumsum("b")
+    assert y.names == ("a", "b", "c")
+    assert y.coords == {"b": ("p", "q", "r"), "c": ("w", "x", "y", "z")}
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "cummax"), reason="cummax added in a newer torch"
+)
+def test_cummax_keeps_names_and_coords_on_both_members():
+    x = XTensor(
+        torch.arange(24.0).reshape(2, 3, 4),
+        names=("a", "b", "c"),
+        coords={"c": ("w", "x", "y", "z")},
+    )
+    out = x.cummax("a")
+    assert out.values.names == out.indices.names == ("a", "b", "c")
+    assert out.values.shape == out.indices.shape == (2, 3, 4)
+    assert out.values.coords == {"c": ("w", "x", "y", "z")}
+    assert out.indices.coords == {"c": ("w", "x", "y", "z")}
+
+
+# ----------------------------------------------------------------------
 # slice / split ops: select / narrow / unbind / split / chunk / flip / roll
 # ----------------------------------------------------------------------
 
