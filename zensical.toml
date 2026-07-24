@@ -5,7 +5,7 @@ extra_css = ["stylesheets/extra.css"]
 nav = [
   {"All the Matches" = "https://bagofseeds.github.io/fiery/"},
   {"Named Tensors" = "index.md"},
-  {"API reference" = "api.md"},
+  {"API" = "api/index.md"},
 ]
 
 # The site_name is shown in the page header and the browser window title
