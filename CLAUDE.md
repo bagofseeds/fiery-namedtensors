@@ -123,8 +123,12 @@ matching section (or a new one):
   drop coordinates), `matmul`/`mm`/`bmm`, and the contraction ops
   `einsum`/`tensordot` (equation- or axis-list-driven; free-function only, no
   method form — `_einsum_output_names` parses explicit/implicit equations and
-  falls back to unnamed on an ellipsis; both drop coords but keep the
-  descriptors of surviving named axes).
+  falls back to unnamed on an ellipsis; both drop coords). **All** of these
+  multi-operand ops merge axis **descriptors** across their operands via
+  `_merge_axis_meta` (union of surviving dims; per shared dim keep agreeing
+  fields, drop conflicting — under the `combine_axes` option), the same helper
+  the pointwise factory uses, so a surviving axis keeps its descriptor no
+  matter which operand it came from.
 - **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`scatter_add`/
   `index_add`/`index_copy`/`index_fill`/`where`/`masked_select`.
 - **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:

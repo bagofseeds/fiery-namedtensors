@@ -1488,7 +1488,10 @@ def _(tensors: tx.Sequence, dim: int | str = 0, **kwargs) -> XTensor:
             # a non-join axis keeps its labels only if the operands agree
             coords[name] = parts[0]
     del cat_name
-    return _carry(ref, result, _axis_names=names, _coords=coords)
+    meta = _merge_axis_meta(tensors, names)
+    return _carry(
+        ref, result, _axis_names=names, _coords=coords, _axis_meta=meta
+    )
 
 
 @XTensor.overrides(_torch_func("stack"))
@@ -1510,7 +1513,10 @@ def _(tensors: tx.Sequence, dim: int = 0, **kwargs) -> XTensor:
         parts = [_coords_of(t).get(name) for t in tensors]
         if parts[0] is not None and all(p == parts[0] for p in parts):
             coords[name] = parts[0]
-    return _carry(ref, result, _axis_names=names, _coords=coords)
+    meta = _merge_axis_meta(tensors, names)
+    return _carry(
+        ref, result, _axis_names=names, _coords=coords, _axis_meta=meta
+    )
 
 
 # ---- promoting stacks (hstack / vstack / dstack) ---------------------------
@@ -1555,7 +1561,10 @@ def _make_promoting_stack(name: str) -> None:
         ref = tensors[0]
         result = base(tensors, **kwargs)
         names = _promoted_stack_names(tensors, result.ndim)
-        return _carry(ref, result, _axis_names=names, _coords={})
+        meta = _merge_axis_meta(tensors, names)
+        return _carry(
+            ref, result, _axis_names=names, _coords={}, _axis_meta=meta
+        )
 
     XTensor.overrides(base)(_stack)
 
@@ -1614,12 +1623,15 @@ def _make_matmul(name: str) -> None:
     def _matmul(input: tx.Any, other: tx.Any, **kwargs) -> tx.Any:
         result = base(input, other, **kwargs)
         ref = input if isinstance(input, XTensor) else other
-        # The contraction invalidates the coordinate layout.
+        names = _matmul_names(_names_of(input), _names_of(other))
+        # The contraction invalidates the coordinate layout; surviving axes
+        # keep their (merged) descriptors.
         return _carry(
             ref,
             result,
-            _axis_names=_matmul_names(_names_of(input), _names_of(other)),
+            _axis_names=names,
             _coords={},
+            _axis_meta=_merge_axis_meta((input, other), names),
         )
 
     registered = XTensor.overrides(base)(_matmul)
@@ -1729,7 +1741,8 @@ def _(equation: str, *operands: tx.Any, **kwargs) -> tx.Any:
     names = _einsum_output_names(
         equation, [_names_of(t) for t in flat], getattr(result, "ndim", 0)
     )
-    return _carry(ref, result, _axis_names=names, _coords={})
+    meta = _merge_axis_meta(flat, names)
+    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
 
 
 @XTensor.overrides(_torch_func("tensordot"))
@@ -1747,7 +1760,8 @@ def _(a: tx.Any, b: tx.Any, dims: tx.Any = 2, **kwargs) -> tx.Any:
     names = tuple(
         n for i, n in enumerate(a_names) if i not in a_contracted
     ) + tuple(n for i, n in enumerate(b_names) if i not in b_contracted)
-    return _carry(ref, result, _axis_names=names, _coords={})
+    meta = _merge_axis_meta((a, b), names)
+    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
 
 
 # ======================================================================
