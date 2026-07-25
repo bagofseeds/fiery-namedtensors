@@ -480,21 +480,60 @@ class XTensor(ExtendedTensor):
 
     # -- indexing / selection ---------------------------------------------
 
-    def __getitem__(self, slicer: SmartSlicerT) -> tx.Self:
-        # Label indexing, mirroring `.sel`: a `{dim: label(s)}` dict selects by
-        # coordinate label, and a bare `str` selects that label on whichever
-        # dim carries it (like attribute access, but through `[]`).
-        if isinstance(slicer, dict):
-            return self.sel(**slicer)
-        if isinstance(slicer, str):
-            hits = self._dims_with_label(slicer)
-            if len(hits) == 1:
-                return self.sel(**{hits[0]: slicer})
-            if len(hits) > 1:
+    def _resolve_label_slicer(self, slicer: SmartSlicerT) -> SmartSlicerT:
+        # Resolve any *positional* coordinate-label index to an integer (or a
+        # list of integers) against the axis it sits on, so `x[..., "y", "z"]`
+        # addresses the last two axes by label. A bare `str` or list-of-`str`
+        # element is a label index; everything else is left untouched.
+        items = slicer if isinstance(slicer, tuple) else (slicer,)
+        if not any(_is_label_index(v) for v in items):
+            return slicer
+        # Axes consumed by the explicit (non-newaxis, non-ellipsis) items; the
+        # ellipsis, if any, fills the remaining axes in the middle.
+        consumed = arrayutils._count_input_axes(items)
+        gap = self.ndim - consumed
+        resolved, axis = [], 0
+        for value in items:
+            if value is ...:
+                axis += gap
+                resolved.append(value)
+            elif value is None:
+                resolved.append(value)
+            elif _is_label_index(value):
+                resolved.append(self._label_to_index(axis, value))
+                axis += 1
+            else:
+                resolved.append(value)
+                axis += 1
+        return tuple(resolved)
+
+    def _label_to_index(self, axis: int, value: tx.Any) -> tx.Any:
+        """One label -> its integer position on `axis` (a list of labels ->
+        a list of positions); raises if the axis is unlabelled or the label
+        is absent."""
+        name = self.names[axis % self.ndim]
+        labels = self.coords.get(name) if name is not None else None
+        if labels is None:
+            raise KeyError(
+                f"axis {name!r} has no coordinates for label {value!r}"
+            )
+
+        def _one(label: str) -> int:
+            try:
+                return labels.index(label)
+            except ValueError:
                 raise KeyError(
-                    f"label {slicer!r} is ambiguous across dims {hits}"
-                )
-            raise KeyError(f"no coordinate label {slicer!r}")
+                    f"no label {label!r} on axis {name!r}"
+                ) from None
+
+        if isinstance(value, str):
+            return _one(value)
+        return [_one(label) for label in value]
+
+    def __getitem__(self, slicer: SmartSlicerT) -> tx.Self:
+        # A positional coordinate label (`x[..., "y"]`) resolves to an integer
+        # index against the axis it indexes before ordinary indexing runs.
+        slicer = self._resolve_label_slicer(slicer)
         # The underlying tensor carries no builtin names, so basic indexing
         # (including newaxis via `None`) works directly.
         out = Tensor.__getitem__(self, slicer)
@@ -703,6 +742,23 @@ def _coords_for(input: XTensor, result_names: tuple) -> dict:
     """
     kept = {name for name in result_names if name is not None}
     return {k: v for k, v in _coords_of(input).items() if k in kept}
+
+
+def _is_label_index(value: tx.Any) -> bool:
+    """
+    Whether a slicer element is a **coordinate label** index: a bare `str`, or
+    a non-empty **list** of `str` (an advanced index by label). A *tuple* is
+    not, so a top-level `x["y", "z"]` stays one label per axis rather than a
+    single advanced index. Plain ints, slices, `None`, ellipsis and tensors
+    are not labels either.
+    """
+    if isinstance(value, str):
+        return True
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(isinstance(item, str) for item in value)
+    )
 
 
 def _single_source(src: tx.Any) -> tx.Optional[int]:

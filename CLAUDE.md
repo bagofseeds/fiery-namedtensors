@@ -106,9 +106,11 @@ matching section (or a new one):
 
 - **NAMED TENSOR** — the `XTensor` class: `names`/`coords` properties,
   `sel`/`isel`, `__getitem__` (positional slicing that also slices the labels
-  of kept axes; a `{dim: label(s)}` dict or bare-`str` slicer selects by label,
-  like `.sel`), `__getattr__` (label access), `rename`,
-  `refine_names`/`align_to`/`align_as`.
+  of kept axes; a **positional** coordinate label resolves against the axis it
+  indexes — a bare `str` like an int there, a `list` of `str` as an advanced
+  index — via `_resolve_label_slicer`/`_label_to_index`, so `x[..., "y", "z"]`
+  addresses the last two axes by label), `__getattr__` (label access),
+  `rename`, `refine_names`/`align_to`/`align_as`.
 - **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
   `view`/`reshape`), and rank-changers `flatten`/`unflatten`/`expand`/
   `broadcast_to`/`diagonal`.
