@@ -16,11 +16,13 @@ from torch import Tensor
 
 # internals
 from fiery.xtensor import _arrayutils as arrayutils
+from fiery.xtensor import _units
 from fiery.xtensor._arrayutils import SmartSlicerT, _SmartSlicerT
 from fiery.xtensor._compat import EllipsisType
 from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
 from fiery.xtensor._options import combine_axes_policy as _combine_axes_policy
+from fiery.xtensor._options import get_option as _get_option
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription).
 # The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
@@ -90,6 +92,26 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     if isinstance(dim, (tuple, list)):
         return type(dim)(_resolve_axis(names, d) for d in dim)
     return dim
+
+
+def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
+    """
+    Expand a single `...` in a name tuple into the run of axes it stands for,
+    so the tuple reaches `ndim` -- `...` means "the axes not named here". Each
+    spanned position takes its value from `fill` (the same length as `ndim`):
+    `(None,) * ndim` leaves the run **unnamed** (assignment), while the current
+    names keep the run **unchanged** (modification). A tuple with no `...` is
+    returned as-is; more than one `...` is an error.
+    """
+    if Ellipsis not in names:
+        return names
+    if names.count(Ellipsis) > 1:
+        raise ValueError("only one '...' is allowed in a name list")
+    i = names.index(Ellipsis)
+    span = ndim - (len(names) - 1)
+    if span < 0:
+        raise ValueError(f"too many names for {ndim} axes: {names}")
+    return names[:i] + tuple(fill[i : i + span]) + names[i + 1 :]
 
 
 def _match_axes(input: XTensor, query: tx.Mapping) -> list:
@@ -257,13 +279,14 @@ class XTensor(ExtendedTensor):
     single label by attribute (`x.red`).
     """
 
-    _ATTRS = {"_axis_names", "_coords", "_axis_meta"}
+    _ATTRS = {"_axis_names", "_coords", "_axis_meta", "_data_unit"}
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
         kwargs.pop("names", None)
         kwargs.pop("coords", None)
         kwargs.pop("axes", None)
+        kwargs.pop("unit", None)
         # Wrapping an existing tensor via `Tensor.__new__(cls, t)` is not
         # portable: some PyTorch versions reject a non-default dtype there
         # (e.g. a Long tensor raises "expected Float"). `as_subclass` re-tags
@@ -284,16 +307,23 @@ class XTensor(ExtendedTensor):
         else:
             kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
+        unit = kwargs.pop("unit", None)
         if names is not None:
             self.names = names
         if coords is not None:
             self.coords = coords
+        if unit is not None:
+            self.unit = unit
 
     # -- dimensions --------------------------------------------------------
 
     @property
     def names(self) -> tuple[str | None, ...]:
-        """The name of each axis (`None` for unnamed axes)."""
+        """
+        The name of each axis (`None` for unnamed axes). On assignment a single
+        `...` expands to a run of unnamed axes, so `x.names = ("b", ..., "w")`
+        names only the ends and leaves the middle unnamed.
+        """
         names = self.__dict__.get("_axis_names", None)
         # Fall back to all-unnamed if metadata is missing or stale (e.g. it
         # was propagated onto the output of an op that changed the rank but
@@ -309,6 +339,9 @@ class XTensor(ExtendedTensor):
             self.__dict__.pop("_axis_meta", None)
             return
         value = tuple(value)
+        # A single `...` fills the unspecified middle with unnamed axes, so
+        # `names=("b", ..., "x")` on a 4-D tensor -> ("b", None, None, "x").
+        value = _expand_name_ellipsis(value, self.ndim, (None,) * self.ndim)
         if len(value) != self.ndim:
             raise ValueError(
                 f"Expected {self.ndim} names, got {len(value)}: {value}"
@@ -405,6 +438,78 @@ class XTensor(ExtendedTensor):
             normalized[dim] = labels
         self._coords = normalized
 
+    # -- data unit ---------------------------------------------------------
+
+    @property
+    def unit(self) -> tx.Optional[str]:
+        """
+        The physical unit of the tensor's **values** (the *data* unit, Proposal
+        0003), or `None`. Assigning *annotates* (it never changes the data);
+        `to_unit` converts. Under `unit_backend="pint"` the unit is validated
+        and normalised on set; with the default `unit_backend=None` it is an
+        opaque string that is simply carried through operations.
+        """
+        return self.__dict__.get("_data_unit")
+
+    @unit.setter
+    def unit(self, value: tx.Optional[str]) -> None:
+        if value is None:
+            self.__dict__.pop("_data_unit", None)
+            return
+        self._data_unit = _units.normalise(value)
+
+    def to_unit(self, unit: str) -> tx.Self:
+        """
+        Convert the data to `unit`, rescaling the values by the conversion
+        factor (requires a unit already set and `unit_backend="pint"`).
+        """
+        current = self.unit
+        if current is None:
+            raise ValueError("to_unit: this tensor has no unit to convert")
+        unit = _units.normalise(unit)
+        scaled = Tensor.mul(self, _units.factor(current, unit))
+        return _carry(self, scaled, _data_unit=unit)
+
+    @property
+    def magnitude(self) -> tx.Self:
+        """
+        The tensor with its **data unit dropped** (Proposal 0003 §7.1) -- the
+        bare values, still an `XTensor` with the same names and coordinates.
+        A view (no data copy); the original is unchanged. `x.magnitude.unit`
+        is always `None`. (To get a plain `torch.Tensor`, use
+        `x.as_subclass(torch.Tensor)`.)
+        """
+        return _carry(self, self.as_subclass(type(self)), _data_unit=None)
+
+    # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
+    #
+    # `x * u.mm` / `x / u.s`: a backend `Unit`/`Quantity` operand attaches or
+    # derives a data unit. This must be caught at the operator dunder, because
+    # Python's protocol otherwise lets the unit library's reflected `__rmul__`
+    # intercept `x * <unit>` first (yielding a wrapped object, never an
+    # `XTensor`). A non-unit operand falls straight back to the normal path,
+    # so name/unit algebra for ordinary operands is untouched.
+
+    def __mul__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "mul")
+        return Tensor.__mul__(self, other)
+
+    def __rmul__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "mul")
+        return Tensor.__rmul__(self, other)
+
+    def __truediv__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "div")
+        return Tensor.__truediv__(self, other)
+
+    def __rtruediv__(self, other: tx.Any) -> tx.Any:
+        # `unit / x` is normally handled by the unit library itself before we
+        # are consulted; this only fires for e.g. a scalar left operand.
+        return Tensor.__rtruediv__(self, other)
+
     # -- renaming ----------------------------------------------------------
 
     def _resolve_rename(
@@ -428,7 +533,11 @@ class XTensor(ExtendedTensor):
             return (None,) * self.ndim
         if len(names) == 1 and isinstance(names[0], (tuple, list)):
             names = tuple(names[0])
-        new_names = tuple(names)
+        # A single `...` keeps the axes it spans unchanged (`rename` modifies,
+        # so an unspecified run is left as-is, not unnamed).
+        new_names = _expand_name_ellipsis(
+            tuple(names), self.ndim, tuple(self.names)
+        )
         if len(new_names) != self.ndim:
             raise ValueError(
                 f"rename: expected {self.ndim} names, got {len(new_names)}"
@@ -456,7 +565,9 @@ class XTensor(ExtendedTensor):
 
         Call positionally (`x.rename("a", "b")`), with `None` to clear all
         names (`x.rename(None)`), or with a mapping to rename specific axes
-        (`x.rename(old="new")`). Coordinates follow their (renamed) dimension.
+        (`x.rename(old="new")`). A single `...` keeps the axes it spans
+        unchanged (`x.rename("A", ..., "Z")`). Coordinates follow their
+        (renamed) dimension.
         """
         new_names = self._resolve_rename(names, rename_map)
         # `as_subclass` returns a view but does not copy `__dict__`, so carry
@@ -585,6 +696,26 @@ class XTensor(ExtendedTensor):
                         if sliced is not None:
                             new_coords[name] = tuple(sliced)
             out._coords = new_coords
+            # Selecting a single position on a unit-carrying axis collapses
+            # that axis away; its per-position data unit folds into the base
+            # data unit (effective unit = base * product of coord units).
+            if _units.active():
+                folded = self.__dict__.get("_data_unit")
+                kept = {src for src in sources if src is not None}
+                changed = False
+                for ax, in_name in enumerate(in_names):
+                    if ax in kept or in_name is None:
+                        continue
+                    piece = arrayutils._get_slicer_by_index(unrolled, ax)
+                    if not isinstance(piece, int):
+                        continue
+                    labels = coords.get(in_name)
+                    unit = _label_unit(labels[piece]) if labels else None
+                    if unit is not None:
+                        folded = _units.mul(folded, unit)
+                        changed = True
+                if changed:
+                    out._data_unit = folded
         return out
 
     def isel(self, **indexers: tx.Any) -> tx.Self:
@@ -680,15 +811,9 @@ class XTensor(ExtendedTensor):
         of the axes it spans. Self-managed (not the builtin op).
         """
         current = list(self.names)
-        if Ellipsis in names:
-            i = names.index(Ellipsis)
-            n_explicit = len(names) - 1
-            span = self.ndim - n_explicit
-            if span < 0:
-                raise ValueError(
-                    f"refine_names: too many names for {self.ndim} axes"
-                )
-            names = names[:i] + tuple(current[i : i + span]) + names[i + 1 :]
+        # A single `...` keeps the names of the axes it spans (refine only
+        # touches the *unnamed* axes; the spanned run rides through unchanged).
+        names = _expand_name_ellipsis(names, self.ndim, tuple(current))
         if len(names) != self.ndim:
             raise ValueError(
                 f"refine_names: expected {self.ndim} names, got {len(names)}"
@@ -817,6 +942,16 @@ def _label_name(label: tx.Any) -> tx.Optional[str]:
     return None
 
 
+def _label_unit(label: tx.Any) -> tx.Optional[str]:
+    """
+    A structured label's **per-position data unit** (its `"unit"` field), or
+    `None` (Proposal 0003 phase 3 — heterogeneous, per-axis data units).
+    """
+    if isinstance(label, dict):
+        return label.get("unit")
+    return None
+
+
 def _label_matches(label: tx.Any, query: tx.Mapping) -> bool:
     """Whether a **structured** `label` contains every key/value in `query`."""
     return isinstance(label, dict) and all(
@@ -871,6 +1006,10 @@ def _(input: XTensor, *dims: int | str | tuple) -> XTensor:
     if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
         dims = tuple(dims[0])
     names = input.names
+    # A single `...` stands for every axis not listed, in their current order
+    # (the `align_to` semantics), so `x.permute("w", ...)` moves `w` to front.
+    if Ellipsis in dims:
+        dims = tuple(input._align_order(dims))
     dims = tuple(_resolve_axis(names, dim) for dim in dims)
     result = Tensor.permute(input, dims)
     return _carry(input, result, _axis_names=tuple(names[dim] for dim in dims))
@@ -1169,24 +1308,84 @@ def _resolve_reduce_dim(input: XTensor, dim: tx.Any) -> tx.Any:
     return positions[0] if len(positions) == 1 else positions
 
 
+#: Sentinel: an axis's per-position units disagree (dimensionally invalid).
+_INCOMPATIBLE = object()
+
+
+def _uniform_unit(labels: LabelsT) -> tx.Any:
+    """
+    The single per-position data unit shared by every label on an axis:
+    `None` if the axis carries no units, the common unit if they all agree
+    (under the backend), or `_INCOMPATIBLE` when they differ or only some
+    positions carry one.
+    """
+    units = [_label_unit(one) for one in labels]
+    present = [u for u in units if u is not None]
+    if not present:
+        return None
+    first = present[0]
+    if len(present) != len(units):
+        return _INCOMPATIBLE
+    if any(not _units.equal(first, other) for other in present[1:]):
+        return _INCOMPATIBLE
+    return first
+
+
+def _reduce_unit(input: XTensor, removed: tx.Set) -> dict:
+    """
+    Fold the per-position units of any reduced unit-carrying axis into the base
+    data unit (a reduction sums positions, so their unit must be uniform).
+    Incompatible units are dimensionally invalid: drop the unit (default) or
+    raise under `unit_policy="strict"`. Returns an override for `_carry` (empty
+    when nothing changes, so the base unit propagates untouched).
+    """
+    if not _units.active():
+        return {}
+    coords = input.__dict__.get("_coords") or {}
+    if not coords:
+        return {}
+    names = input.names
+    base = input.__dict__.get("_data_unit")
+    changed = False
+    for ax in removed:
+        name = names[ax] if ax < len(names) else None
+        labels = coords.get(name) if name is not None else None
+        if not labels:
+            continue
+        unit = _uniform_unit(labels)
+        if unit is _INCOMPATIBLE:
+            _unit_strict(True, f"reducing incompatible units on axis {name!r}")
+            return {"_data_unit": None}
+        if unit is not None:
+            base = _units.mul(base, unit)
+            changed = True
+    return {"_data_unit": base} if changed else {}
+
+
 def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     """Recompute the name metadata for a dimension-reducing op's result."""
     if not isinstance(result, Tensor):
         # e.g. a (values, indices) namedtuple: left to a bespoke override.
         return result
     ndim = input.ndim
-    # `keepdim` is inferable from the output rank: a reduction either removes
-    # the reduced axes or keeps them as size-1.
-    if dim is not None and result.ndim == ndim:
-        return _carry(input, result, _axis_names=input.names)
     if dim is None:
         removed = set(range(ndim))
     else:
         dims = dim if isinstance(dim, (tuple, list)) else (dim,)
         removed = {d % ndim for d in dims}
+    unit_kw = _reduce_unit(input, removed)
+    # `keepdim` is inferable from the output rank: a reduction either removes
+    # the reduced axes or keeps them as size-1. Either way the reduced axis's
+    # coordinates go, so its folded unit still applies.
+    if dim is not None and result.ndim == ndim:
+        return _carry(input, result, _axis_names=input.names, **unit_kw)
     names = tuple(n for i, n in enumerate(input.names) if i not in removed)
     return _carry(
-        input, result, _axis_names=names, _coords=_coords_for(input, names)
+        input,
+        result,
+        _axis_names=names,
+        _coords=_coords_for(input, names),
+        **unit_kw,
     )
 
 
@@ -1748,6 +1947,17 @@ def _make_matmul(name: str) -> None:
         result = base(input, other, **kwargs)
         ref = input if isinstance(input, XTensor) else other
         names = _matmul_names(_names_of(input), _names_of(other))
+        # A contraction is a sum of products: fold each side's contracted-axis
+        # unit into its base and multiply (heterogeneous units require the
+        # contracted axis to be unit-uniform per side).
+        unit_kw = {}
+        if _units.active():
+            axa, axb = _matmul_contracted_axes(
+                getattr(input, "ndim", 0), getattr(other, "ndim", 0)
+            )
+            unit_kw["_data_unit"] = _contraction_unit(
+                (input, other), ([axa], [axb])
+            )
         # The contraction invalidates the coordinate layout; surviving axes
         # keep their (merged) descriptors.
         return _carry(
@@ -1756,6 +1966,7 @@ def _make_matmul(name: str) -> None:
             _axis_names=names,
             _coords={},
             _axis_meta=_merge_axis_meta((input, other), names),
+            **unit_kw,
         )
 
     registered = XTensor.overrides(base)(_matmul)
@@ -1866,7 +2077,20 @@ def _(equation: str, *operands: tx.Any, **kwargs) -> tx.Any:
         equation, [_names_of(t) for t in flat], getattr(result, "ndim", 0)
     )
     meta = _merge_axis_meta(flat, names)
-    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
+    unit_kw = {}
+    if _units.active():
+        axes = _einsum_contracted_axes(equation, flat)
+        if axes is None:
+            # unparsable (e.g. ellipsis): fall back to the product of bases
+            base = None
+            for operand in flat:
+                base = _units.mul(base, _unit_of(operand))
+            unit_kw["_data_unit"] = base
+        else:
+            unit_kw["_data_unit"] = _contraction_unit(flat, axes)
+    return _carry(
+        ref, result, _axis_names=names, _coords={}, _axis_meta=meta, **unit_kw
+    )
 
 
 @XTensor.overrides(_torch_func("tensordot"))
@@ -1885,7 +2109,14 @@ def _(a: tx.Any, b: tx.Any, dims: tx.Any = 2, **kwargs) -> tx.Any:
         n for i, n in enumerate(a_names) if i not in a_contracted
     ) + tuple(n for i, n in enumerate(b_names) if i not in b_contracted)
     meta = _merge_axis_meta((a, b), names)
-    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
+    unit_kw = {}
+    if _units.active():
+        unit_kw["_data_unit"] = _contraction_unit(
+            (a, b), (sorted(a_contracted), sorted(b_contracted))
+        )
+    return _carry(
+        ref, result, _axis_names=names, _coords={}, _axis_meta=meta, **unit_kw
+    )
 
 
 # ======================================================================
@@ -2156,7 +2387,237 @@ def _merge_axis_meta(sources: tx.Sequence, result_names: tuple) -> dict:
     return merged
 
 
-def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
+# -- data-unit algebra (Proposal 0003) ---------------------------------------
+#
+# Under an active `unit_backend`, a pointwise op transforms the operands' data
+# units per its rule below; a dimensionally invalid/ambiguous step drops the
+# unit (default) or raises (`unit_policy="strict"`). With no backend it is
+# skipped and the unit rides along opaquely via `_carry`.
+
+_UNIT_RULE = {
+    "mul": "mul",
+    "div": "div",
+    "floor_divide": "div",
+    "pow": "pow",
+    "add": "add",
+    "sub": "add",
+    "remainder": "add",
+    "maximum": "add",
+    "minimum": "add",
+    "hypot": "add",
+    "eq": "cmp",
+    "ne": "cmp",
+    "lt": "cmp",
+    "le": "cmp",
+    "gt": "cmp",
+    "ge": "cmp",
+    "atan2": "drop",
+    "logical_and": "drop",
+    "logical_or": "drop",
+    "logical_xor": "drop",
+}
+
+
+def _unit_of(x: tx.Any) -> tx.Optional[str]:
+    """The data unit of `x`, or `None` (a plain tensor/scalar is unitless)."""
+    return x.__dict__.get("_data_unit") if isinstance(x, XTensor) else None
+
+
+def _attach_unit(x: XTensor, operand: tx.Any, op: str) -> XTensor:
+    """
+    Combine a backend `Unit`/`Quantity` `operand` into `x` (Proposal 0003
+    §2.4): its magnitude scales the data, its unit multiplies (`op="mul"`) or
+    divides (`op="div"`) `x`'s data unit. A bare `Unit` has magnitude 1, so the
+    data is untouched -- but through a fresh view, never `x` itself, so
+    `_carry` cannot annotate the original in place.
+    """
+    magnitude, unit = _units.split_quantity(operand)
+    if magnitude == 1.0:
+        scaled = x.as_subclass(type(x))
+    else:
+        scaled = Tensor.mul(x, magnitude)
+    current = _unit_of(x)
+    combined = (
+        _units.mul(current, unit) if op == "mul" else _units.div(current, unit)
+    )
+    return _carry(x, scaled, _data_unit=combined)
+
+
+def _unit_strict(invalid: bool, detail: str) -> None:
+    """Raise on an invalid unit step under `unit_policy="strict"`."""
+    if invalid and _get_option("unit_policy") == "strict":
+        raise ValueError(detail)
+
+
+def _binary_unit(a: tx.Any, b: tx.Any, rule: str) -> tx.Optional[str]:
+    """Result data unit for a pointwise op under `rule` (honours policy)."""
+    ua, ub = _unit_of(a), _unit_of(b)
+    if rule == "mul":
+        return _units.mul(ua, ub)
+    if rule == "div":
+        return _units.div(ua, ub)
+    if rule == "pow":
+        if isinstance(b, (int, float)):
+            return _units.pow_(ua, b)
+        _unit_strict(
+            ua is not None, "pow: non-scalar exponent on a united value"
+        )
+        return None
+    if rule == "add":
+        if _units.equal(ua, ub):
+            return ua
+        _unit_strict(True, f"incompatible units {ua!r} and {ub!r}")
+        return None
+    if rule == "cmp":
+        _unit_strict(
+            not _units.equal(ua, ub), f"comparing units {ua!r} and {ub!r}"
+        )
+        return None
+    return None  # "drop": result is unitless
+
+
+def _reconcile_units(
+    a: tx.Any, b: tx.Any, rule: tx.Optional[str]
+) -> tx.Tuple[tx.Any, tx.Any, dict]:
+    """
+    Apply the data-unit algebra to a pointwise op's operands. For `add`/`cmp`
+    of **compatible-but-different** units (e.g. `V` and `mV`), implicitly
+    convert the *right* operand to the left's unit (Proposal 0003 §7.2) so the
+    values line up before the op; then compute the result unit per `rule` and
+    policy. Returns the (possibly rescaled) operands and the `_data_unit`
+    override for `_carry`. Inert with no backend / no unit rule.
+    """
+    if not (_units.active() and rule is not None):
+        return a, b, {}
+    if rule in ("add", "cmp"):
+        ua, ub = _unit_of(a), _unit_of(b)
+        if (
+            ua is not None
+            and ub is not None
+            and not _units.equal(ua, ub)
+            and _units.compatible(ua, ub)
+        ):
+            converted = Tensor.mul(b, _units.factor(ub, ua))
+            b = _carry(b, converted, _data_unit=ua)
+    return a, b, {"_data_unit": _binary_unit(a, b, rule)}
+
+
+# -- contraction (matmul / einsum / tensordot) unit algebra ------------------
+#
+# A contraction is a sum of products over one or more axes. For the sum to be
+# dimensionally valid each contracted axis must be **unit-uniform** per side;
+# its uniform per-position unit then folds into that operand's base, and the
+# operands' effective units multiply (Proposal 0003 §4). A non-uniform
+# contracted axis is invalid -> drop (default) / raise (strict).
+
+
+def _axis_uniform_unit(x: tx.Any, axis: int) -> tx.Any:
+    """
+    The single per-position data unit of `x`'s axis `axis` (`None` when it
+    carries no coordinate units), or `_INCOMPATIBLE` when the positions
+    disagree -- contracting such an axis is dimensionally invalid.
+    """
+    if not isinstance(x, XTensor):
+        return None
+    ndim = x.ndim
+    if not -ndim <= axis < ndim:
+        return None
+    name = x.names[axis]
+    if name is None:
+        return None
+    labels = (x.__dict__.get("_coords") or {}).get(name)
+    if not labels:
+        return None
+    return _uniform_unit(labels)
+
+
+def _contraction_unit(
+    operands: tx.Sequence, contracted_axes: tx.Sequence
+) -> tx.Optional[str]:
+    """
+    Base data unit for a contraction: the product over `operands` of each
+    operand's base unit and the uniform per-position unit of each of its
+    contracted axes (`contracted_axes[i]` lists the summed axes of
+    `operands[i]`). A non-uniform contracted axis drops the unit (default) or
+    raises (`unit_policy="strict"`).
+    """
+    total = None
+    for operand, axes in zip(operands, contracted_axes):
+        effective = _unit_of(operand)
+        for axis in axes:
+            unit = _axis_uniform_unit(operand, axis)
+            if unit is _INCOMPATIBLE:
+                _unit_strict(
+                    True, "contracting an axis with non-uniform units"
+                )
+                return None
+            effective = _units.mul(effective, unit)
+        total = _units.mul(total, effective)
+    return total
+
+
+def _matmul_contracted_axes(na: int, nb: int) -> tx.Tuple[int, int]:
+    """The contracted axis of each operand under `matmul` broadcasting."""
+    if na == 1 and nb == 1:
+        return 0, 0  # dot product
+    if na == 1:
+        return 0, -2  # [k] @ [..., k, n]
+    if nb == 1:
+        return -1, 0  # [..., m, k] @ [k]
+    return -1, -2  # [..., m, k] @ [..., k, n]
+
+
+def _einsum_contracted_axes(
+    equation: str, operands: tx.Sequence
+) -> tx.Optional[list]:
+    """
+    Per-operand lists of contracted (summed) axis indices for
+    `einsum(equation, *operands)` -- a subscript that does **not** appear in
+    the output. Returns `None` for anything this simple parser can't handle
+    (most notably an ellipsis), so the caller falls back to base units only.
+    """
+    if "." in equation:
+        return None
+    if "->" in equation:
+        parts = equation.split("->")
+        if len(parts) != 2:
+            return None
+        in_part, out_part = parts
+    else:
+        in_part, out_part = equation, None
+    in_subscripts = [s.strip() for s in in_part.split(",")]
+    if len(in_subscripts) != len(operands):
+        return None
+    for subscript, operand in zip(in_subscripts, operands):
+        if subscript and not subscript.isalpha():
+            return None
+        if len(subscript) != getattr(operand, "ndim", len(subscript)):
+            return None
+    if out_part is None:
+        counts: dict = {}
+        for subscript in in_subscripts:
+            for letter in subscript:
+                counts[letter] = counts.get(letter, 0) + 1
+        out_letters = {c for c, n in counts.items() if n == 1}
+    else:
+        out_subscript = out_part.strip()
+        if out_subscript and not out_subscript.isalpha():
+            return None
+        out_letters = set(out_subscript)
+    return [
+        [i for i, letter in enumerate(subscript) if letter not in out_letters]
+        for subscript in in_subscripts
+    ]
+
+
+def _binary(
+    a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs, rule=None
+) -> tx.Any:
+    # `x * u.mm` (a unit operand) is handled earlier, at the operator dunders
+    # (§2.4); here both operands are ordinary values. Reconcile units first --
+    # this may rescale `b` (implicit V->mV-style conversion) -- then run the op
+    # on the reconciled operands.
+    a, b, unit_kw = _reconcile_units(a, b, rule)
     a_named = isinstance(a, XTensor) and None not in a.names
     b_named = isinstance(b, XTensor) and None not in b.names
     if a_named and b_named:
@@ -2164,7 +2625,12 @@ def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
         result = base(a2, b2, *args, **kwargs)
         meta = _merge_axis_meta((a, b), names)
         return _carry(
-            a, result, _axis_names=names, _coords=coords, _axis_meta=meta
+            a,
+            result,
+            _axis_names=names,
+            _coords=coords,
+            _axis_meta=meta,
+            **unit_kw,
         )
     # positional fallback (unnamed axis, plain tensor, or scalar operand)
     result = base(a, b, *args, **kwargs)
@@ -2175,16 +2641,22 @@ def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
     coords = _coords_of(ref) if result.ndim == getattr(ref, "ndim", -1) else {}
     meta = _merge_axis_meta((a, b), names)
     return _carry(
-        ref, result, _axis_names=names, _coords=coords, _axis_meta=meta
+        ref,
+        result,
+        _axis_names=names,
+        _coords=coords,
+        _axis_meta=meta,
+        **unit_kw,
     )
 
 
 def _make_pointwise(name: str) -> None:
     """Register a broadcast-by-name override for a binary/pointwise op."""
     base = _torch_func(name)
+    rule = _UNIT_RULE.get(name)
 
     def _op(a: tx.Any, b: tx.Any, *args, **kwargs) -> tx.Any:
-        return _binary(a, b, base, args, kwargs)
+        return _binary(a, b, base, args, kwargs, rule)
 
     registered = XTensor.overrides(base)(_op)
     # Operators (`a + b`, `a == b`, ...) dispatch with the bound method
@@ -2193,6 +2665,12 @@ def _make_pointwise(name: str) -> None:
     method = getattr(Tensor, name, None)
     if base is not None and method is not None and method is not base:
         XTensor._OVERRIDES[method] = registered
+    # `**` dispatches `Tensor.__pow__`, which is *not* `Tensor.pow`, so the
+    # operator would otherwise miss the override (unlike `+`/`*`/...).
+    if name == "pow":
+        dunder = getattr(Tensor, "__pow__", None)
+        if base is not None and dunder is not None:
+            XTensor._OVERRIDES[dunder] = registered
 
 
 # Elementwise ops whose result should align by name. `dim`-less, two-operand.
@@ -2222,92 +2700,39 @@ for _pointwise_name in _POINTWISE:
     _make_pointwise(_pointwise_name)
 
 
-# ======================================================================
+# -- transcendental functions (require a dimensionless argument) --------------
 #
-#             C O N V E N I E N C E   S P E C I A L I Z A T I O N S
-#
-# ======================================================================
+# `exp`/`log`/`sin`/... are only defined on dimensionless numbers, so under an
+# active backend a united argument drops its unit (default) or raises
+# (`unit_policy="strict"`); the result is dimensionless. With no backend the
+# unit rides along opaquely, unchanged. (These are elementwise, so names and
+# coordinates carry through as usual.)
 
 
-class XVector(XTensor):
-    """
-    A vector with a single labelled **channel** axis.
+def _make_transcendental(name: str) -> None:
+    base = _torch_func(name)
+    if base is None:
+        return
 
-    Convenience over `XTensor`: names one axis (default `"channel"`) and
-    labels it. `x.channels` reads those labels; `x.<label>` and
-    `x.sel(channel=...)` select by them.
-    """
+    def _op(input: tx.Any, *args, **kwargs) -> tx.Any:
+        result = base(input, *args, **kwargs)
+        if not _units.active():
+            return _carry(input, result)
+        unit = _unit_of(input)
+        _unit_strict(
+            not _units.dimensionless(unit),
+            f"{name}: expected a dimensionless argument, got unit {unit!r}",
+        )
+        return _carry(input, result, _data_unit=None)
 
-    _CHANNEL = "channel"
-
-    def __new__(cls, *args, **kwargs) -> tx.Self:
-        for key in ("channels", "channel_dim"):
-            kwargs.pop(key, None)
-        return super().__new__(cls, *args, **kwargs)
-
-    def __init__(
-        self,
-        data: Tensor,
-        *,
-        channels: ArgLabelsT = (...,),
-        channel_dim: int = -1,
-        **kwargs,
-    ) -> None:
-        super().__init__(data, **kwargs)
-        names = list(self.names)
-        names[channel_dim % self.ndim] = self._CHANNEL
-        self.names = tuple(names)
-        self.coords = {self._CHANNEL: channels}
-
-    @property
-    def channels(self) -> LabelsT | None:
-        """The labels of the channel axis (`None` if it was dropped)."""
-        return self.coords.get(self._CHANNEL)
-
-    @channels.setter
-    def channels(self, value: ArgLabelsT) -> None:
-        coords = dict(self.coords)
-        coords[self._CHANNEL] = value
-        self.coords = coords
+    XTensor.overrides(base)(_op)
 
 
-class XMatrix(XTensor):
-    """
-    A matrix with two labelled axes, `"row"` and `"col"`.
-
-    Convenience over `XTensor`, analogous to `XVector`.
-    """
-
-    _ROW, _COL = "row", "col"
-
-    def __new__(cls, *args, **kwargs) -> tx.Self:
-        for key in ("channels", "channel_dims"):
-            kwargs.pop(key, None)
-        return super().__new__(cls, *args, **kwargs)
-
-    def __init__(
-        self,
-        data: Tensor,
-        *,
-        channels: tuple[ArgLabelsT, ArgLabelsT] = ((...,), (...,)),
-        channel_dims: tuple[int, int] = (-2, -1),
-        **kwargs,
-    ) -> None:
-        super().__init__(data, **kwargs)
-        names = list(self.names)
-        d0, d1 = (d % self.ndim for d in channel_dims)
-        names[d0], names[d1] = self._ROW, self._COL
-        self.names = tuple(names)
-        self.coords = {self._ROW: channels[0], self._COL: channels[1]}
-
-    @property
-    def channels(self) -> tuple[LabelsT | None, LabelsT | None]:
-        """The `(row, col)` labels."""
-        coords = self.coords
-        return (coords.get(self._ROW), coords.get(self._COL))
-
-    @channels.setter
-    def channels(self, value: tuple[ArgLabelsT, ArgLabelsT]) -> None:
-        coords = dict(self.coords)
-        coords[self._ROW], coords[self._COL] = value
-        self.coords = coords
+_TRANSCENDENTAL = (
+    "exp", "expm1", "log", "log2", "log10", "log1p",
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "sigmoid", "erf", "erfc",
+)  # fmt: skip
+for _transcendental_name in _TRANSCENDENTAL:
+    _make_transcendental(_transcendental_name)

@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from fiery.xtensor import (
-    XMatrix,
     XTensor,
-    XVector,
     set_options,
+    xmatrix,
+    xvector,
 )
 from fiery.xtensor._tensors import _slice_labels, _torch_func
 
@@ -360,6 +360,61 @@ def test_refine_names_only_names_unnamed_axes():
 def test_refine_names_ellipsis_keeps_spanned_names():
     x = XTensor(torch.zeros(2, 3, 4, 5), names=(None, "b", "c", None))
     assert x.refine_names("a", ..., "d").names == ("a", "b", "c", "d")
+
+
+def test_names_ellipsis_fills_the_middle_with_unnamed_axes():
+    # a single `...` in `names=` stands for a run of unnamed (None) axes
+    t = torch.zeros(2, 3, 4, 5)
+    assert XTensor(t, names=("b", ..., "x")).names == ("b", None, None, "x")
+    assert XTensor(t, names=(..., "x")).names == (None, None, None, "x")
+    assert XTensor(t, names=("b", ...)).names == ("b", None, None, None)
+    assert XTensor(t, names=(...,)).names == (None,) * 4
+
+
+def test_names_setter_accepts_ellipsis():
+    x = XTensor(torch.zeros(2, 3, 4))
+    x.names = ("b", ..., "w")
+    assert x.names == ("b", None, "w")
+
+
+def test_names_ellipsis_with_a_descriptor_dict():
+    x = XTensor(
+        torch.zeros(2, 3, 4),
+        names=[{"name": "b", "type": "batch"}, ..., "w"],
+    )
+    assert x.names == ("b", None, "w")
+    assert x.axes[0] == {"name": "b", "type": "batch"}
+
+
+def test_names_ellipsis_rejects_more_than_one_and_overflow():
+    t = torch.zeros(2, 3)
+    with pytest.raises(ValueError, match="only one '...'"):
+        XTensor(t, names=("a", ..., "b", ...))
+    with pytest.raises(ValueError, match="too many names"):
+        XTensor(t, names=("a", "b", "c", ...))
+
+
+def test_rename_ellipsis_keeps_the_spanned_names():
+    # `rename` modifies, so `...` leaves the spanned axes unchanged
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=("b", "c", "h", "w"),
+        coords={"w": ("a", "b", "c", "d", "e")},
+    )
+    renamed = x.rename("B", ..., "W")
+    assert renamed.names == ("B", "c", "h", "W")
+    assert renamed.coords == {"W": ("a", "b", "c", "d", "e")}
+
+
+def test_permute_ellipsis_stands_for_the_remaining_axes():
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=("b", "c", "h", "w"),
+        coords={"w": ("a", "b", "c", "d", "e")},
+    )
+    assert x.permute("w", ...).names == ("w", "b", "c", "h")
+    assert x.permute(..., "b").names == ("c", "h", "w", "b")
+    assert x.permute("w", ...).coords == {"w": ("a", "b", "c", "d", "e")}
 
 
 def test_refine_names_rejects_renaming_a_named_axis():
@@ -1361,20 +1416,37 @@ def test_slice_labels_supports_int_slice_bool_and_advanced_indices():
 # ----------------------------------------------------------------------
 
 
-def test_named_vector_names_and_labels_the_channel_axis():
-    v = XVector(torch.zeros(2, 3), channels=("x", "y", "z"))
+def test_xvector_names_and_labels_the_channel_axis():
+    v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))
+    assert type(v) is XTensor  # a plain XTensor, not a distinct subclass
     assert v.names == (None, "channel")
-    assert v.channels == ("x", "y", "z")
     assert v.coords == {"channel": ("x", "y", "z")}
     assert v.sel(channel="y").shape == (2,)
     assert torch.equal(v.y, v.as_subclass(torch.Tensor)[:, 1])
 
 
-def test_named_matrix_labels_row_and_col():
-    m = XMatrix(torch.zeros(2, 3), channels=(("r0", "r1"), ("c0", "c1", "c2")))
+def test_xvector_channel_dim_and_default_unlabelled():
+    v = xvector(torch.zeros(3, 2), channel_dim=0)
+    assert v.names == ("channel", None)
+    # the default `channels=(...,)` names the axis without labelling it
+    assert v.coords == {"channel": (None, None, None)}
+
+
+def test_xmatrix_labels_row_and_col():
+    m = xmatrix(torch.zeros(2, 3), rows=("r0", "r1"), cols=("c0", "c1", "c2"))
+    assert type(m) is XTensor
     assert m.names == ("row", "col")
-    assert m.channels == (("r0", "r1"), ("c0", "c1", "c2"))
+    assert m.coords == {"row": ("r0", "r1"), "col": ("c0", "c1", "c2")}
     assert m.sel(row="r1", col="c2").ndim == 0
+
+
+def test_xvector_reduction_returns_a_plain_xtensor():
+    # dropping the channel axis yields a normal XTensor -- the type never
+    # outlives its meaning (the old XVector subclass did not maintain this)
+    v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))
+    reduced = v.sum(dim="channel")
+    assert type(reduced) is XTensor
+    assert reduced.names == (None,)
 
 
 # ----------------------------------------------------------------------
@@ -1652,6 +1724,354 @@ def test_set_options_rejects_unknown_option_or_value():
         set_options(combine_axes={"unit": "bogus"})
     with pytest.raises(ValueError, match="must be a policy str or a"):
         set_options(combine_axes=5)
+    with pytest.raises(ValueError, match="invalid unit_backend"):
+        set_options(unit_backend="nope")
+    with pytest.raises(ValueError, match="invalid unit_policy"):
+        set_options(unit_policy="nope")
+
+
+# ----------------------------------------------------------------------
+# data units (Proposal 0003 — the .unit annotation)
+# ----------------------------------------------------------------------
+
+
+def test_data_unit_is_stored_carried_and_opaque_without_a_backend():
+    # default backend is None: a unit is an opaque string, stored and carried
+    x = XTensor(torch.ones(2, 3), names=("a", "b"), unit="V")
+    assert x.unit == "V"
+    assert x.T.unit == "V"  # rides through reshape/reorder
+    assert x.sum(dim="a").unit == "V"  # ... and reductions
+    assert x[0].unit == "V"  # ... and indexing
+    x.unit = None
+    assert x.unit is None
+    x.unit = "not_a_real_unit"  # no backend -> no validation
+    assert x.unit == "not_a_real_unit"
+
+
+def test_data_unit_pint_backend_validates_and_normalises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        y = XTensor(torch.ones(3), unit="mV")
+        assert y.unit == "millivolt"  # canonicalised
+        with pytest.raises(ValueError, match="invalid unit"):
+            XTensor(torch.ones(2), unit="not_a_unit_zz")
+
+
+def test_to_unit_converts_the_data_by_the_conversion_factor():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        y = XTensor(torch.ones(3), unit="mV")
+        z = y.to_unit("V")
+        assert z.unit == "volt"
+        assert torch.allclose(
+            z.as_subclass(torch.Tensor), torch.full((3,), 0.001)
+        )
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(2)).to_unit("V")
+
+
+def _united(**kw):
+    return {name: XTensor(torch.ones(3), unit=u) for name, u in kw.items()}
+
+
+def test_data_unit_algebra_mul_div_pow():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        u = _united(V="V", A="A", s="s")
+        V, A, s = u["V"], u["A"], u["s"]
+        assert (V * A).unit == "ampere * volt"  # product
+        assert (V / s).unit == "volt / second"  # quotient
+        assert (V * 2).unit == "volt"  # a scalar is dimensionless
+        assert (V**2).unit == "volt ** 2"  # power (via the `**` operator)
+
+
+def test_data_unit_algebra_add_and_compare():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        V = XTensor(torch.ones(3), unit="V")
+        A = XTensor(torch.ones(3), unit="A")
+        assert (V + V).unit == "volt"  # same unit kept
+        assert (V + A).unit is None  # incompatible -> dropped (default policy)
+        assert (V < V).unit is None  # comparison result is unitless
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                _ = V + A
+
+
+def test_data_unit_matmul_multiplies_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        M = XTensor(torch.ones(2, 2), unit="V")
+        N = XTensor(torch.ones(2, 2), unit="A")
+        assert (M @ N).unit == "ampere * volt"
+
+
+def test_data_unit_transcendental_requires_dimensionless():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        V = XTensor(torch.ones(3), unit="V")
+        assert torch.exp(V).unit is None  # drop the unit (default policy)
+        assert torch.log(XTensor(torch.ones(3))).unit is None  # unitless
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="dimensionless"):
+                torch.exp(V)
+
+
+def test_data_unit_algebra_preserves_autograd():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        leaf = torch.ones(3, requires_grad=True)
+        A = XTensor(torch.ones(3), unit="A")
+        (XTensor(leaf, unit="V") * A).sum().backward()
+        assert leaf.grad is not None
+
+
+def test_data_unit_algebra_is_inert_without_a_backend():
+    # no backend: no algebra, the unit just rides along opaquely
+    V = XTensor(torch.ones(3), unit="V")
+    A = XTensor(torch.ones(3), unit="A")
+    assert (V * A).unit == "V"  # carried from the left operand, not combined
+    assert torch.exp(V).unit == "V"  # not dropped
+
+
+# -- attaching a unit by multiplication (Proposal 0003 phase 4, §2.4) ---------
+
+
+def test_multiplying_by_a_unit_attaches_it():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), names=("t",))
+        attached = x * u.mm  # a bare Unit: data unchanged, unit attached
+        assert attached.unit == "millimeter"
+        assert attached.tolist() == [0.0, 1.0, 2.0]
+        assert attached.names == ("t",)  # names ride through
+        assert x.unit is None  # the original is never annotated in place
+
+
+def test_multiplying_by_a_quantity_scales_the_data():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0))
+        scaled = x * (3 * u.mm)  # a Quantity carries a magnitude
+        assert scaled.unit == "millimeter"
+        assert scaled.tolist() == [0.0, 3.0, 6.0]
+
+
+def test_dividing_by_a_unit_derives_the_quotient_unit():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        v = XTensor(torch.ones(3), unit="V")
+        assert (v / u.s).unit == "volt / second"
+        assert (v * u.ohm).unit == "ohm * volt"
+
+
+def test_unit_multiplication_leaves_ordinary_operands_untouched():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), unit="m")
+        assert (x * 2).tolist() == [0.0, 2.0, 4.0]  # scalar mul, not a unit
+        assert (2 * x).tolist() == [0.0, 2.0, 4.0]  # reflected scalar
+        assert (x * x).unit == "meter ** 2"  # two united tensors: algebra
+        assert (x / 2).unit == "meter"  # scalar divide keeps the unit
+
+
+# -- heterogeneous (per-axis) data units (Proposal 0003 phase 3) --------------
+
+
+def _channel_stack():
+    # a `q` axis whose positions carry different data units
+    return XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("q", "t"),
+        coords={
+            "q": [
+                {"name": "voltage", "unit": "V"},
+                {"name": "current", "unit": "A"},
+                {"name": "power", "unit": "W"},
+            ]
+        },
+    )
+
+
+def test_hetero_unit_folds_into_base_on_selection():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        assert x.unit is None  # heterogeneous: no single base unit
+        assert x.sel(q="voltage").unit == "V"  # fold the channel's unit
+        assert x.sel(q="current").unit == "A"
+        assert x.isel(q=2).unit == "W"  # isel folds too
+        assert x[0].unit == "V"  # and plain integer indexing
+
+
+def test_hetero_unit_selection_multiplies_into_an_existing_base():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.arange(12.0).reshape(3, 4),
+            names=("q", "t"),
+            coords={
+                "q": [
+                    {"name": "a", "unit": "m"},
+                    {"name": "b", "unit": "m"},
+                    {"name": "c", "unit": "m"},
+                ]
+            },
+            unit="s",
+        )
+        assert x.isel(q=0).unit == "meter * second"  # base * coord unit
+
+
+def test_hetero_unit_slice_keeps_axis_and_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        sl = x.isel(q=slice(0, 2))  # keeps the axis -> no fold
+        assert sl.unit is None
+        assert sl.coords["q"] == (
+            {"name": "voltage", "unit": "V"},
+            {"name": "current", "unit": "A"},
+        )
+
+
+def _uniform_stack(unit="V"):
+    return XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("q", "t"),
+        coords={"q": [{"name": n, "unit": unit} for n in "abc"]},
+    )
+
+
+def test_reduction_folds_a_uniform_axis_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _uniform_stack("V")
+        assert x.sum(dim="q").unit == "V"  # uniform axis unit folds in
+        assert x.mean(dim="q").unit == "V"
+        assert x.sum(dim="q", keepdim=True).unit == "V"  # keepdim too
+        assert x.sum().unit == "V"  # dim=None reduces the unit axis as well
+
+
+def test_reduction_keeps_base_over_a_unitless_axis():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _uniform_stack("V")
+        assert x.sum(dim="t").unit is None  # `t` carries no units; base stays
+
+
+def test_reduction_over_incompatible_units_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        assert x.sum(dim="q").unit is None  # V/A/W incompatible -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                x.sum(dim="q")
+
+
+def test_hetero_units_are_inert_without_a_backend():
+    x = _channel_stack()  # unit_backend=None
+    assert x.sel(q="voltage").unit is None  # no fold when the layer is inert
+    assert x.sum(dim="q").unit is None
+
+
+# -- phase 4: detach, implicit conversion, heterogeneous contraction ----------
+
+
+def test_magnitude_drops_the_data_unit_but_keeps_names():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), names=("t",), unit="V")
+        m = x.magnitude
+        assert m.unit is None  # the data unit is stripped
+        assert m.names == ("t",)  # names/coords ride through
+        assert m.tolist() == [0.0, 1.0, 2.0]
+        assert x.unit == "volt"  # the original is unchanged (a view)
+
+
+def test_add_implicitly_converts_compatible_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), names=("t",), unit="V")
+        millivolts = XTensor(torch.full((3,), 500.0), names=("t",), unit="mV")
+        # right operand converts to the left's unit before adding
+        left = volts + millivolts
+        assert left.unit == "volt"
+        assert left.tolist() == [1.5, 1.5, 1.5]
+        right = millivolts + volts
+        assert right.unit == "millivolt"
+        assert right.tolist() == [1500.0, 1500.0, 1500.0]
+        # comparisons convert too
+        assert (volts > millivolts).tolist() == [True, True, True]
+
+
+def test_add_incompatible_units_still_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), unit="V")
+        amps = XTensor(torch.ones(3), unit="A")
+        assert (volts + amps).unit is None  # incompatible -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                _ = volts + amps
+
+
+def test_matmul_folds_uniform_contracted_axis_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        a = XTensor(
+            torch.ones(2, 3),
+            names=("i", "k"),
+            coords={"k": [{"name": c, "unit": "m"} for c in "abc"]},
+            unit="V",
+        )
+        b = XTensor(
+            torch.ones(3, 2),
+            names=("k", "j"),
+            coords={"k": [{"name": c, "unit": "s"} for c in "abc"]},
+            unit="A",
+        )
+        # (V·m) · (A·s) — each side's uniform contracted-axis unit folds in
+        assert (a @ b).unit == "ampere * meter * second * volt"
+
+
+def test_contraction_over_non_uniform_axis_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        a = XTensor(
+            torch.ones(2, 3),
+            names=("i", "k"),
+            coords={
+                "k": [
+                    {"name": "x", "unit": "m"},
+                    {"name": "y", "unit": "s"},
+                    {"name": "z", "unit": "kg"},
+                ]
+            },
+        )
+        b = XTensor(torch.ones(3, 2), names=("k", "j"))
+        assert (a @ b).unit is None  # non-uniform contracted axis -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="non-uniform"):
+                _ = a @ b
+
+
+def test_einsum_and_tensordot_multiply_operand_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        m = XTensor(torch.ones(2, 2), unit="V")
+        n = XTensor(torch.ones(2, 2), unit="A")
+        # einsum previously kept only the first operand's base unit
+        assert torch.einsum("ij,jk->ik", m, n).unit == "ampere * volt"
+        assert torch.tensordot(m, n, dims=1).unit == "ampere * volt"
+        # an unparsable equation (ellipsis) falls back to the base product
+        p = XTensor(torch.ones(2, 2, 2), unit="V")
+        q = XTensor(torch.ones(2, 2, 2), unit="A")
+        out = torch.einsum("...ij,...jk->...ik", p, q)
+        assert out.unit == "ampere * volt"
 
 
 def test_combine_axes_accepts_a_per_field_policy():

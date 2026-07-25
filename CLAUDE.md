@@ -22,8 +22,11 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   identity (`_label_name`), and a **query** dict in a `[]`/`sel` slot selects
   the matching *positions* (`_match_positions` → `slice`/list, keeps the axis)
   — the position-level analogue of the axis-descriptor query.
-- `XVector` / `XMatrix` — conveniences that pre-name+label their channel
-  axes (`"channel"`; `"row"`/`"col"`).
+- `xvector` / `xmatrix` (in `_factories.py`) — one-line **factory functions**
+  that name+label a `"channel"` axis (or `"row"`/`"col"`) and return a **plain
+  `XTensor`**. Deliberately *not* subclasses: an op that drops the labelled
+  axis must yield an ordinary `XTensor`, so the type never outlives its
+  meaning (the removed `XVector`/`XMatrix` subclasses did not maintain that).
 - **axis descriptors** (OME-NGFF-style, #39): a name may be given as a dict
   `{"name": "x", "type": "space", "orientation": "left-to-right"}` instead of a
   bare string. The extra fields (`type`/`unit`/`orientation`) live in
@@ -35,6 +38,48 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `movedim({"type": "space"}, -1)` blocks all space axes to the back
   (preserving order), `sum(dim={"type": "channel"})` reduces every channel
   axis (see `_query_positions` / `_movedim_block_order` / `_resolve_reduce_dim`).
+
+- **data unit** (`unit`, Proposal 0003 phase 1): the physical unit of the
+  tensor **values**, self-managed in `_data_unit` (in `_ATTRS`, so it
+  propagates like names/coords). `.unit` gets/sets it; `unit=` is a constructor
+  kwarg; `to_unit` converts (rescaling data). Opaque unless the `unit_backend`
+  option selects one (`"pint"` → validate/normalise/convert via `_units`).
+  Under a backend the ops do dimensional **algebra** (`*`/`/`/`pow`/matmul
+  multiply/divide units, `add`/compare need compatible units, transcendentals
+  require dimensionless) — an invalid step drops the unit, or raises under
+  `unit_policy="strict"`. See the POINTWISE `_UNIT_RULE`/`_binary_unit` and the
+  transcendental factory.
+
+- **heterogeneous data units** (Proposal 0003 phase 3): units that vary along
+  an axis live on the `unit` field of a structured coordinate (0002) —
+  `_label_unit` reads them; effective unit = base · Π(coord units). Selecting a
+  single position on such an axis (`__getitem__`/`isel`/`sel`) folds that unit
+  into `_data_unit`; reducing over it folds a **uniform** axis unit (via
+  `_uniform_unit`/`_reduce_unit`) into the base, or drops/raises (policy) on
+  **incompatible** per-position units. Backend-gated (inert with
+  `unit_backend=None`). Heterogeneous matmul/einsum contraction is not yet
+  wired (rides on base units only).
+
+- **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
+  attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in
+  `XTensor`'s operator **dunders** (`__mul__`/`__rmul__`/`__truediv__`), *not*
+  the `__torch_function__` overrides — otherwise pint's reflected `__rmul__`
+  grabs `x * <unit>` first and returns a wrapped object. `_attach_unit` splits
+  the operand into `(magnitude, unit)`, scales the data (through a **fresh
+  view**, so the original is never annotated in place), and combines the unit.
+  Non-unit operands fall straight back to `Tensor.__mul__` &c. `unit * x`
+  (unit on the left) is not interceptable — use `x * unit`.
+
+- **more phase 4** — `.magnitude` (property) drops the data unit, returning a
+  unit-free **view** that keeps names/coords (original untouched). `add`/`cmp`
+  of **compatible-but-different** units implicitly convert the *right* operand
+  to the left's unit (`_reconcile_units` rescales via `_units.factor` before
+  the op; only incompatible dims drop/raise). **Contraction** unit algebra
+  (`matmul`/`einsum`/`tensordot`) folds each side's *uniform* contracted-axis
+  unit into its base and multiplies (`_contraction_unit` / `_axis_uniform_unit`
+  / `_matmul_contracted_axes` / `_einsum_contracted_axes`); a non-uniform
+  contracted axis drops/raises. An `einsum` equation the parser can't read
+  (ellipsis) falls back to the base-unit product.
 
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
@@ -52,6 +97,7 @@ src/fiery/xtensor/
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
   _options.py       # global options + `set_options` context manager
+  _units.py         # optional unit backend (pint) for the `.unit` data unit
 tests/
   test_xtensor.py
   test_arrayutils.py
@@ -114,7 +160,11 @@ matching section (or a new one):
   indexes — a bare `str` like an int there, a `list` of `str` as an advanced
   index — via `_resolve_label_slicer`/`_label_to_index`, so `x[..., "y", "z"]`
   addresses the last two axes by label), `__getattr__` (label access),
-  `rename`, `refine_names`/`align_to`/`align_as`.
+  `rename`, `refine_names`/`align_to`/`align_as`. A single `...` in any
+  name-tuple expands via `_expand_name_ellipsis` to the run of axes it stands
+  for: unnamed (`None`) on assignment (`names=`/setter), unchanged on
+  modification (`rename`/`refine_names`), the remaining axes in current order
+  on reorder (`permute`/`align_to`).
 - **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
   `view`/`reshape`), and rank-changers `flatten`/`unflatten`/`expand`/
   `broadcast_to`/`diagonal`.
@@ -150,7 +200,8 @@ matching section (or a new one):
   (`drop_conflicts`/`strict`(=`raise`)/`override`/`drop`) or a `{field: policy}`
   dict with `"*"` as the default. Registers both `torch.<op>` and
   `Tensor.<op>` (operators dispatch the latter).
-- **CONVENIENCE** — `XVector`/`XMatrix`.
+- **CONVENIENCE** — `xvector`/`xmatrix` factory functions (in `_factories.py`),
+  not subclasses.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 (1-D label slicer), `_reconcile_axis_names` (multi-operand), `_matmul_names`.
