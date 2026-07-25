@@ -143,9 +143,10 @@ x.unit                                                # -> "V"  (None when unset
 - **Detach** drops back to a plain, unit-free tensor (`.magnitude`, spelling TBD
   — §7).
 
-`.unit` is the **data** unit; an axis' tick unit is `x.axes[i]["unit"]`
-(Proposal 0001) — different levels (whole-tensor vs per-axis), same word,
-unambiguous in practice.
+`.unit` is the **data** unit (whole-tensor base); a per-position **data** unit
+lives on a coordinate label (§2.2). The axis *metric* is a separate field —
+`spacing` (Proposal 0001) — so `unit` now means "data unit" at every level and
+never collides with the tick metric.
 
 ### 2.4 Attaching a unit by multiplication (`x * mm`)
 
