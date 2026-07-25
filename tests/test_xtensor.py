@@ -7,6 +7,7 @@ from fiery.xtensor import (
     XMatrix,
     XTensor,
     XVector,
+    set_options,
 )
 from fiery.xtensor._tensors import _slice_labels, _torch_func
 
@@ -1394,6 +1395,81 @@ def test_descriptors_and_coordinates_coexist():
     assert z.axes == ({"name": "c", "type": "channel"},)
     assert z.coords == {"c": ("r", "g", "b")}
     assert z.sel(c="g").item() == 0
+
+
+# ----------------------------------------------------------------------
+# combining axis descriptors across operands (the `combine_axes` option)
+# ----------------------------------------------------------------------
+
+
+def _sp(name):
+    return {"name": name, "type": "space"}
+
+
+def _tm(name):
+    return {"name": name, "type": "time"}
+
+
+def test_broadcast_keeps_descriptors_of_each_disjoint_dim():
+    # both operands contribute a dim; each keeps its own descriptor (the
+    # right operand's used to be dropped).
+    a = XTensor(torch.ones(2), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_tm("y")])
+    assert (a + b).axes == (
+        {"name": "x", "type": "space"},
+        {"name": "y", "type": "time"},
+    )
+
+
+def test_shared_dim_keeps_agreeing_fields_and_one_sided_fields():
+    a = XTensor(torch.ones(3), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_sp("x")])
+    assert (a + b).axes == ({"name": "x", "type": "space"},)
+    # a field on only one side is not a conflict -- it is kept
+    c = XTensor(torch.ones(3), names=["x"])
+    assert (a + c).axes == ({"name": "x", "type": "space"},)
+
+
+def test_conflicting_field_is_dropped_and_order_independent():
+    a = XTensor(torch.ones(3), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_tm("x")])
+    # type conflicts (space vs time) -> the field drops; the bare name stays
+    assert (a + b).axes == ({"name": "x"},)
+    assert (b + a).axes == ({"name": "x"},)  # no left-operand bias
+
+
+def test_strict_policy_raises_on_conflict_and_restores_after_block():
+    a = XTensor(torch.ones(3), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_tm("x")])
+    with set_options(combine_axes="strict"):
+        with pytest.raises(ValueError, match="conflicting 'type'"):
+            _ = a + b
+        # compatible descriptors do not raise even under strict
+        assert (a + a).axes == ({"name": "x", "type": "space"},)
+    # the option is restored on exit -> conflict drops again
+    assert (a + b).axes == ({"name": "x"},)
+
+
+def test_override_policy_lets_the_left_operand_win():
+    a = XTensor(torch.ones(3), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_tm("x")])
+    with set_options(combine_axes="override"):
+        assert (a + b).axes == ({"name": "x", "type": "space"},)
+        assert (b + a).axes == ({"name": "x", "type": "time"},)
+
+
+def test_drop_policy_removes_all_descriptors():
+    a = XTensor(torch.ones(2), names=[_sp("x")])
+    b = XTensor(torch.ones(3), names=[_tm("y")])
+    with set_options(combine_axes="drop"):
+        assert (a + b).axes == ({"name": "x"}, {"name": "y"})
+
+
+def test_set_options_rejects_unknown_option_or_value():
+    with pytest.raises(ValueError, match="unknown option"):
+        set_options(nope=1)
+    with pytest.raises(ValueError, match="invalid value"):
+        set_options(combine_axes="bogus")
 
 
 def test_movedim_by_type_moves_the_whole_block_to_the_back():

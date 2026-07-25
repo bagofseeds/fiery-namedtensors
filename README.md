@@ -149,6 +149,28 @@ follow their dimension through `permute`, reductions, `rename`, etc. An
 `orientation` must read `"{a}-to-{b}"`; flipping the axis rewrites it to
 `"{b}-to-{a}"`.
 
+When two operands meet in a name-aware op (broadcast, alignment), their
+descriptors are **merged by dim name** the same way coordinates are: the result
+is the union of the axes, and for a shared dim the fields the operands **agree**
+on are kept while **conflicting** fields are dropped. That policy is
+configurable via `set_options(combine_axes=...)`, usable globally or as a
+context manager:
+
+```python
+from fiery.xtensor import set_options
+
+a = xtensor(torch.ones(3), names=[{"name": "x", "type": "space"}])
+b = xtensor(torch.ones(3), names=[{"name": "x", "type": "time"}])
+(a + b).axes                      # ({'name': 'x'},)  — the clash drops 'type'
+
+with set_options(combine_axes="strict"):
+    a + b                         # raises ValueError: conflicting 'type' …
+```
+
+`combine_axes` accepts `"drop_conflicts"` (default), `"strict"` (raise on any
+clash), `"override"` (keep the left operand's fields), or `"drop"` (discard all
+descriptors).
+
 A descriptor is also a way to **address** axes. Anywhere you can pass a `dim`
 (method form), a query dict selects *every* axis whose descriptor matches — so
 one call can act on a whole group of axes at once:

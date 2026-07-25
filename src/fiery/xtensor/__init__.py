@@ -27,6 +27,7 @@ from fiery.xtensor._factories import (
     named_randn,
     named_zeros,
 )
+from fiery.xtensor._options import set_options
 from fiery.xtensor._tensors import (
     ExtendedTensor,
     XMatrix,
@@ -56,5 +57,6 @@ __all__ = [
     "named_rand",
     "named_randn",
     "named_eye",
+    "set_options",
     "__version__",
 ]
