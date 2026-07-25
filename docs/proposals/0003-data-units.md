@@ -92,6 +92,37 @@ single formula covers **every** case:
 The **effective** unit of the tensor is derived on demand from `base_unit` and
 whichever coordinates carry `unit`s — the formula in §2.1.
 
+### 2.3 Assigning and reading a unit
+
+The **base** unit is a whole-tensor property, spelled exactly like `names` /
+`coords` — a constructor kwarg *and* a settable property, both backed by
+`_data_unit`:
+
+```python
+x = xtensor(data, names=("b", "c", "t"), unit="V")   # at construction
+x.unit = "V"                                          # or after the fact
+x.unit                                                # -> "V"  (None when unset)
+```
+
+- **Assign ≠ convert.** `x.unit = "V"` (and `unit=`) *annotates* — it declares
+  the data is in volts, changing **no** data. Conversion is a separate verb,
+  `x.to_unit("mV")`, which rescales the data (×1000) and updates the unit
+  (needs a unit already set and a backend).
+- **Base vs. per-position.** `.unit` is the whole-tensor **base**; the
+  *heterogeneous* case is assigned through the structured-coordinate `unit`
+  field (§2.2), not `.unit`. Effective element unit = `base · Π(coord units)`.
+- **Always storable, backend-gated.** Like axis/coordinate units today,
+  `.unit = "V"` is stored and carried even with `unit_backend=None`; it simply
+  does not drive validation/algebra/conversion until a backend is selected — so
+  annotating never fails.
+- **Detach** drops back to a plain, unit-free tensor (`.magnitude`, spelling TBD
+  — §7).
+
+*(Naming note: `.unit` is the **data** unit; an axis' tick unit is
+`x.axes[i]["unit"]` (Proposal 0001). Different levels — whole-tensor vs
+per-axis — but if the shared word is a concern, `.data_unit` is the fallback
+spelling. §7.)*
+
 ## 3. The `unit_policy` (drop by default, strict on request)
 
 A single option decides what happens when the algebra hits a dimensionally
