@@ -243,20 +243,35 @@ v.unit = "mV"          # annotate: never changes the data
 ```
 
 By default (`unit_backend=None`) a unit is an **opaque string** — stored and
-carried, never inspected. Selecting a backend turns on validation and
-conversion:
+carried, never inspected. Selecting a backend turns on validation, conversion,
+and **dimensional algebra**:
 
 ```python
 from fiery.xtensor import set_options
-with set_options(unit_backend="pint"):          # needs fiery-xtensor[units]
-    y = xtensor(data, unit="mV")                # validated + normalised
-    y.to_unit("V")                              # converts: rescales the data ×0.001
+with set_options(unit_backend="pint"):     # needs fiery-xtensor[units]
+    volts = xtensor(v, unit="V")
+    amps  = xtensor(a, unit="A")
+    volts.to_unit("mV")            # converts: rescales the data ×1000
+    (volts * amps).unit           # "ampere * volt"  — units multiply
+    (volts / secs).unit           # "volt / second"
+    (volts ** 2).unit             # "volt ** 2"
+    (volts @ amps).unit           # "ampere * volt"  — matmul multiplies too
 ```
 
-*(This is phase 1 — annotation, validation, and conversion. Dimensional
-**algebra** on the ops themselves — `volts * amps → watts`, `unit_policy`
-drop/strict, `x * mm` — is [Proposal 0003](docs/proposals/0003-data-units.md),
-landing next.)*
+Whenever a step is dimensionally invalid or ambiguous — adding incompatible
+units, or a transcendental like `exp`/`log` of a united value — the result
+silently **drops** the unit; `set_options(unit_policy="strict")` makes those
+same steps **raise** instead:
+
+```python
+(volts + amps).unit               # None    — incompatible, dropped
+torch.exp(volts).unit             # None    — exp needs a dimensionless argument
+with set_options(unit_policy="strict"):
+    volts + amps                  # ValueError: incompatible units 'volt' and 'ampere'
+```
+
+The data itself is never wrapped in a `pint.Quantity`, so autograd, GPU, and
+`__torch_function__` keep working throughout.
 
 ## Design goals
 

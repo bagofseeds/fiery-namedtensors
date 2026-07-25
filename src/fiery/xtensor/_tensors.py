@@ -22,6 +22,7 @@ from fiery.xtensor._compat import EllipsisType
 from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
 from fiery.xtensor._options import combine_axes_policy as _combine_axes_policy
+from fiery.xtensor._options import get_option as _get_option
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription).
 # The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
@@ -1785,6 +1786,13 @@ def _make_matmul(name: str) -> None:
         result = base(input, other, **kwargs)
         ref = input if isinstance(input, XTensor) else other
         names = _matmul_names(_names_of(input), _names_of(other))
+        # A contraction is a sum of products: the data unit is the product of
+        # the operands' units.
+        unit_kw = {}
+        if _units.active():
+            unit_kw["_data_unit"] = _units.mul(
+                _unit_of(input), _unit_of(other)
+            )
         # The contraction invalidates the coordinate layout; surviving axes
         # keep their (merged) descriptors.
         return _carry(
@@ -1793,6 +1801,7 @@ def _make_matmul(name: str) -> None:
             _axis_names=names,
             _coords={},
             _axis_meta=_merge_axis_meta((input, other), names),
+            **unit_kw,
         )
 
     registered = XTensor.overrides(base)(_matmul)
@@ -2193,7 +2202,86 @@ def _merge_axis_meta(sources: tx.Sequence, result_names: tuple) -> dict:
     return merged
 
 
-def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
+# -- data-unit algebra (Proposal 0003) ---------------------------------------
+#
+# Under an active `unit_backend`, a pointwise op transforms the operands' data
+# units per its rule below; a dimensionally invalid/ambiguous step drops the
+# unit (default) or raises (`unit_policy="strict"`). With no backend it is
+# skipped and the unit rides along opaquely via `_carry`.
+
+_UNIT_RULE = {
+    "mul": "mul",
+    "div": "div",
+    "floor_divide": "div",
+    "pow": "pow",
+    "add": "add",
+    "sub": "add",
+    "remainder": "add",
+    "maximum": "add",
+    "minimum": "add",
+    "hypot": "add",
+    "eq": "cmp",
+    "ne": "cmp",
+    "lt": "cmp",
+    "le": "cmp",
+    "gt": "cmp",
+    "ge": "cmp",
+    "atan2": "drop",
+    "logical_and": "drop",
+    "logical_or": "drop",
+    "logical_xor": "drop",
+}
+
+
+def _unit_of(x: tx.Any) -> tx.Optional[str]:
+    """The data unit of `x`, or `None` (a plain tensor/scalar is unitless)."""
+    return x.__dict__.get("_data_unit") if isinstance(x, XTensor) else None
+
+
+def _unit_strict(invalid: bool, detail: str) -> None:
+    """Raise on an invalid unit step under `unit_policy="strict"`."""
+    if invalid and _get_option("unit_policy") == "strict":
+        raise ValueError(detail)
+
+
+def _binary_unit(a: tx.Any, b: tx.Any, rule: str) -> tx.Optional[str]:
+    """Result data unit for a pointwise op under `rule` (honours policy)."""
+    ua, ub = _unit_of(a), _unit_of(b)
+    if rule == "mul":
+        return _units.mul(ua, ub)
+    if rule == "div":
+        return _units.div(ua, ub)
+    if rule == "pow":
+        if isinstance(b, (int, float)):
+            return _units.pow_(ua, b)
+        _unit_strict(
+            ua is not None, "pow: non-scalar exponent on a united value"
+        )
+        return None
+    if rule == "add":
+        if _units.equal(ua, ub):
+            return ua
+        _unit_strict(True, f"incompatible units {ua!r} and {ub!r}")
+        return None
+    if rule == "cmp":
+        _unit_strict(
+            not _units.equal(ua, ub), f"comparing units {ua!r} and {ub!r}"
+        )
+        return None
+    return None  # "drop": result is unitless
+
+
+def _binary(
+    a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs, rule=None
+) -> tx.Any:
+    # NOTE: attaching a unit by multiplication (`x * u.mm`) is deliberately not
+    # handled here -- Python's operator protocol lets pint's reflected
+    # `__rmul__` intercept `x * <quantity>` before this override runs, so it
+    # needs bespoke handling (a later phase / an explicit method).
+    backend = _units.active()
+    unit_kw = {}
+    if backend and rule is not None:
+        unit_kw["_data_unit"] = _binary_unit(a, b, rule)
     a_named = isinstance(a, XTensor) and None not in a.names
     b_named = isinstance(b, XTensor) and None not in b.names
     if a_named and b_named:
@@ -2201,7 +2289,12 @@ def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
         result = base(a2, b2, *args, **kwargs)
         meta = _merge_axis_meta((a, b), names)
         return _carry(
-            a, result, _axis_names=names, _coords=coords, _axis_meta=meta
+            a,
+            result,
+            _axis_names=names,
+            _coords=coords,
+            _axis_meta=meta,
+            **unit_kw,
         )
     # positional fallback (unnamed axis, plain tensor, or scalar operand)
     result = base(a, b, *args, **kwargs)
@@ -2212,16 +2305,22 @@ def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
     coords = _coords_of(ref) if result.ndim == getattr(ref, "ndim", -1) else {}
     meta = _merge_axis_meta((a, b), names)
     return _carry(
-        ref, result, _axis_names=names, _coords=coords, _axis_meta=meta
+        ref,
+        result,
+        _axis_names=names,
+        _coords=coords,
+        _axis_meta=meta,
+        **unit_kw,
     )
 
 
 def _make_pointwise(name: str) -> None:
     """Register a broadcast-by-name override for a binary/pointwise op."""
     base = _torch_func(name)
+    rule = _UNIT_RULE.get(name)
 
     def _op(a: tx.Any, b: tx.Any, *args, **kwargs) -> tx.Any:
-        return _binary(a, b, base, args, kwargs)
+        return _binary(a, b, base, args, kwargs, rule)
 
     registered = XTensor.overrides(base)(_op)
     # Operators (`a + b`, `a == b`, ...) dispatch with the bound method
@@ -2230,6 +2329,12 @@ def _make_pointwise(name: str) -> None:
     method = getattr(Tensor, name, None)
     if base is not None and method is not None and method is not base:
         XTensor._OVERRIDES[method] = registered
+    # `**` dispatches `Tensor.__pow__`, which is *not* `Tensor.pow`, so the
+    # operator would otherwise miss the override (unlike `+`/`*`/...).
+    if name == "pow":
+        dunder = getattr(Tensor, "__pow__", None)
+        if base is not None and dunder is not None:
+            XTensor._OVERRIDES[dunder] = registered
 
 
 # Elementwise ops whose result should align by name. `dim`-less, two-operand.
@@ -2257,6 +2362,44 @@ _POINTWISE = (
 )
 for _pointwise_name in _POINTWISE:
     _make_pointwise(_pointwise_name)
+
+
+# -- transcendental functions (require a dimensionless argument) --------------
+#
+# `exp`/`log`/`sin`/... are only defined on dimensionless numbers, so under an
+# active backend a united argument drops its unit (default) or raises
+# (`unit_policy="strict"`); the result is dimensionless. With no backend the
+# unit rides along opaquely, unchanged. (These are elementwise, so names and
+# coordinates carry through as usual.)
+
+
+def _make_transcendental(name: str) -> None:
+    base = _torch_func(name)
+    if base is None:
+        return
+
+    def _op(input: tx.Any, *args, **kwargs) -> tx.Any:
+        result = base(input, *args, **kwargs)
+        if not _units.active():
+            return _carry(input, result)
+        unit = _unit_of(input)
+        _unit_strict(
+            not _units.dimensionless(unit),
+            f"{name}: expected a dimensionless argument, got unit {unit!r}",
+        )
+        return _carry(input, result, _data_unit=None)
+
+    XTensor.overrides(base)(_op)
+
+
+_TRANSCENDENTAL = (
+    "exp", "expm1", "log", "log2", "log10", "log1p",
+    "sin", "cos", "tan", "asin", "acos", "atan",
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "sigmoid", "erf", "erfc",
+)  # fmt: skip
+for _transcendental_name in _TRANSCENDENTAL:
+    _make_transcendental(_transcendental_name)
 
 
 # ======================================================================

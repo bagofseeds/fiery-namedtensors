@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — implementing (phase 1: uniform units + core algebra) |
+| **Status** | Accepted — phases 1-2 landed (uniform units + algebra); heterogeneous + x*mm next |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); the *other* meaning of "unit" from Proposal 0001; builds on Proposal 0002 (structured coordinates) |
@@ -281,11 +281,16 @@ in `_data_unit`, the metadata would be pint-locked and unpicklable.)
 The general rule is adopted from the start; phasing is about **op coverage**,
 not restricting the model:
 
-1. **base unit + core algebra** — `unit=`/`.unit`/`to_unit`, `*`/`/`/`pow`,
-   `add`/`sub` compat, matmul, transcendental drop, the `unit_policy` switch.
-2. **per-axis (heterogeneous) units** on structured coordinates + the reduction/
-   contraction compat handling (all via the same drop/strict policy).
-3. **conveniences** — `.magnitude`/detach, unit-aware `repr`, richer conversions.
+1. **foundation** *(landed, #58)* — `unit=`/`.unit`/`to_unit`, the
+   `unit_backend`/`unit_policy` options, carry-through.
+2. **core algebra** *(landed)* — `*`/`/`/`pow`, `add`/`sub`/compare compat,
+   `matmul`, transcendental-drop, all under the `unit_policy` drop/strict switch.
+3. **per-axis (heterogeneous) units** — units that vary along an axis, on
+   structured coordinates (0002), + reduction/contraction compat.
+4. **conveniences** — `x * u.mm` attach (deferred — Python's operator protocol
+   lets pint's reflected `__rmul__` intercept `x * <quantity>` before the
+   override runs, so it needs bespoke handling), `.magnitude`/detach, unit-aware
+   `repr`, richer/implicit conversions.
 
 ## 7. Open questions
 
