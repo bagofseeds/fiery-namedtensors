@@ -127,7 +127,11 @@ matching section (or a new one):
 - **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
   when **both** operands are fully-named, axes align **by name** (`_align_by_name`
   → transpose + size-1 expand to the union of dims), else positional fallback.
-  Registers both `torch.<op>` and `Tensor.<op>` (operators dispatch the latter).
+  A shared dim **labelled on both** operands with differing labels is also
+  aligned **by label** — `_reindex_axis` inner-joins both operands to the
+  intersection (in the left operand's order) before the op (xarray
+  `join="inner"`). Registers both `torch.<op>` and `Tensor.<op>` (operators
+  dispatch the latter).
 - **CONVENIENCE** — `XVector`/`XMatrix`.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`

@@ -1893,18 +1893,43 @@ def _reshape_to_order(x: XTensor, order: list) -> XTensor:
     return out
 
 
+def _reindex_axis(x: XTensor, name: str, old: tuple, new: tuple) -> XTensor:
+    """
+    Select the positions of `x`'s `name` axis whose labels are `new` (a subset
+    of `old`, in the wanted order) -- the reindex step of coordinate alignment.
+    Operates on the tensor data only; the caller re-derives the metadata.
+    """
+    axis = x.names.index(name)
+    index = torch.as_tensor(
+        [old.index(label) for label in new], dtype=torch.long, device=x.device
+    )
+    return x.index_select(axis, index)
+
+
 def _align_by_name(a: XTensor, b: XTensor) -> tuple:
-    """Align two fully-named tensors by dim name; return `(a', b', names,
-    coords)` ready for a positional (now name-matched) op."""
+    """
+    Align two fully-named tensors by dim name; return `(a', b', names, coords)`
+    ready for a positional (now name-matched) op.
+
+    A shared dim that is **labelled on both operands** but whose labels differ
+    is aligned xarray-style (`join="inner"`): both operands are reindexed to
+    the intersection of their labels -- in `a`'s order -- before the op, so
+    positions are matched by *label*, not by position. Identical label sets
+    skip the reindex; a dim labelled on only one side keeps those labels.
+    """
     a_names, b_names = a.names, b.names
     order = list(a_names) + [n for n in b_names if n not in a_names]
-    a_coords, b_coords = a.coords, b.coords
     coords = {}
     for name in order:
-        ca, cb = a_coords.get(name), b_coords.get(name)
-        if ca is not None and cb is not None:
-            if ca == cb:  # shared label set kept; a conflict drops it
-                coords[name] = ca
+        ca, cb = a.coords.get(name), b.coords.get(name)
+        if ca is not None and cb is not None and ca != cb:
+            shared = set(cb)
+            common = tuple(label for label in ca if label in shared)
+            a = _reindex_axis(a, name, ca, common)
+            b = _reindex_axis(b, name, cb, common)
+            coords[name] = common
+        elif ca is not None and cb is not None:  # identical labels
+            coords[name] = ca
         elif ca is not None:
             coords[name] = ca
         elif cb is not None:

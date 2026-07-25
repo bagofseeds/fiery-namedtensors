@@ -1255,6 +1255,69 @@ def test_pointwise_aligns_coordinates_by_name():
     assert out.coords == {"y": ("a", "b", "c")}
 
 
+def test_pointwise_reindexes_operands_to_align_reordered_labels():
+    # a shared labelled dim in a different label order is aligned by *label*,
+    # not by position (xarray semantics): A+A, B+B, C+C.
+    a = XTensor(
+        torch.tensor([1.0, 2.0, 3.0]),
+        names=("x",),
+        coords={"x": ("A", "B", "C")},
+    )
+    b = XTensor(
+        torch.tensor([10.0, 20.0, 30.0]),
+        names=("x",),
+        coords={"x": ("C", "B", "A")},
+    )
+    out = a + b
+    assert out.coords == {"x": ("A", "B", "C")}
+    assert out.tolist() == [31.0, 22.0, 13.0]
+
+
+def test_pointwise_inner_joins_partially_overlapping_labels():
+    a = XTensor(
+        torch.tensor([1.0, 2.0, 3.0]),
+        names=("x",),
+        coords={"x": ("A", "B", "C")},
+    )
+    b = XTensor(
+        torch.tensor([10.0, 20.0, 30.0]),
+        names=("x",),
+        coords={"x": ("B", "C", "D")},
+    )
+    out = a + b
+    # intersection in a's order: B, C
+    assert out.coords == {"x": ("B", "C")}
+    assert out.tolist() == [12.0, 23.0]
+
+
+def test_pointwise_alignment_broadcasts_over_a_disjoint_dim():
+    a = XTensor(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        names=("r", "x"),
+        coords={"x": ("A", "B")},
+    )
+    b = XTensor(
+        torch.tensor([10.0, 20.0]), names=("x",), coords={"x": ("B", "A")}
+    )
+    out = a + b
+    assert out.names == ("r", "x")
+    assert out.coords == {"x": ("A", "B")}
+    # b reindexed to (A, B) = [20, 10], then broadcast over r
+    assert out.tolist() == [[21.0, 12.0], [23.0, 14.0]]
+
+
+def test_pointwise_one_sided_labels_stay_positional():
+    # only one operand labels the shared dim: nothing to align against, so the
+    # labels ride along and the op stays positional.
+    a = XTensor(
+        torch.tensor([1.0, 2.0]), names=("x",), coords={"x": ("A", "B")}
+    )
+    b = XTensor(torch.tensor([10.0, 20.0]), names=("x",))
+    out = a + b
+    assert out.coords == {"x": ("A", "B")}
+    assert out.tolist() == [11.0, 22.0]
+
+
 # ----------------------------------------------------------------------
 # axis descriptors (OME-NGFF-style: type / unit / orientation)
 # ----------------------------------------------------------------------
