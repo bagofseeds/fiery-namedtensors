@@ -470,6 +470,35 @@ class XTensor(ExtendedTensor):
         scaled = Tensor.mul(self, _units.factor(current, unit))
         return _carry(self, scaled, _data_unit=unit)
 
+    # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
+    #
+    # `x * u.mm` / `x / u.s`: a backend `Unit`/`Quantity` operand attaches or
+    # derives a data unit. This must be caught at the operator dunder, because
+    # Python's protocol otherwise lets the unit library's reflected `__rmul__`
+    # intercept `x * <unit>` first (yielding a wrapped object, never an
+    # `XTensor`). A non-unit operand falls straight back to the normal path,
+    # so name/unit algebra for ordinary operands is untouched.
+
+    def __mul__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "mul")
+        return Tensor.__mul__(self, other)
+
+    def __rmul__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "mul")
+        return Tensor.__rmul__(self, other)
+
+    def __truediv__(self, other: tx.Any) -> tx.Any:
+        if _units.is_unit_like(other):
+            return _attach_unit(self, other, "div")
+        return Tensor.__truediv__(self, other)
+
+    def __rtruediv__(self, other: tx.Any) -> tx.Any:
+        # `unit / x` is normally handled by the unit library itself before we
+        # are consulted; this only fires for e.g. a scalar left operand.
+        return Tensor.__rtruediv__(self, other)
+
     # -- renaming ----------------------------------------------------------
 
     def _resolve_rename(
@@ -2357,6 +2386,26 @@ _UNIT_RULE = {
 def _unit_of(x: tx.Any) -> tx.Optional[str]:
     """The data unit of `x`, or `None` (a plain tensor/scalar is unitless)."""
     return x.__dict__.get("_data_unit") if isinstance(x, XTensor) else None
+
+
+def _attach_unit(x: XTensor, operand: tx.Any, op: str) -> XTensor:
+    """
+    Combine a backend `Unit`/`Quantity` `operand` into `x` (Proposal 0003
+    §2.4): its magnitude scales the data, its unit multiplies (`op="mul"`) or
+    divides (`op="div"`) `x`'s data unit. A bare `Unit` has magnitude 1, so the
+    data is untouched -- but through a fresh view, never `x` itself, so
+    `_carry` cannot annotate the original in place.
+    """
+    magnitude, unit = _units.split_quantity(operand)
+    if magnitude == 1.0:
+        scaled = x.as_subclass(type(x))
+    else:
+        scaled = Tensor.mul(x, magnitude)
+    current = _unit_of(x)
+    combined = (
+        _units.mul(current, unit) if op == "mul" else _units.div(current, unit)
+    )
+    return _carry(x, scaled, _data_unit=combined)
 
 
 def _unit_strict(invalid: bool, detail: str) -> None:

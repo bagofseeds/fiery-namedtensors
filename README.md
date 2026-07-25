@@ -283,6 +283,21 @@ with set_options(unit_backend="pint"):     # needs fiery-xtensor[units]
     (volts @ amps).unit           # "ampere * volt"  — matmul multiplies too
 ```
 
+You can also **attach** a unit by multiplying with the backend's own unit
+objects, the way pint builds a `Quantity` from `5 * ureg.metre`:
+
+```python
+import pint
+u = pint.UnitRegistry()
+with set_options(unit_backend="pint"):
+    (x * u.mm).unit              # "millimeter"          — bare unit; data unchanged
+    (x * (3 * u.mm)).unit        # "millimeter", data ×3 — a quantity scales too
+    (v / u.s).unit               # "volt / second"
+```
+
+(Write the unit on the **right** — `x * u.mm`, not `u.mm * x` — so the
+`XTensor` handles it before pint's own reflected operator does.)
+
 Whenever a step is dimensionally invalid or ambiguous — adding incompatible
 units, or a transcendental like `exp`/`log` of a united value — the result
 silently **drops** the unit; `set_options(unit_policy="strict")` makes those
