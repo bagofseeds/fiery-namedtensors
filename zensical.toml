@@ -8,6 +8,7 @@ nav = [
   {"API" = "api/index.md"},
   {"Proposals" = [
     {"0002 — Structured coordinates" = "proposals/0002-structured-coordinates.md"},
+    {"0003 — Data units" = "proposals/0003-data-units.md"},
   ]},
 ]
 

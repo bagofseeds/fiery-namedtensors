@@ -36,6 +36,13 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   (preserving order), `sum(dim={"type": "channel"})` reduces every channel
   axis (see `_query_positions` / `_movedim_block_order` / `_resolve_reduce_dim`).
 
+- **data unit** (`unit`, Proposal 0003 phase 1): the physical unit of the
+  tensor **values**, self-managed in `_data_unit` (in `_ATTRS`, so it
+  propagates like names/coords). `.unit` gets/sets it; `unit=` is a constructor
+  kwarg; `to_unit` converts (rescaling data). Opaque unless the `unit_backend`
+  option selects one (`"pint"` → validate/normalise/convert via `_units`);
+  dimensional **algebra** on ops is a later phase.
+
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
 work-in-progress in `balbasty/magnetix`
@@ -52,6 +59,7 @@ src/fiery/xtensor/
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
   _options.py       # global options + `set_options` context manager
+  _units.py         # optional unit backend (pint) for the `.unit` data unit
 tests/
   test_xtensor.py
   test_arrayutils.py

@@ -1652,6 +1652,50 @@ def test_set_options_rejects_unknown_option_or_value():
         set_options(combine_axes={"unit": "bogus"})
     with pytest.raises(ValueError, match="must be a policy str or a"):
         set_options(combine_axes=5)
+    with pytest.raises(ValueError, match="invalid unit_backend"):
+        set_options(unit_backend="nope")
+    with pytest.raises(ValueError, match="invalid unit_policy"):
+        set_options(unit_policy="nope")
+
+
+# ----------------------------------------------------------------------
+# data units (Proposal 0003 — the .unit annotation)
+# ----------------------------------------------------------------------
+
+
+def test_data_unit_is_stored_carried_and_opaque_without_a_backend():
+    # default backend is None: a unit is an opaque string, stored and carried
+    x = XTensor(torch.ones(2, 3), names=("a", "b"), unit="V")
+    assert x.unit == "V"
+    assert x.T.unit == "V"  # rides through reshape/reorder
+    assert x.sum(dim="a").unit == "V"  # ... and reductions
+    assert x[0].unit == "V"  # ... and indexing
+    x.unit = None
+    assert x.unit is None
+    x.unit = "not_a_real_unit"  # no backend -> no validation
+    assert x.unit == "not_a_real_unit"
+
+
+def test_data_unit_pint_backend_validates_and_normalises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        y = XTensor(torch.ones(3), unit="mV")
+        assert y.unit == "millivolt"  # canonicalised
+        with pytest.raises(ValueError, match="invalid unit"):
+            XTensor(torch.ones(2), unit="not_a_unit_zz")
+
+
+def test_to_unit_converts_the_data_by_the_conversion_factor():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        y = XTensor(torch.ones(3), unit="mV")
+        z = y.to_unit("V")
+        assert z.unit == "volt"
+        assert torch.allclose(
+            z.as_subclass(torch.Tensor), torch.full((3,), 0.001)
+        )
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(2)).to_unit("V")
 
 
 def test_combine_axes_accepts_a_per_field_policy():

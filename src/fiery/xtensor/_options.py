@@ -15,9 +15,17 @@ _POLICIES = ("drop_conflicts", "strict", "raise", "override", "drop")
 #: Reserved key: the default policy for descriptor fields not named explicitly.
 _DEFAULT_KEY = "*"
 
+#: The known unit backends (Proposal 0003). `None` = no unit semantics.
+_UNIT_BACKENDS = (None, "pint")
+
+#: What happens on a dimensionally invalid/ambiguous unit step (Proposal 0003).
+_UNIT_POLICIES = ("drop", "strict")
+
 #: Live option values. Read through `get_option`; write only via `set_options`.
 _OPTIONS = {
     "combine_axes": "drop_conflicts",
+    "unit_backend": None,
+    "unit_policy": "drop",
 }
 
 
@@ -44,9 +52,34 @@ def _validate_combine_axes(value: tx.Any) -> None:
         )
 
 
+def _validate_unit_backend(value: tx.Any) -> None:
+    if value not in _UNIT_BACKENDS:
+        raise ValueError(
+            f"invalid unit_backend {value!r}; valid: {list(_UNIT_BACKENDS)}"
+        )
+    if value == "pint":
+        # Fail at *set* time (deterministic) rather than on first use.
+        try:
+            import pint  # noqa: F401
+        except ImportError:
+            raise ValueError(
+                "unit_backend='pint' requires pint; install "
+                "fiery-xtensor[units] (or `pip install pint`)"
+            ) from None
+
+
+def _validate_unit_policy(value: tx.Any) -> None:
+    if value not in _UNIT_POLICIES:
+        raise ValueError(
+            f"invalid unit_policy {value!r}; valid: {list(_UNIT_POLICIES)}"
+        )
+
+
 #: Per-option validators (options without one accept any value).
 _VALIDATORS = {
     "combine_axes": _validate_combine_axes,
+    "unit_backend": _validate_unit_backend,
+    "unit_policy": _validate_unit_policy,
 }
 
 
@@ -98,6 +131,13 @@ class set_options:
         # per-field: drop everything, but a clashing `unit` is an error
         with set_options(combine_axes={"*": "drop", "unit": "raise"}):
             ...
+
+    - **`unit_backend`** -- the physical-unit engine for **data units**
+      (Proposal 0003): `None` *(default)* means units are inert opaque strings;
+      `"pint"` enables validation/algebra/conversion (and is rejected at set
+      time if pint is not installed).
+    - **`unit_policy`** -- what a dimensionally invalid/ambiguous step does:
+      `"drop"` *(default)* silently drops the unit, `"strict"` raises.
     """
 
     def __init__(self, **options: tx.Any) -> None:

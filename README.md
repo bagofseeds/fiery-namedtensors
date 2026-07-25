@@ -229,6 +229,35 @@ keeps the axis. It mirrors the descriptor query for *axes*: a `{"type": ...}`
 dict picks **axes** in a `dim=`/`movedim` slot and **positions** in a `[]`/`sel`
 slot, so the two never collide.
 
+## Data units
+
+A tensor's **values** can carry a physical unit — the `.unit` property (a
+constructor `unit=` kwarg or a settable attribute). It rides through operations
+like names and coordinates do:
+
+```python
+v = xtensor(data, names=("b", "t"), unit="V")
+v.unit                 # "V"
+v.T.unit               # "V"  — carried through reshaping/reduction/indexing
+v.unit = "mV"          # annotate: never changes the data
+```
+
+By default (`unit_backend=None`) a unit is an **opaque string** — stored and
+carried, never inspected. Selecting a backend turns on validation and
+conversion:
+
+```python
+from fiery.xtensor import set_options
+with set_options(unit_backend="pint"):          # needs fiery-xtensor[units]
+    y = xtensor(data, unit="mV")                # validated + normalised
+    y.to_unit("V")                              # converts: rescales the data ×0.001
+```
+
+*(This is phase 1 — annotation, validation, and conversion. Dimensional
+**algebra** on the ops themselves — `volts * amps → watts`, `unit_policy`
+drop/strict, `x * mm` — is [Proposal 0003](docs/proposals/0003-data-units.md),
+landing next.)*
+
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or
