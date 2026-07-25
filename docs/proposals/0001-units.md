@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — converging (one coordinate per axis; unified value / label / spacing model) |
+| **Status** | Accepted — design settled (one coordinate per axis; unified value / label / spacing model); ready to implement |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); builds on Proposal 0002 (structured coordinates); multi-coordinate follow-up in [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); supersedes the "axis unit" sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |
@@ -56,8 +56,9 @@ work — so it needs no bespoke API, but it also:
 
 - **preserves a tensor** `value` (a 0-rank `XTensor`) untouched, so a *learnable*
   spacing keeps its autograd graph;
-- **converts** back to any ingestable form (`.pair()` → `(value, unit)`,
-  `.to("um")` → rescaled, a backend quantity on request);
+- **converts** with `.to("um")` (rescales value + unit); its parts are read by
+  item/attribute access (`sp["value"]`, `sp.unit`), so no `(value, unit)` helper
+  is needed;
 - stores `unit` as a **canonical string** (same rule as 0003), so it is
   picklable and backend-independent.
 
@@ -82,18 +83,23 @@ plain dict (so it interops, pickles, and prints as one) while adding a little
 magic:
 
 - **derived / lazy keys** — a compact coordinate synthesises `["values"]` from
-  `spacing`/`origin` on demand; a unitful value synthesises a converted form;
+  `spacing`/`origin` on demand (**recomputed each access, not cached** — so a
+  learnable spacing never goes stale);
 - **tensor-preserving** — a tensor stored under a key (`value`, `spacing`,
   `values`) is kept live, never coerced, so autograd survives;
-- **conversion** — `.to(unit)`, `.pair()`, a backend quantity, etc.
+- **conversion** — a single `.to(unit)` helper (rescales value + unit); anything
+  else is item access.
 
-**Item access (`d["values"]`) is canonical**, deliberately *not* attribute
-access. A dict subclass already owns `.values`, `.keys`, `.items`, `.get`,
-`.update` as **methods** — and `values` is a key we need — so `coord.values`
-would return `dict.values` (the method), a nasty collision. Item access has no
-such trap. (Attribute access could be offered later, whitelisted to keys that
-don't shadow the `dict` API — `.value`, `.unit`, `.name`, `.spacing` — but the
-canonical, always-safe spelling is `[...]`. See open question 2.)
+**Item access (`d["values"]`) is canonical** and works for every key.
+**Attribute access is sugar**, whitelisted to keys that don't shadow the `dict`
+API — `.value`, `.unit`, `.name`, `.spacing`, `.origin` — so `sp.value` reads
+`sp["value"]`. The colliding names stay their `dict` methods: `d.values`,
+`d.keys`, `d.items`, `d.get`, `d.update` are the mapping API, and the *key*
+`values` is reached only as `coord["values"]`.
+
+The class is **internal** — users pass plain inputs (`"0.5mm"`, `(0.5, "mm")`,
+dicts, tensors) and receive magic dicts back from `.coords`/`.axes`; there is no
+public constructor or exported name (so nothing collides with `pint.Quantity`).
 
 ### Two units, two roles
 
@@ -153,23 +159,20 @@ img.coords            # {axis: coordinate}
 img.coords["c"]       # ("red", "green", "blue")                — labels
 img.coords["x"]       # {"spacing": {"value": 0.5, "unit": "mm"}, "origin": {...}}
 img.coords["x"]["spacing"]["value"]   # 0.5    (a 0-rank tensor when learnable)
-img.coords["x"]["spacing"]["unit"]    # "mm"   — POSITION unit
+img.coords["x"]["spacing"].unit       # "mm"   — POSITION unit  (attribute sugar)
 
 # a coordinate is a "magic" dict: `["values"]` is a DERIVED key, materialised
-# from spacing/origin on demand (no bespoke `coord_values(...)` method)
+# from spacing/origin on demand — recomputed each access (no cache), so a
+# learnable spacing never goes stale.  (`values` is item-access only: it
+# collides with dict.values.)
 img.coords["x"]["values"]   # 1-D unitful tensor [-16, -15.5, …]  (lazy, differentiable)
+
+sp = img.coords["x"]["spacing"]
+sp["value"], sp.unit         # 0.5, "mm"     — item access, or attribute sugar
+sp.to("um")                  # {"value": 500.0, "unit": "um"}   — the one conversion helper
 
 img.unit                     # "mV"  — whole-tensor DATA unit (0003)
 img.coords["q"][0]["unit"]   # "V"   — per-position DATA unit (0003), distinct from any position unit
-```
-
-The unitful dict-subclass reads and converts like a dict:
-
-```python
-sp = img.coords["x"]["spacing"]
-sp["value"], sp["unit"]   # 0.5, "mm"
-sp.pair()                 # (0.5, "mm")        [helper name TBD]
-sp.to("um")               # {"value": 500.0, "unit": "um"}
 ```
 
 With `unit_backend=None` a unitful value is inert (carried, `unit` an opaque
@@ -246,24 +249,26 @@ coordinates of [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
   tensor in addition to label sequences — additive.
 - With `unit_backend=None` everything is inert and carried, as today.
 
-## Open questions
+## Settled
 
-1. **Materialisation** — settled as `coords["x"]["values"]` (a derived key on
-   the magic coordinate dict); `coords[axis]` returns the stored form (compact
-   `{spacing/origin}` or explicit) and `["values"]` materialises. Open only:
-   whether to cache the materialised array.
-2. **Attribute access** — do the magic dicts also expose safe keys as
-   attributes (`.value`, `.unit`, `.name`, `.spacing`), or stay item-access-only
-   to avoid the `dict.values`/`.keys`/`.items` collision? Item access is
-   canonical either way.
-3. **Unitful helper surface** — `.pair()` / `.to(...)` names; whether the magic
-   dict family is public or internal.
-4. **Numeric `.sel`** — value-based selection and its nearest/tolerance
-   semantics (xarray parity) are deferred to
-   [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66).
-5. **`coord` key vs `coords`** on the axis descriptor — singular `coord`
-   (one-per-axis) reads well now; revisit under
-   [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
+- **Materialisation** — `coords["x"]["values"]`, a derived key on the magic
+  coordinate dict; `coords[axis]` returns the stored form (compact
+  `{spacing/origin}` or explicit) and `["values"]` materialises **fresh each
+  access, no cache**.
+- **Attribute access** — item access is canonical for every key; whitelisted
+  attribute sugar (`.value`/`.unit`/`.name`/`.spacing`/`.origin`) for keys that
+  don't shadow the `dict` API.
+- **Helper surface & visibility** — one `.to(unit)` conversion helper; the magic
+  dict family is **internal** (no public constructor / exported name, so no
+  `pint.Quantity` clash).
+
+## Deferred (tracked)
+
+- **Numeric `.sel`** — value-based selection with nearest/tolerance semantics
+  (xarray parity) → [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66).
+- **Multiple coordinates per axis** — xarray non-dimension / curvilinear
+  coordinates, a swappable index; the singular `coord` key revisits then →
+  [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
 
 ## References
 
