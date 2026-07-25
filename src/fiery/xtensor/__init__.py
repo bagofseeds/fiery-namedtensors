@@ -9,9 +9,9 @@ spirit of [xarray](https://docs.xarray.dev):
   per-dimension coordinate **labels** (`coords`, keyed by dimension name)
   through a wide range of operations. Select by label with `.sel`, by position
   with `.isel`, or reach a single label by attribute (`x.red`).
-- [`XVector`][fiery.xtensor.XVector] and
-  [`XMatrix`][fiery.xtensor.XMatrix] are convenience
-  specializations that pre-name and label their channel axes.
+- [`xvector`][fiery.xtensor.xvector] and
+  [`xmatrix`][fiery.xtensor.xmatrix] are convenience factories that name and
+  label a `"channel"` axis (or `"row"`/`"col"`) and return a plain `XTensor`.
 
 The `named_*` helpers ([`named_zeros`][fiery.xtensor.named_zeros], ...)
 build an `XTensor` directly from the matching `torch.*` factory.
@@ -26,13 +26,13 @@ from fiery.xtensor._factories import (
     named_rand,
     named_randn,
     named_zeros,
+    xmatrix,
+    xvector,
 )
 from fiery.xtensor._options import set_options
 from fiery.xtensor._tensors import (
     ExtendedTensor,
-    XMatrix,
     XTensor,
-    XVector,
 )
 
 #: Lowercase alias of [`XTensor`][fiery.xtensor.XTensor].
@@ -47,8 +47,8 @@ __all__ = [
     "ExtendedTensor",
     "XTensor",
     "xtensor",
-    "XVector",
-    "XMatrix",
+    "xvector",
+    "xmatrix",
     "named_zeros",
     "named_ones",
     "named_empty",

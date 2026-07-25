@@ -51,6 +51,60 @@ named_randn = _make_factory("randn")
 named_eye = _make_factory("eye")
 
 
+def xvector(
+    data: tx.Any,
+    *,
+    channels: tx.Any = (...,),
+    channel_dim: int = -1,
+    **kwargs: tx.Any,
+) -> XTensor:
+    """
+    Wrap `data` as an [`XTensor`][fiery.xtensor.XTensor] with one labelled
+    **channel** axis.
+
+    A one-liner over `XTensor(...)`: names axis `channel_dim` (the last by
+    default) `"channel"` and labels it with `channels` (a `...` in the labels
+    fills the rest with unlabelled positions). Any other `XTensor` keyword
+    (`names=`, `coords=`, `unit=`, ...) is forwarded.
+
+    The result is a **plain** `XTensor`, not a distinct type -- so a reduction
+    or selection that drops the channel axis just returns a normal `XTensor`,
+    and the value is never a "vector" that has lost its vector axis.
+    """
+    x = XTensor(data, **kwargs)
+    names = list(x.names)
+    names[channel_dim % x.ndim] = "channel"
+    x.names = tuple(names)
+    x.coords = dict(x.coords, channel=channels)
+    return x
+
+
+def xmatrix(
+    data: tx.Any,
+    *,
+    rows: tx.Any = (...,),
+    cols: tx.Any = (...,),
+    dims: tx.Tuple[int, int] = (-2, -1),
+    **kwargs: tx.Any,
+) -> XTensor:
+    """
+    Wrap `data` as an [`XTensor`][fiery.xtensor.XTensor] with labelled `"row"`
+    and `"col"` axes.
+
+    The matrix analogue of [`xvector`][fiery.xtensor.xvector]: names the two
+    axes in `dims` (the last two by default) `"row"` and `"col"` and labels
+    them with `rows` / `cols` (a `...` fills the rest unlabelled). Other
+    `XTensor` keywords are forwarded, and the result is a plain `XTensor`.
+    """
+    x = XTensor(data, **kwargs)
+    names = list(x.names)
+    d0, d1 = (d % x.ndim for d in dims)
+    names[d0], names[d1] = "row", "col"
+    x.names = tuple(names)
+    x.coords = dict(x.coords, row=rows, col=cols)
+    return x
+
+
 __all__ = [
     "named_zeros",
     "named_ones",
@@ -60,4 +114,6 @@ __all__ = [
     "named_rand",
     "named_randn",
     "named_eye",
+    "xvector",
+    "xmatrix",
 ]

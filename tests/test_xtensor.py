@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from fiery.xtensor import (
-    XMatrix,
     XTensor,
-    XVector,
     set_options,
+    xmatrix,
+    xvector,
 )
 from fiery.xtensor._tensors import _slice_labels, _torch_func
 
@@ -1416,20 +1416,37 @@ def test_slice_labels_supports_int_slice_bool_and_advanced_indices():
 # ----------------------------------------------------------------------
 
 
-def test_named_vector_names_and_labels_the_channel_axis():
-    v = XVector(torch.zeros(2, 3), channels=("x", "y", "z"))
+def test_xvector_names_and_labels_the_channel_axis():
+    v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))
+    assert type(v) is XTensor  # a plain XTensor, not a distinct subclass
     assert v.names == (None, "channel")
-    assert v.channels == ("x", "y", "z")
     assert v.coords == {"channel": ("x", "y", "z")}
     assert v.sel(channel="y").shape == (2,)
     assert torch.equal(v.y, v.as_subclass(torch.Tensor)[:, 1])
 
 
-def test_named_matrix_labels_row_and_col():
-    m = XMatrix(torch.zeros(2, 3), channels=(("r0", "r1"), ("c0", "c1", "c2")))
+def test_xvector_channel_dim_and_default_unlabelled():
+    v = xvector(torch.zeros(3, 2), channel_dim=0)
+    assert v.names == ("channel", None)
+    # the default `channels=(...,)` names the axis without labelling it
+    assert v.coords == {"channel": (None, None, None)}
+
+
+def test_xmatrix_labels_row_and_col():
+    m = xmatrix(torch.zeros(2, 3), rows=("r0", "r1"), cols=("c0", "c1", "c2"))
+    assert type(m) is XTensor
     assert m.names == ("row", "col")
-    assert m.channels == (("r0", "r1"), ("c0", "c1", "c2"))
+    assert m.coords == {"row": ("r0", "r1"), "col": ("c0", "c1", "c2")}
     assert m.sel(row="r1", col="c2").ndim == 0
+
+
+def test_xvector_reduction_returns_a_plain_xtensor():
+    # dropping the channel axis yields a normal XTensor -- the type never
+    # outlives its meaning (the old XVector subclass did not maintain this)
+    v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))
+    reduced = v.sum(dim="channel")
+    assert type(reduced) is XTensor
+    assert reduced.names == (None,)
 
 
 # ----------------------------------------------------------------------
