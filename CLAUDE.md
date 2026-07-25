@@ -141,9 +141,11 @@ matching section (or a new one):
   intersection (in the left operand's order) before the op (xarray
   `join="inner"`). **Axis descriptors** are merged across operands by
   `_merge_axis_meta` (union of dims; per shared dim keep agreeing fields, drop
-  conflicting), under the `combine_axes` option
-  (`drop_conflicts`/`strict`/`override`/`drop`) from `_options`. Registers both
-  `torch.<op>` and `Tensor.<op>` (operators dispatch the latter).
+  conflicting). The policy is resolved **per descriptor field** by
+  `_options.combine_axes_policy` under the `combine_axes` option — a policy str
+  (`drop_conflicts`/`strict`(=`raise`)/`override`/`drop`) or a `{field: policy}`
+  dict with `"*"` as the default. Registers both `torch.<op>` and
+  `Tensor.<op>` (operators dispatch the latter).
 - **CONVENIENCE** — `XVector`/`XMatrix`.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`

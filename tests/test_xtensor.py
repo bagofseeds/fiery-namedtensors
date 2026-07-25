@@ -1572,8 +1572,57 @@ def test_drop_policy_removes_all_descriptors():
 def test_set_options_rejects_unknown_option_or_value():
     with pytest.raises(ValueError, match="unknown option"):
         set_options(nope=1)
-    with pytest.raises(ValueError, match="invalid value"):
+    with pytest.raises(ValueError, match="invalid combine_axes policy"):
         set_options(combine_axes="bogus")
+    with pytest.raises(ValueError, match="invalid combine_axes policy"):
+        set_options(combine_axes={"unit": "bogus"})
+    with pytest.raises(ValueError, match="must be a policy str or a"):
+        set_options(combine_axes=5)
+
+
+def test_combine_axes_accepts_a_per_field_policy():
+    a = XTensor(
+        torch.ones(3),
+        names=[{"name": "x", "type": "space", "unit": "um"}],
+    )
+    b = XTensor(
+        torch.ones(3),
+        names=[{"name": "x", "type": "time", "unit": "um"}],
+    )
+    # default drops every field, but an agreeing "unit" is kept
+    with set_options(combine_axes={"*": "drop", "unit": "raise"}):
+        assert (a + b).axes == ({"name": "x", "unit": "um"},)
+
+
+def test_per_field_raise_policy_fires_only_for_that_field():
+    a = XTensor(torch.ones(3), names=[{"name": "x", "unit": "um"}])
+    b = XTensor(torch.ones(3), names=[{"name": "x", "unit": "mm"}])
+    with set_options(combine_axes={"*": "drop", "unit": "raise"}):
+        with pytest.raises(ValueError, match="conflicting 'unit'"):
+            _ = a + b
+
+
+def test_per_field_override_keeps_the_left_value_for_one_field():
+    a = XTensor(
+        torch.ones(3),
+        names=[{"name": "x", "type": "space", "orientation": "left-to-right"}],
+    )
+    b = XTensor(
+        torch.ones(3),
+        names=[{"name": "x", "type": "space", "orientation": "right-to-left"}],
+    )
+    with set_options(combine_axes={"orientation": "override"}):
+        # "type" agrees (kept); "orientation" takes the left operand's value
+        assert (a + b).axes[0]["orientation"] == "left-to-right"
+        assert (b + a).axes[0]["orientation"] == "right-to-left"
+
+
+def test_unlisted_fields_fall_back_to_drop_conflicts():
+    a = XTensor(torch.ones(3), names=[{"name": "x", "type": "space"}])
+    b = XTensor(torch.ones(3), names=[{"name": "x", "type": "time"}])
+    # only "unit" is customised; "type" uses the drop_conflicts default
+    with set_options(combine_axes={"unit": "strict"}):
+        assert (a + b).axes == ({"name": "x"},)
 
 
 def test_movedim_by_type_moves_the_whole_block_to_the_back():
