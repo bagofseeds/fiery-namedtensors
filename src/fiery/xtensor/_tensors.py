@@ -20,7 +20,7 @@ from fiery.xtensor._arrayutils import SmartSlicerT, _SmartSlicerT
 from fiery.xtensor._compat import EllipsisType
 from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
-from fiery.xtensor._options import get_option as _get_option
+from fiery.xtensor._options import combine_axes_policy as _combine_axes_policy
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription).
 # The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
@@ -2042,20 +2042,18 @@ def _distinct(values: list) -> list:
 def _merge_axis_meta(sources: tx.Sequence, result_names: tuple) -> dict:
     """
     Combine several operands' axis **descriptors** into one `_axis_meta` for a
-    result whose dims are `result_names`, per the `combine_axes` option:
+    result whose dims are `result_names`. Each descriptor field is resolved
+    independently under its `combine_axes` policy (see `set_options`):
 
-    - `"drop"` -- no descriptors on the result;
-    - `"override"` -- the left-most operand's fields win on conflict;
-    - `"strict"` -- a conflicting field raises `ValueError`;
-    - `"drop_conflicts"` *(default)* -- union the axes, and for a shared dim
-      keep the fields the operands agree on while dropping the ones that
-      conflict (the rule coordinates already follow).
+    - `"drop"` -- always drop the field;
+    - `"override"` -- keep the left-most operand's value;
+    - `"strict"` -- raise `ValueError` on a conflict;
+    - `"drop_conflicts"` *(default)* -- keep the value the operands agree on,
+      drop it where they conflict (the rule coordinates already follow).
 
-    A field present on only one operand is never a conflict; it is kept.
+    A field present on only one operand is never a conflict; it is kept
+    (unless its policy is `"drop"`).
     """
-    policy = _get_option("combine_axes")
-    if policy == "drop":
-        return {}
     wanted = {name for name in result_names if name is not None}
     # For each result dim, the extra-field dicts of the operands that name it.
     per_dim = {}
@@ -2068,16 +2066,15 @@ def _merge_axis_meta(sources: tx.Sequence, result_names: tuple) -> dict:
                 per_dim.setdefault(name, []).append(meta.get(name, {}))
     merged = {}
     for name, dicts in per_dim.items():
-        if policy == "override":
-            extra = {}
-            for one in reversed(dicts):  # left-most wins
-                extra.update(one)
-            if extra:
-                merged[name] = extra
-            continue
         extra = {}
         for key in {k for one in dicts for k in one}:
+            policy = _combine_axes_policy(key)
+            if policy == "drop":
+                continue
             present = [one[key] for one in dicts if key in one]
+            if policy == "override":
+                extra[key] = present[0]  # left-most operand naming the field
+                continue
             distinct = _distinct(present)
             if len(distinct) == 1:
                 extra[key] = distinct[0]

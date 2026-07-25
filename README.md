@@ -177,6 +177,17 @@ with set_options(combine_axes="strict"):
     a + b                         # raises ValueError: conflicting 'type' …
 ```
 
+The policy is one of `"drop_conflicts"` (default), `"strict"` (alias
+`"raise"`), `"override"` (keep the left operand's value) or `"drop"` (always
+drop the field). Pass a `{field: policy}` dict to set it **per descriptor
+field** — `"*"` is the default for fields you don't name:
+
+```python
+# drop everything by default, but a clashing unit is an error
+with set_options(combine_axes={"*": "drop", "unit": "raise"}):
+    ...
+```
+
 `combine_axes` accepts `"drop_conflicts"` (default), `"strict"` (raise on any
 clash), `"override"` (keep the left operand's fields), or `"drop"` (discard all
 descriptors).
