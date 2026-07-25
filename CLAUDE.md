@@ -47,6 +47,7 @@ src/fiery/xtensor/
   _tensors.py       # the tensor subclasses + torch-function overrides
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
+  _options.py       # global options + `set_options` context manager
 tests/
   test_xtensor.py
   test_arrayutils.py
@@ -130,8 +131,11 @@ matching section (or a new one):
   A shared dim **labelled on both** operands with differing labels is also
   aligned **by label** — `_reindex_axis` inner-joins both operands to the
   intersection (in the left operand's order) before the op (xarray
-  `join="inner"`). Registers both `torch.<op>` and `Tensor.<op>` (operators
-  dispatch the latter).
+  `join="inner"`). **Axis descriptors** are merged across operands by
+  `_merge_axis_meta` (union of dims; per shared dim keep agreeing fields, drop
+  conflicting), under the `combine_axes` option
+  (`drop_conflicts`/`strict`/`override`/`drop`) from `_options`. Registers both
+  `torch.<op>` and `Tensor.<op>` (operators dispatch the latter).
 - **CONVENIENCE** — `XVector`/`XMatrix`.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`

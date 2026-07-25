@@ -20,6 +20,7 @@ from fiery.xtensor._arrayutils import SmartSlicerT, _SmartSlicerT
 from fiery.xtensor._compat import EllipsisType
 from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
+from fiery.xtensor._options import get_option as _get_option
 
 # typing (evaluated at import time -> use tx, never abc/builtin subscription).
 # The slicer aliases (`SmartSlicerT`, ...) are shared from `_arrayutils`.
@@ -1942,13 +1943,77 @@ def _align_by_name(a: XTensor, b: XTensor) -> tuple:
     )
 
 
+def _distinct(values: list) -> list:
+    """The distinct `values`, order-preserving and tolerant of unhashables."""
+    seen = []
+    for value in values:
+        if value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _merge_axis_meta(sources: tx.Sequence, result_names: tuple) -> dict:
+    """
+    Combine several operands' axis **descriptors** into one `_axis_meta` for a
+    result whose dims are `result_names`, per the `combine_axes` option:
+
+    - `"drop"` -- no descriptors on the result;
+    - `"override"` -- the left-most operand's fields win on conflict;
+    - `"strict"` -- a conflicting field raises `ValueError`;
+    - `"drop_conflicts"` *(default)* -- union the axes, and for a shared dim
+      keep the fields the operands agree on while dropping the ones that
+      conflict (the rule coordinates already follow).
+
+    A field present on only one operand is never a conflict; it is kept.
+    """
+    policy = _get_option("combine_axes")
+    if policy == "drop":
+        return {}
+    wanted = {name for name in result_names if name is not None}
+    # For each result dim, the extra-field dicts of the operands that name it.
+    per_dim = {}
+    for source in sources:
+        if not isinstance(source, XTensor):
+            continue
+        meta = source._valid_axis_meta()
+        for name in source.names:
+            if name in wanted:
+                per_dim.setdefault(name, []).append(meta.get(name, {}))
+    merged = {}
+    for name, dicts in per_dim.items():
+        if policy == "override":
+            extra = {}
+            for one in reversed(dicts):  # left-most wins
+                extra.update(one)
+            if extra:
+                merged[name] = extra
+            continue
+        extra = {}
+        for key in {k for one in dicts for k in one}:
+            present = [one[key] for one in dicts if key in one]
+            distinct = _distinct(present)
+            if len(distinct) == 1:
+                extra[key] = distinct[0]
+            elif policy == "strict":
+                raise ValueError(
+                    f"conflicting {key!r} for axis {name!r}: {distinct}"
+                )
+            # drop_conflicts: a conflicting field is simply omitted
+        if extra:
+            merged[name] = extra
+    return merged
+
+
 def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
     a_named = isinstance(a, XTensor) and None not in a.names
     b_named = isinstance(b, XTensor) and None not in b.names
     if a_named and b_named:
         a2, b2, names, coords = _align_by_name(a, b)
         result = base(a2, b2, *args, **kwargs)
-        return _carry(a, result, _axis_names=names, _coords=coords)
+        meta = _merge_axis_meta((a, b), names)
+        return _carry(
+            a, result, _axis_names=names, _coords=coords, _axis_meta=meta
+        )
     # positional fallback (unnamed axis, plain tensor, or scalar operand)
     result = base(a, b, *args, **kwargs)
     if not isinstance(result, Tensor):
@@ -1956,7 +2021,10 @@ def _binary(a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs) -> tx.Any:
     ref = a if isinstance(a, XTensor) else b
     names = _broadcast_batch_names(_names_of(a), _names_of(b))
     coords = _coords_of(ref) if result.ndim == getattr(ref, "ndim", -1) else {}
-    return _carry(ref, result, _axis_names=names, _coords=coords)
+    meta = _merge_axis_meta((a, b), names)
+    return _carry(
+        ref, result, _axis_names=names, _coords=coords, _axis_meta=meta
+    )
 
 
 def _make_pointwise(name: str) -> None:
