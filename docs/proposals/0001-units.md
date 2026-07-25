@@ -120,13 +120,42 @@ and their unit; the **tensor data is never touched**).
 Unchanged by default. `spacing`/`origin` are new optional axis-descriptor
 metadata; with `unit_backend=None` they are inert carried `Quantity`s.
 
+## One `Quantity` *interface*, two implementations (duck-typed)
+
+The named-tuple form and the 0-d-`XTensor` form should share an **API
+(protocol), not a base class**:
+
+- **Not a shared base class.** `XTensor` is already a `torch.Tensor` subclass,
+  and Tensor subclassing is delicate — bolting on a second base (a
+  `QuantityBase`) risks metaclass/`__new__` conflicts for no real gain, since
+  the two forms store their value completely differently (a Python scalar in a
+  tuple vs. a live tensor). Sharing *implementation* buys little.
+- **A shared duck-typed API.** Define a small, `runtime_checkable`
+  `Quantity` **protocol** — `.unit` (str), `.magnitude` (the value),
+  `to_unit(u)` (convert), and the arithmetic (`*`/`/` combine units, `+`/`-`
+  require compatible, `* <unit>` attaches). Anything implementing it *is* a
+  quantity; `is_quantity(x)` is a structural check, not `isinstance` on a
+  concrete class.
+- **The tensor form nearly implements it already.** A 0-d `XTensor` with a data
+  unit (0003) already has `.unit` and `to_unit`; its `.magnitude` is the tensor
+  itself, and its arithmetic is plain torch. So the *same* work that builds
+  data-unit algebra (0003 phase 2) makes the tensor form satisfy the protocol —
+  we then add a lightweight named-tuple `Quantity` (backed by `_units`) that
+  implements the same surface for the cheap, non-grad, no-allocation case.
+
+Each form's arithmetic returns *its own* kind (tuple·scalar → tuple;
+tensor·scalar → tensor); consumers (spacing math, conversion, `sel`) only touch
+the protocol, so they never care which they hold. `Quantity` (the protocol +
+the named-tuple impl) lives in `_units`, shared by 0001 and 0003.
+
 ## Open questions
 
-1. Should `Quantity` be a **shared public type** (used by 0001 metrics *and*
-   0003 as the scalar-quantity form), and live in `_units`?
-2. Conversion API surface (`to_unit`, unit-aware `sel` taking a `Quantity`).
-3. The 0-d-`XTensor`-as-`Quantity.value` unification — how automatic (detect a
-   0-d united tensor and treat it as a `Quantity`, and vice-versa)?
+1. Conversion API surface (`to_unit`, unit-aware `sel` taking a `Quantity`).
+2. The 0-d-`XTensor`-as-`Quantity` unification — how automatic: does a bare 0-d
+   united tensor auto-satisfy `is_quantity`, and does `Quantity(tensor)` read
+   the unit off the tensor rather than double-storing it?
+3. Exact protocol surface — `.magnitude` vs `.value`; which operators are
+   required vs optional.
 4. Naming: `spacing`/`origin` on the axis descriptor vs the coordinate-label
    `unit` (data units, 0003) — different fields/levels, so no clash.
 
