@@ -47,6 +47,16 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `unit_policy="strict"`. See the POINTWISE `_UNIT_RULE`/`_binary_unit` and the
   transcendental factory.
 
+- **heterogeneous data units** (Proposal 0003 phase 3): units that vary along
+  an axis live on the `unit` field of a structured coordinate (0002) —
+  `_label_unit` reads them; effective unit = base · Π(coord units). Selecting a
+  single position on such an axis (`__getitem__`/`isel`/`sel`) folds that unit
+  into `_data_unit`; reducing over it folds a **uniform** axis unit (via
+  `_uniform_unit`/`_reduce_unit`) into the base, or drops/raises (policy) on
+  **incompatible** per-position units. Backend-gated (inert with
+  `unit_backend=None`). Heterogeneous matmul/einsum contraction is not yet
+  wired (rides on base units only).
+
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
 work-in-progress in `balbasty/magnetix`

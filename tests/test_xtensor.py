@@ -1817,6 +1817,106 @@ def test_data_unit_algebra_is_inert_without_a_backend():
     assert torch.exp(V).unit == "V"  # not dropped
 
 
+# -- heterogeneous (per-axis) data units (Proposal 0003 phase 3) --------------
+
+
+def _channel_stack():
+    # a `q` axis whose positions carry different data units
+    return XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("q", "t"),
+        coords={
+            "q": [
+                {"name": "voltage", "unit": "V"},
+                {"name": "current", "unit": "A"},
+                {"name": "power", "unit": "W"},
+            ]
+        },
+    )
+
+
+def test_hetero_unit_folds_into_base_on_selection():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        assert x.unit is None  # heterogeneous: no single base unit
+        assert x.sel(q="voltage").unit == "V"  # fold the channel's unit
+        assert x.sel(q="current").unit == "A"
+        assert x.isel(q=2).unit == "W"  # isel folds too
+        assert x[0].unit == "V"  # and plain integer indexing
+
+
+def test_hetero_unit_selection_multiplies_into_an_existing_base():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.arange(12.0).reshape(3, 4),
+            names=("q", "t"),
+            coords={
+                "q": [
+                    {"name": "a", "unit": "m"},
+                    {"name": "b", "unit": "m"},
+                    {"name": "c", "unit": "m"},
+                ]
+            },
+            unit="s",
+        )
+        assert x.isel(q=0).unit == "meter * second"  # base * coord unit
+
+
+def test_hetero_unit_slice_keeps_axis_and_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        sl = x.isel(q=slice(0, 2))  # keeps the axis -> no fold
+        assert sl.unit is None
+        assert sl.coords["q"] == (
+            {"name": "voltage", "unit": "V"},
+            {"name": "current", "unit": "A"},
+        )
+
+
+def _uniform_stack(unit="V"):
+    return XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("q", "t"),
+        coords={"q": [{"name": n, "unit": unit} for n in "abc"]},
+    )
+
+
+def test_reduction_folds_a_uniform_axis_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _uniform_stack("V")
+        assert x.sum(dim="q").unit == "V"  # uniform axis unit folds in
+        assert x.mean(dim="q").unit == "V"
+        assert x.sum(dim="q", keepdim=True).unit == "V"  # keepdim too
+        assert x.sum().unit == "V"  # dim=None reduces the unit axis as well
+
+
+def test_reduction_keeps_base_over_a_unitless_axis():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _uniform_stack("V")
+        assert x.sum(dim="t").unit is None  # `t` carries no units; base stays
+
+
+def test_reduction_over_incompatible_units_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = _channel_stack()
+        assert x.sum(dim="q").unit is None  # V/A/W incompatible -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                x.sum(dim="q")
+
+
+def test_hetero_units_are_inert_without_a_backend():
+    x = _channel_stack()  # unit_backend=None
+    assert x.sel(q="voltage").unit is None  # no fold when the layer is inert
+    assert x.sum(dim="q").unit is None
+
+
 def test_combine_axes_accepts_a_per_field_policy():
     a = XTensor(
         torch.ones(3),

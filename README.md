@@ -274,6 +274,31 @@ with set_options(unit_policy="strict"):
     volts + amps                  # ValueError: incompatible units 'volt' and 'ampere'
 ```
 
+### Heterogeneous (per-axis) units
+
+Units may also **vary along an axis**: give a structured coordinate (Proposal
+0002) a `unit` field per position, and each position stacks a different quantity
+(a `voltage`/`current`/`power` channel stack). The effective element unit is
+`base · Π(coord units)`:
+
+```python
+with set_options(unit_backend="pint"):
+    x = xtensor(data, names=("q", "t"), coords={"q": [
+        {"name": "voltage", "unit": "V"},
+        {"name": "current", "unit": "A"},
+        {"name": "power",   "unit": "W"},
+    ]})
+    x.unit                     # None    — no single base unit (heterogeneous)
+    x.sel(q="voltage").unit    # "V"     — selecting one position folds its unit in
+    x.sum(dim="q").unit        # None    — V/A/W incompatible -> dropped
+    # a *uniform* axis (all positions same unit) folds cleanly on reduction:
+    y.sum(dim="q").unit        # "V"
+```
+
+Reducing over such an axis folds a uniform unit into the base or, on
+incompatible per-position units, drops it (or raises under
+`unit_policy="strict"`).
+
 The data itself is never wrapped in a `pint.Quantity`, so autograd, GPU, and
 `__torch_function__` keep working throughout.
 
