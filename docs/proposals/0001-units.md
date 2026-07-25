@@ -79,6 +79,19 @@ than wrapping data in `pint`:
 - **`unit`** — a **canonical string** (backend-normalised), same storage rule as
   0003, so the metric is picklable and backend-independent.
 
+A `Quantity` is really `value · unit`, so a bare half **folds** into the
+canonical pair — the missing half taking its identity:
+
+| input | folds to | meaning |
+| --- | --- | --- |
+| a bare **value** `v` (number / 0-d tensor) | `Quantity(v, "")` | dimensionless |
+| a bare **unit** `u` (str / pint `Unit`) | `Quantity(1, u)` | one `u` |
+| a `(value, unit)` pair, or a `Quantity` | itself | — |
+
+So `spacing=0.5` ≡ `Quantity(0.5, "")` and `spacing="um"` ≡ `Quantity(1, "um")`;
+both normalise to the same `(value, unit)` shape. (`""` is the dimensionless
+unit — the backend normalises it; distinct from `None`/*unset*.)
+
 `Quantity` carries **its own light arithmetic**, deferring the unit part to the
 active `unit_backend` (the shared `_units` algebra) and never wrapping the data:
 
