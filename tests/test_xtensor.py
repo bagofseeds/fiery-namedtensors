@@ -167,6 +167,41 @@ def test_getitem_slices_the_labels_of_kept_axes():
     assert x[:, 1].coords == {}
 
 
+def test_getitem_with_a_dict_selects_by_label_like_sel():
+    x = _labelled()  # names ("row", "col"), coords col=("w","x","y","z")
+    # single label drops the axis
+    assert x[{"col": "y"}].names == ("row",)
+    assert torch.equal(x[{"col": "y"}], x.sel(col="y"))
+    # a list of labels keeps the axis and its (subset) labels
+    assert x[{"col": ["w", "y"]}].coords == {"col": ("w", "y")}
+
+
+def test_getitem_with_a_dict_selects_along_several_dims():
+    x = XTensor(
+        torch.arange(6).reshape(2, 3),
+        names=("row", "col"),
+        coords={"row": ("r0", "r1"), "col": ("c0", "c1", "c2")},
+    )
+    assert x[{"row": "r1", "col": "c2"}].item() == 5
+
+
+def test_getitem_with_a_bare_string_searches_labels_across_dims():
+    x = _labelled()
+    assert torch.equal(x["y"], x.sel(col="y"))
+    with pytest.raises(KeyError, match="no coordinate label"):
+        _ = x["nope"]
+
+
+def test_getitem_bare_string_is_ambiguous_across_dims():
+    x = XTensor(
+        torch.arange(4).reshape(2, 2),
+        names=("a", "b"),
+        coords={"a": ("k", "m"), "b": ("k", "n")},  # "k" on both dims
+    )
+    with pytest.raises(KeyError, match="ambiguous"):
+        _ = x["k"]
+
+
 def test_permute_carries_coordinates_unchanged():
     x = _labelled()
     assert x.T.coords == {"col": ("w", "x", "y", "z")}

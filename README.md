@@ -42,6 +42,8 @@ m = XTensor(
 )
 m.sel(channel="y")              # selects position 1 along "channel"
 m.y                             # ... same, by attribute
+m[{"channel": "y"}]             # ... same, by dict label indexing
+m["y"]                          # ... same, bare label (searches every dim)
 m.isel(channel=1)               # ... same, by integer position
 m.coords                        # {'channel': ('x', 'y', 'z')}
 m.T.coords                      # {'channel': ('x', 'y', 'z')} — follows the dim
