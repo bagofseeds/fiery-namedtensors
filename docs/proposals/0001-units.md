@@ -66,6 +66,14 @@ package behaves exactly as it does now.
    metric label) or requires coordinates to be meaningful.
 3. Backend interface shared with Proposal 0003 (`normalise`, `equal`, and — new
    here — `convert(value, from, to)`).
+4. **The one thing worth confirming: `unit` at two levels.** The *tick* unit
+   here lives on the **axis descriptor** (`names=[{"name": "t", "unit": "s"}]`),
+   while a *data* unit that varies per position lives on a **coordinate label**
+   (`coords={"q": [{"name": "v", "unit": "V"}]}`, Proposal 0003). Same key,
+   different meaning at different levels (whole-axis metric vs per-position data
+   unit). They're structurally distinct (axis descriptor vs coordinate label),
+   so this is workable — but if the shared word is a concern we could rename one
+   (e.g. axis `spacing_unit` / coordinate `unit`). Otherwise 0001 is settled.
 
 ## References
 

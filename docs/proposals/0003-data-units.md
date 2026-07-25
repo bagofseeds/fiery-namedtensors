@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — converging (design decided; no implementation) |
+| **Status** | Draft — design settled (see §0); no implementation yet |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); the *other* meaning of "unit" from Proposal 0001; builds on Proposal 0002 (structured coordinates) |
@@ -24,6 +24,31 @@ The design follows **one general principle**, not a pile of special cases:
 
 So units are a zero-friction, best-effort annotation out of the box, and a
 dimensional-safety net when you opt in.
+
+## 0. Decisions (settled in discussion)
+
+- **Annotate, don't wrap.** `XTensor` is a `Tensor` subclass carrying a unit;
+  the data is never put inside a `pint.Quantity` (§1a — measured: a Quantity is
+  not a `Tensor`, so `torch.*`/`nn` reject it and attribute forwarding breaks on
+  grad/CUDA tensors, even though its *arithmetic* preserves autograd).
+- **One general rule, no special cases** (§2.1): `unit(x[i,j,…]) = base ·
+  Π_k unit_k(i_k)`; several unit-carrying axes simply **multiply**.
+- **`.unit`** is the whole-tensor base unit — a constructor `unit=` kwarg *and* a
+  settable property (§2.3). Assigning ≠ converting (`x.unit = "V"` vs
+  `x.to_unit("mV")`). Heterogeneous units come from structured-coordinate `unit`
+  fields (0002), not `.unit`.
+- **`unit_policy`** (§3): `"drop"` (default — silently drop the unit wherever the
+  algebra is dimensionally invalid/ambiguous) or `"strict"` (raise). Covers
+  transcendentals of a united value, incompatible `add`, and reducing/
+  contracting across incompatible units. Set via `set_options` (permanent *or*
+  `with`-scoped).
+- **`x * mm`** attaches a unit (§2.4): a backend unit/quantity operand splits
+  into `(magnitude, unit)` — magnitude scales the data, unit combines.
+- **Library-agnostic backend** (§5a): a small adapter protocol; units stored as
+  **canonical strings** (picklable, swappable). Ship `"pint"`; `astropy.units`,
+  `unyt`, `quantities` are one-adapter-each; `None` (default) = today.
+- **Backend does the algebra** (§5); the package only wires op→unit-transform,
+  the policy, and metadata. Everything is **inert with `unit_backend=None`**.
 
 ## 1. Use cases
 
