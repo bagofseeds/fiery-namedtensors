@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — phases 1-3 + `x*mm` attach landed (uniform + algebra + heterogeneous per-axis units + attach-by-multiplication); heterogeneous matmul contraction, detach/`repr`, implicit conversion next |
+| **Status** | Accepted — phases 1-4 landed (uniform + algebra + heterogeneous per-axis units + `x*mm` attach + heterogeneous contraction + `.magnitude` detach + implicit `V→mV` conversion); only unit-aware `repr` and per-op policy remain open |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); the *other* meaning of "unit" from Proposal 0001; builds on Proposal 0002 (structured coordinates) |
@@ -296,30 +296,37 @@ not restricting the model:
    `unit_k(i_k)`. Selecting a single position on such an axis (`sel`/`isel`/`[]`)
    folds that unit into the base (§4, last row); reducing over it folds a
    **uniform** axis unit into the base, or drops/raises on **incompatible**
-   per-position units under `unit_policy`. (Heterogeneous **matmul/einsum**
-   contraction — requiring the contracted axis to be unit-uniform per side —
-   still rides on base units only; it moves with phase 4.)
-4. **conveniences** — `x * u.mm` **attach** *(landed)* — caught at the operator
-   dunders (`__mul__`/`__rmul__`/`__truediv__`) rather than the
-   `__torch_function__` overrides, so the unit library's reflected `__rmul__`
-   never intercepts `x * <unit>` first (§2.4). Still open in this phase:
-   heterogeneous matmul/einsum contraction compat, `.magnitude`/detach,
-   unit-aware `repr`, richer/implicit conversions (the §7 open questions).
+   per-position units under `unit_policy`.
+4. **conveniences** *(landed)*:
+   - `x * u.mm` **attach** — caught at the operator dunders
+     (`__mul__`/`__rmul__`/`__truediv__`) rather than the `__torch_function__`
+     overrides, so the unit library's reflected `__rmul__` never intercepts
+     `x * <unit>` first (§2.4).
+   - **heterogeneous contraction** — `matmul`/`einsum`/`tensordot` fold each
+     side's *uniform* contracted-axis unit into its base and multiply; a
+     non-uniform contracted axis drops/raises under `unit_policy` (§4). Also
+     fixed `einsum`/`tensordot` to multiply operand base units (they had kept
+     only the first operand's). An `einsum` equation the parser can't read
+     (e.g. an ellipsis) falls back to the base-unit product.
+   - **`.magnitude`** — drops the data unit, returning the bare values as an
+     `XTensor` that keeps its names/coordinates (a view; the original is
+     unchanged). For a plain `torch.Tensor`, `x.as_subclass(torch.Tensor)`.
+   - **implicit conversion** — `add`/`sub`/compare of **compatible** units
+     (`V` + `mV`) convert the right operand to the left's unit before the op;
+     only dimensionally **incompatible** units drop/raise (§7.2).
 
 ## 7. Open questions
 
-1. **Detach ergonomics** — `.magnitude` / `.to("V").tensor()` to drop to a plain
-   tensor: spelling and how explicit.
-2. **Implicit conversion on `add`** — when dimensions agree (V + mV), auto-
-   convert to the left unit (proposed) vs require exact match.
-3. **`repr` / serialisation** of a (possibly heterogeneous) unit.
-4. **Per-op policy override** — is one global `unit_policy` enough, or do some
+1. **`repr` / serialisation** of a (possibly heterogeneous) unit.
+2. **Per-op policy override** — is one global `unit_policy` enough, or do some
    ops want their own (mirroring `combine_axes`'s per-field dict)? Deferred
    until a need appears.
 
 *Settled:* the property is `.unit` (not `.data_unit`); units are stored as
 canonical strings so the backend is swappable; `x * <unit>` attaches a unit
-(§2.4, landed in phase 4).
+(§2.4); **detach** is `.magnitude` — drop the unit, keep the `XTensor` (phase
+4); **implicit conversion** on `add`/compare converts compatible units to the
+left operand's, dropping/raising only on incompatible dimensions (phase 4).
 
 ## Related note
 

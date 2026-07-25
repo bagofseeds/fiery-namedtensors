@@ -470,6 +470,17 @@ class XTensor(ExtendedTensor):
         scaled = Tensor.mul(self, _units.factor(current, unit))
         return _carry(self, scaled, _data_unit=unit)
 
+    @property
+    def magnitude(self) -> tx.Self:
+        """
+        The tensor with its **data unit dropped** (Proposal 0003 §7.1) -- the
+        bare values, still an `XTensor` with the same names and coordinates.
+        A view (no data copy); the original is unchanged. `x.magnitude.unit`
+        is always `None`. (To get a plain `torch.Tensor`, use
+        `x.as_subclass(torch.Tensor)`.)
+        """
+        return _carry(self, self.as_subclass(type(self)), _data_unit=None)
+
     # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
     #
     # `x * u.mm` / `x / u.s`: a backend `Unit`/`Quantity` operand attaches or
@@ -1936,12 +1947,16 @@ def _make_matmul(name: str) -> None:
         result = base(input, other, **kwargs)
         ref = input if isinstance(input, XTensor) else other
         names = _matmul_names(_names_of(input), _names_of(other))
-        # A contraction is a sum of products: the data unit is the product of
-        # the operands' units.
+        # A contraction is a sum of products: fold each side's contracted-axis
+        # unit into its base and multiply (heterogeneous units require the
+        # contracted axis to be unit-uniform per side).
         unit_kw = {}
         if _units.active():
-            unit_kw["_data_unit"] = _units.mul(
-                _unit_of(input), _unit_of(other)
+            axa, axb = _matmul_contracted_axes(
+                getattr(input, "ndim", 0), getattr(other, "ndim", 0)
+            )
+            unit_kw["_data_unit"] = _contraction_unit(
+                (input, other), ([axa], [axb])
             )
         # The contraction invalidates the coordinate layout; surviving axes
         # keep their (merged) descriptors.
@@ -2062,7 +2077,20 @@ def _(equation: str, *operands: tx.Any, **kwargs) -> tx.Any:
         equation, [_names_of(t) for t in flat], getattr(result, "ndim", 0)
     )
     meta = _merge_axis_meta(flat, names)
-    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
+    unit_kw = {}
+    if _units.active():
+        axes = _einsum_contracted_axes(equation, flat)
+        if axes is None:
+            # unparsable (e.g. ellipsis): fall back to the product of bases
+            base = None
+            for operand in flat:
+                base = _units.mul(base, _unit_of(operand))
+            unit_kw["_data_unit"] = base
+        else:
+            unit_kw["_data_unit"] = _contraction_unit(flat, axes)
+    return _carry(
+        ref, result, _axis_names=names, _coords={}, _axis_meta=meta, **unit_kw
+    )
 
 
 @XTensor.overrides(_torch_func("tensordot"))
@@ -2081,7 +2109,14 @@ def _(a: tx.Any, b: tx.Any, dims: tx.Any = 2, **kwargs) -> tx.Any:
         n for i, n in enumerate(a_names) if i not in a_contracted
     ) + tuple(n for i, n in enumerate(b_names) if i not in b_contracted)
     meta = _merge_axis_meta((a, b), names)
-    return _carry(ref, result, _axis_names=names, _coords={}, _axis_meta=meta)
+    unit_kw = {}
+    if _units.active():
+        unit_kw["_data_unit"] = _contraction_unit(
+            (a, b), (sorted(a_contracted), sorted(b_contracted))
+        )
+    return _carry(
+        ref, result, _axis_names=names, _coords={}, _axis_meta=meta, **unit_kw
+    )
 
 
 # ======================================================================
@@ -2441,17 +2476,148 @@ def _binary_unit(a: tx.Any, b: tx.Any, rule: str) -> tx.Optional[str]:
     return None  # "drop": result is unitless
 
 
+def _reconcile_units(
+    a: tx.Any, b: tx.Any, rule: tx.Optional[str]
+) -> tx.Tuple[tx.Any, tx.Any, dict]:
+    """
+    Apply the data-unit algebra to a pointwise op's operands. For `add`/`cmp`
+    of **compatible-but-different** units (e.g. `V` and `mV`), implicitly
+    convert the *right* operand to the left's unit (Proposal 0003 §7.2) so the
+    values line up before the op; then compute the result unit per `rule` and
+    policy. Returns the (possibly rescaled) operands and the `_data_unit`
+    override for `_carry`. Inert with no backend / no unit rule.
+    """
+    if not (_units.active() and rule is not None):
+        return a, b, {}
+    if rule in ("add", "cmp"):
+        ua, ub = _unit_of(a), _unit_of(b)
+        if (
+            ua is not None
+            and ub is not None
+            and not _units.equal(ua, ub)
+            and _units.compatible(ua, ub)
+        ):
+            converted = Tensor.mul(b, _units.factor(ub, ua))
+            b = _carry(b, converted, _data_unit=ua)
+    return a, b, {"_data_unit": _binary_unit(a, b, rule)}
+
+
+# -- contraction (matmul / einsum / tensordot) unit algebra ------------------
+#
+# A contraction is a sum of products over one or more axes. For the sum to be
+# dimensionally valid each contracted axis must be **unit-uniform** per side;
+# its uniform per-position unit then folds into that operand's base, and the
+# operands' effective units multiply (Proposal 0003 §4). A non-uniform
+# contracted axis is invalid -> drop (default) / raise (strict).
+
+
+def _axis_uniform_unit(x: tx.Any, axis: int) -> tx.Any:
+    """
+    The single per-position data unit of `x`'s axis `axis` (`None` when it
+    carries no coordinate units), or `_INCOMPATIBLE` when the positions
+    disagree -- contracting such an axis is dimensionally invalid.
+    """
+    if not isinstance(x, XTensor):
+        return None
+    ndim = x.ndim
+    if not -ndim <= axis < ndim:
+        return None
+    name = x.names[axis]
+    if name is None:
+        return None
+    labels = (x.__dict__.get("_coords") or {}).get(name)
+    if not labels:
+        return None
+    return _uniform_unit(labels)
+
+
+def _contraction_unit(
+    operands: tx.Sequence, contracted_axes: tx.Sequence
+) -> tx.Optional[str]:
+    """
+    Base data unit for a contraction: the product over `operands` of each
+    operand's base unit and the uniform per-position unit of each of its
+    contracted axes (`contracted_axes[i]` lists the summed axes of
+    `operands[i]`). A non-uniform contracted axis drops the unit (default) or
+    raises (`unit_policy="strict"`).
+    """
+    total = None
+    for operand, axes in zip(operands, contracted_axes):
+        effective = _unit_of(operand)
+        for axis in axes:
+            unit = _axis_uniform_unit(operand, axis)
+            if unit is _INCOMPATIBLE:
+                _unit_strict(
+                    True, "contracting an axis with non-uniform units"
+                )
+                return None
+            effective = _units.mul(effective, unit)
+        total = _units.mul(total, effective)
+    return total
+
+
+def _matmul_contracted_axes(na: int, nb: int) -> tx.Tuple[int, int]:
+    """The contracted axis of each operand under `matmul` broadcasting."""
+    if na == 1 and nb == 1:
+        return 0, 0  # dot product
+    if na == 1:
+        return 0, -2  # [k] @ [..., k, n]
+    if nb == 1:
+        return -1, 0  # [..., m, k] @ [k]
+    return -1, -2  # [..., m, k] @ [..., k, n]
+
+
+def _einsum_contracted_axes(
+    equation: str, operands: tx.Sequence
+) -> tx.Optional[list]:
+    """
+    Per-operand lists of contracted (summed) axis indices for
+    `einsum(equation, *operands)` -- a subscript that does **not** appear in
+    the output. Returns `None` for anything this simple parser can't handle
+    (most notably an ellipsis), so the caller falls back to base units only.
+    """
+    if "." in equation:
+        return None
+    if "->" in equation:
+        parts = equation.split("->")
+        if len(parts) != 2:
+            return None
+        in_part, out_part = parts
+    else:
+        in_part, out_part = equation, None
+    in_subscripts = [s.strip() for s in in_part.split(",")]
+    if len(in_subscripts) != len(operands):
+        return None
+    for subscript, operand in zip(in_subscripts, operands):
+        if subscript and not subscript.isalpha():
+            return None
+        if len(subscript) != getattr(operand, "ndim", len(subscript)):
+            return None
+    if out_part is None:
+        counts: dict = {}
+        for subscript in in_subscripts:
+            for letter in subscript:
+                counts[letter] = counts.get(letter, 0) + 1
+        out_letters = {c for c, n in counts.items() if n == 1}
+    else:
+        out_subscript = out_part.strip()
+        if out_subscript and not out_subscript.isalpha():
+            return None
+        out_letters = set(out_subscript)
+    return [
+        [i for i, letter in enumerate(subscript) if letter not in out_letters]
+        for subscript in in_subscripts
+    ]
+
+
 def _binary(
     a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs, rule=None
 ) -> tx.Any:
-    # NOTE: attaching a unit by multiplication (`x * u.mm`) is deliberately not
-    # handled here -- Python's operator protocol lets pint's reflected
-    # `__rmul__` intercept `x * <quantity>` before this override runs, so it
-    # needs bespoke handling (a later phase / an explicit method).
-    backend = _units.active()
-    unit_kw = {}
-    if backend and rule is not None:
-        unit_kw["_data_unit"] = _binary_unit(a, b, rule)
+    # `x * u.mm` (a unit operand) is handled earlier, at the operator dunders
+    # (§2.4); here both operands are ordinary values. Reconcile units first --
+    # this may rescale `b` (implicit V->mV-style conversion) -- then run the op
+    # on the reconciled operands.
+    a, b, unit_kw = _reconcile_units(a, b, rule)
     a_named = isinstance(a, XTensor) and None not in a.names
     b_named = isinstance(b, XTensor) and None not in b.names
     if a_named and b_named:

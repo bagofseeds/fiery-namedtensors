@@ -310,6 +310,17 @@ with set_options(unit_policy="strict"):
     volts + amps                  # ValueError: incompatible units 'volt' and 'ampere'
 ```
 
+**Compatible** units are reconciled automatically: adding or comparing `V` and
+`mV` converts the right operand to the left's unit first (only *incompatible*
+dimensions drop/raise). And `.magnitude` drops the unit when you want the bare
+values:
+
+```python
+with set_options(unit_backend="pint"):
+    (xtensor(v, unit="V") + xtensor(mv, unit="mV")).unit   # "volt" — mV converted
+    xtensor(v, unit="V").magnitude.unit                    # None   — unit dropped, still an XTensor
+```
+
 ### Heterogeneous (per-axis) units
 
 Units may also **vary along an axis**: give a structured coordinate (Proposal
