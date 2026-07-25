@@ -7,7 +7,7 @@ nav = [
   {"Named Tensors" = "index.md"},
   {"API" = "api/index.md"},
   {"Proposals" = [
-    {"0001 — Coordinate metric (spacing)" = "proposals/0001-units.md"},
+    {"0001 — Coordinates (values, spacing, units)" = "proposals/0001-units.md"},
     {"0002 — Structured coordinates" = "proposals/0002-structured-coordinates.md"},
     {"0003 — Data units" = "proposals/0003-data-units.md"},
   ]},
