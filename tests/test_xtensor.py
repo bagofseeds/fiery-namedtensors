@@ -167,39 +167,54 @@ def test_getitem_slices_the_labels_of_kept_axes():
     assert x[:, 1].coords == {}
 
 
-def test_getitem_with_a_dict_selects_by_label_like_sel():
+def test_getitem_resolves_a_positional_label_against_its_axis():
+    x = XTensor(
+        torch.arange(24).reshape(2, 3, 4),
+        names=("b", "row", "col"),
+        coords={"row": ("r0", "r1", "r2"), "col": ("w", "x", "y", "z")},
+    )
+    # a bare label indexes the axis it sits on (like an int there): drops it
+    out = x[:, "r1", "y"]
+    assert out.names == ("b",)
+    assert torch.equal(out, x[:, 1, 2])
+
+
+def test_getitem_labels_address_trailing_axes_through_ellipsis():
+    x = XTensor(
+        torch.arange(24).reshape(2, 3, 4),
+        names=("b", "row", "col"),
+        coords={"row": ("r0", "r1", "r2"), "col": ("w", "x", "y", "z")},
+    )
+    # ellipsis fills the leading axes; the labels address the last two
+    assert torch.equal(x[..., "r2", "z"], x[:, 2, 3])
+    assert x[..., "r2", "z"].names == ("b",)
+    # a label mixes with ints and slices
+    assert torch.equal(x[0, "r1", :], x[0, 1, :])
+
+
+def test_getitem_list_of_labels_is_an_advanced_index_keeping_the_axis():
     x = _labelled()  # names ("row", "col"), coords col=("w","x","y","z")
-    # single label drops the axis
-    assert x[{"col": "y"}].names == ("row",)
-    assert torch.equal(x[{"col": "y"}], x.sel(col="y"))
-    # a list of labels keeps the axis and its (subset) labels
-    assert x[{"col": ["w", "y"]}].coords == {"col": ("w", "y")}
+    out = x[:, ["w", "y"]]
+    assert out.names == ("row", "col")
+    assert out.coords == {"col": ("w", "y")}
 
 
-def test_getitem_with_a_dict_selects_along_several_dims():
+def test_getitem_top_level_label_tuple_is_one_label_per_axis():
     x = XTensor(
         torch.arange(6).reshape(2, 3),
         names=("row", "col"),
         coords={"row": ("r0", "r1"), "col": ("c0", "c1", "c2")},
     )
-    assert x[{"row": "r1", "col": "c2"}].item() == 5
+    # x["r1", "c2"] -> label per axis, not a single advanced index
+    assert x["r1", "c2"].item() == 5
 
 
-def test_getitem_with_a_bare_string_searches_labels_across_dims():
-    x = _labelled()
-    assert torch.equal(x["y"], x.sel(col="y"))
-    with pytest.raises(KeyError, match="no coordinate label"):
-        _ = x["nope"]
-
-
-def test_getitem_bare_string_is_ambiguous_across_dims():
-    x = XTensor(
-        torch.arange(4).reshape(2, 2),
-        names=("a", "b"),
-        coords={"a": ("k", "m"), "b": ("k", "n")},  # "k" on both dims
-    )
-    with pytest.raises(KeyError, match="ambiguous"):
-        _ = x["k"]
+def test_getitem_label_on_an_unlabelled_or_missing_axis_raises():
+    x = _labelled()  # only "col" is labelled
+    with pytest.raises(KeyError, match="no coordinates"):
+        _ = x["w"]  # axis 0 ("row") has no coordinates
+    with pytest.raises(KeyError, match="no label"):
+        _ = x[:, "nope"]
 
 
 def test_permute_carries_coordinates_unchanged():

@@ -42,11 +42,19 @@ m = XTensor(
 )
 m.sel(channel="y")              # selects position 1 along "channel"
 m.y                             # ... same, by attribute
-m[{"channel": "y"}]             # ... same, by dict label indexing
-m["y"]                          # ... same, bare label (searches every dim)
+m[:, "y"]                       # ... same, positional label on the 2nd axis
 m.isel(channel=1)               # ... same, by integer position
 m.coords                        # {'channel': ('x', 'y', 'z')}
 m.T.coords                      # {'channel': ('x', 'y', 'z')} — follows the dim
+```
+
+A **positional** coordinate label works anywhere an integer index does, resolved
+against the axis it sits on — so it composes with ints, slices, `...` and
+newaxis:
+
+```python
+x[..., "r1", "y"]   # label the last two axes; a bare label drops its axis
+x[:, ["w", "y"]]    # a list of labels is an advanced index (keeps the axis)
 ```
 
 ## Referring to a dimension by name
