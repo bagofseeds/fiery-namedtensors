@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — phases 1-2 landed (uniform units + algebra); heterogeneous + x*mm next |
+| **Status** | Accepted — phases 1-3 landed (uniform units + algebra + heterogeneous per-axis units); x*mm + heterogeneous matmul contraction next |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); the *other* meaning of "unit" from Proposal 0001; builds on Proposal 0002 (structured coordinates) |
@@ -285,12 +285,19 @@ not restricting the model:
    `unit_backend`/`unit_policy` options, carry-through.
 2. **core algebra** *(landed)* — `*`/`/`/`pow`, `add`/`sub`/compare compat,
    `matmul`, transcendental-drop, all under the `unit_policy` drop/strict switch.
-3. **per-axis (heterogeneous) units** — units that vary along an axis, on
-   structured coordinates (0002), + reduction/contraction compat.
+3. **per-axis (heterogeneous) units** *(landed)* — units that vary along an
+   axis, on structured coordinates (0002): the `unit` field at a position *is*
+   `unit_k(i_k)`. Selecting a single position on such an axis (`sel`/`isel`/`[]`)
+   folds that unit into the base (§4, last row); reducing over it folds a
+   **uniform** axis unit into the base, or drops/raises on **incompatible**
+   per-position units under `unit_policy`. (Heterogeneous **matmul/einsum**
+   contraction — requiring the contracted axis to be unit-uniform per side —
+   still rides on base units only; it moves with phase 4.)
 4. **conveniences** — `x * u.mm` attach (deferred — Python's operator protocol
    lets pint's reflected `__rmul__` intercept `x * <quantity>` before the
-   override runs, so it needs bespoke handling), `.magnitude`/detach, unit-aware
-   `repr`, richer/implicit conversions.
+   override runs, so it needs bespoke handling), heterogeneous matmul/einsum
+   contraction compat, `.magnitude`/detach, unit-aware `repr`, richer/implicit
+   conversions.
 
 ## 7. Open questions
 
