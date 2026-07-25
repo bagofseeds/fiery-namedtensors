@@ -74,6 +74,27 @@ A label is a `str` or a `{"name": …, "unit": …}` dict; `"red"` ≡
 the **data unit** of the tensor values at that position (Proposal 0003,
 heterogeneous units) — *not* a coordinate position unit. The two never merge.
 
+### One "magic dict" family
+
+The unitful value, the coordinate, the structured label, and the axis
+descriptor are all **the same kind of thing**: a `dict` subclass that stays a
+plain dict (so it interops, pickles, and prints as one) while adding a little
+magic:
+
+- **derived / lazy keys** — a compact coordinate synthesises `["values"]` from
+  `spacing`/`origin` on demand; a unitful value synthesises a converted form;
+- **tensor-preserving** — a tensor stored under a key (`value`, `spacing`,
+  `values`) is kept live, never coerced, so autograd survives;
+- **conversion** — `.to(unit)`, `.pair()`, a backend quantity, etc.
+
+**Item access (`d["values"]`) is canonical**, deliberately *not* attribute
+access. A dict subclass already owns `.values`, `.keys`, `.items`, `.get`,
+`.update` as **methods** — and `values` is a key we need — so `coord.values`
+would return `dict.values` (the method), a nasty collision. Item access has no
+such trap. (Attribute access could be offered later, whitelisted to keys that
+don't shadow the `dict` API — `.value`, `.unit`, `.name`, `.spacing` — but the
+canonical, always-safe spelling is `[...]`. See open question 2.)
+
 ### Two units, two roles
 
 | unit | of what | where |
@@ -134,7 +155,9 @@ img.coords["x"]       # {"spacing": {"value": 0.5, "unit": "mm"}, "origin": {...
 img.coords["x"]["spacing"]["value"]   # 0.5    (a 0-rank tensor when learnable)
 img.coords["x"]["spacing"]["unit"]    # "mm"   — POSITION unit
 
-img.coord_values("x") # materialised 1-D unitful tensor [-16, -15.5, …]  (lazy, differentiable)  [name TBD]
+# a coordinate is a "magic" dict: `["values"]` is a DERIVED key, materialised
+# from spacing/origin on demand (no bespoke `coord_values(...)` method)
+img.coords["x"]["values"]   # 1-D unitful tensor [-16, -15.5, …]  (lazy, differentiable)
 
 img.unit                     # "mV"  — whole-tensor DATA unit (0003)
 img.coords["q"][0]["unit"]   # "V"   — per-position DATA unit (0003), distinct from any position unit
@@ -173,7 +196,7 @@ float:
 ```python
 step = xtensor(torch.tensor(0.5), unit="mm", requires_grad=True)   # 0-rank unitful tensor
 img  = xtensor(data, names=("y", "x"), coords={"x": {"spacing": step}})
-img.coord_values("x").sum().backward()   # gradient flows back to `step`
+img.coords["x"]["values"].sum().backward()   # gradient flows back to `step`
 ```
 
 `{"spacing": step}` stores the live tensor; `coord_values` = `origin + arange(n)
@@ -225,15 +248,20 @@ coordinates of [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
 
 ## Open questions
 
-1. **Materialisation spelling** — `x.coord_values("x")` vs a property on the
-   coordinate (`img.coords["x"].values`); and whether `coords[numeric_axis]`
-   returns the compact dict (as shown) or eagerly the materialised tensor.
-2. **Unitful helper surface** — `.pair()` / `.to(...)` names; whether the dict
-   subclass is public or internal.
-3. **Numeric `.sel`** — value-based selection and its nearest/tolerance
+1. **Materialisation** — settled as `coords["x"]["values"]` (a derived key on
+   the magic coordinate dict); `coords[axis]` returns the stored form (compact
+   `{spacing/origin}` or explicit) and `["values"]` materialises. Open only:
+   whether to cache the materialised array.
+2. **Attribute access** — do the magic dicts also expose safe keys as
+   attributes (`.value`, `.unit`, `.name`, `.spacing`), or stay item-access-only
+   to avoid the `dict.values`/`.keys`/`.items` collision? Item access is
+   canonical either way.
+3. **Unitful helper surface** — `.pair()` / `.to(...)` names; whether the magic
+   dict family is public or internal.
+4. **Numeric `.sel`** — value-based selection and its nearest/tolerance
    semantics (xarray parity) are deferred to
    [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66).
-4. **`coord` key vs `coords`** on the axis descriptor — singular `coord`
+5. **`coord` key vs `coords`** on the axis descriptor — singular `coord`
    (one-per-axis) reads well now; revisit under
    [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
 
