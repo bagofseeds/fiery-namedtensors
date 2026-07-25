@@ -16,6 +16,7 @@ from torch import Tensor
 
 # internals
 from fiery.xtensor import _arrayutils as arrayutils
+from fiery.xtensor import _units
 from fiery.xtensor._arrayutils import SmartSlicerT, _SmartSlicerT
 from fiery.xtensor._compat import EllipsisType
 from fiery.xtensor._compat import no_dispatch as _no_dispatch
@@ -257,13 +258,14 @@ class XTensor(ExtendedTensor):
     single label by attribute (`x.red`).
     """
 
-    _ATTRS = {"_axis_names", "_coords", "_axis_meta"}
+    _ATTRS = {"_axis_names", "_coords", "_axis_meta", "_data_unit"}
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
         kwargs.pop("names", None)
         kwargs.pop("coords", None)
         kwargs.pop("axes", None)
+        kwargs.pop("unit", None)
         # Wrapping an existing tensor via `Tensor.__new__(cls, t)` is not
         # portable: some PyTorch versions reject a non-default dtype there
         # (e.g. a Long tensor raises "expected Float"). `as_subclass` re-tags
@@ -284,10 +286,13 @@ class XTensor(ExtendedTensor):
         else:
             kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
+        unit = kwargs.pop("unit", None)
         if names is not None:
             self.names = names
         if coords is not None:
             self.coords = coords
+        if unit is not None:
+            self.unit = unit
 
     # -- dimensions --------------------------------------------------------
 
@@ -404,6 +409,38 @@ class XTensor(ExtendedTensor):
                 )
             normalized[dim] = labels
         self._coords = normalized
+
+    # -- data unit ---------------------------------------------------------
+
+    @property
+    def unit(self) -> tx.Optional[str]:
+        """
+        The physical unit of the tensor's **values** (the *data* unit, Proposal
+        0003), or `None`. Assigning *annotates* (it never changes the data);
+        `to_unit` converts. Under `unit_backend="pint"` the unit is validated
+        and normalised on set; with the default `unit_backend=None` it is an
+        opaque string that is simply carried through operations.
+        """
+        return self.__dict__.get("_data_unit")
+
+    @unit.setter
+    def unit(self, value: tx.Optional[str]) -> None:
+        if value is None:
+            self.__dict__.pop("_data_unit", None)
+            return
+        self._data_unit = _units.normalise(value)
+
+    def to_unit(self, unit: str) -> tx.Self:
+        """
+        Convert the data to `unit`, rescaling the values by the conversion
+        factor (requires a unit already set and `unit_backend="pint"`).
+        """
+        current = self.unit
+        if current is None:
+            raise ValueError("to_unit: this tensor has no unit to convert")
+        unit = _units.normalise(unit)
+        scaled = Tensor.mul(self, _units.factor(current, unit))
+        return _carry(self, scaled, _data_unit=unit)
 
     # -- renaming ----------------------------------------------------------
 

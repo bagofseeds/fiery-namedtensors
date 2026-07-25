@@ -56,9 +56,16 @@ Issues = "https://github.com/bagofseeds/fiery-xtensor/issues"
 Repository = "https://github.com/bagofseeds/fiery-xtensor"
 
 [project.optional-dependencies]
+# Physical-unit backend for data units (Proposal 0003). Optional: without it a
+# `.unit` is an opaque string. pint needs Python >= 3.8.
+units = [
+    "pint>=0.18",
+]
 test = [
     "pytest>=7",
     "numpy",
+    # exercise the unit backend where pint is installable (py >= 3.9)
+    "pint>=0.18; python_version >= '3.9'",
 ]
 
 [build-system]
