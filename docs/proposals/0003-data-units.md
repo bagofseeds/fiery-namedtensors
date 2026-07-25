@@ -37,6 +37,30 @@ dimensional-safety net when you opt in.
   (`ρ·v²`) fall out of the algebra.
 - **Interop**: attach on ingest, detach (`.magnitude`) on handoff.
 
+## 1a. Why *annotate* a tensor, not *wrap* it in `pint.Quantity`
+
+We attach a unit to a `torch.Tensor` **subclass** and use the backend for the
+unit **algebra only** — we do **not** store the data inside a `pint.Quantity`.
+The reason is concrete (measured against pint 0.25 + torch 2.2):
+
+- A `pint.Quantity` is **not** a `torch.Tensor` (`isinstance(q, Tensor)` is
+  `False`). Its Python arithmetic operators *do* defer to the wrapped tensor and
+  **autograd survives** them (`(q + q).sum().backward()` works) — so the
+  intuition that it "just defers" holds for `+`/`*`/… .
+- But the **torch functional API and `nn` reject it**: `torch.sin(q)`,
+  `torch.matmul(q, q)`, `F.linear(q, …)` all raise *"Multiple dispatch failed …
+  returned NotImplemented"* — pint intercepts *NumPy*'s protocol, not torch's
+  `__torch_function__`, so `torch.*` calls fall through. A Quantity therefore
+  can't traverse a model.
+- Worse, forwarding a non-arithmetic attribute (`q.reshape(…)`) routes through
+  pint's numpy-duck-array coercion, which calls `.numpy()` — and that **fails on
+  a grad-requiring or CUDA tensor**.
+
+So wrapping forces an unwrap/rewrap at every torch boundary, dropping the unit
+each time. Our `XTensor` **is** a `Tensor`, so `torch.*`, `nn`, autograd, GPU,
+and `__torch_function__` all work unchanged — and we still get pint's unit
+algebra by feeding it `Unit` objects, never the data. Best of both.
+
 ## 2. The model
 
 ### 2.1 The general rule (no special cases)
@@ -131,10 +155,16 @@ with set_options(unit_policy="strict"):
 - **Orthogonal to coordinate units (0001).** A tensor may have both — a `t` axis
   in seconds (tick metric) *and* data in volts (value unit); they never interact.
 - **Reuses structured coordinates (0002)** for per-axis (heterogeneous) units.
-- **Reuses `unit_backend` (0001)** for the unit *algebra* (`mul`/`div`/`pow`/
-  `compatible?`/`dimensionless?`/`convert`); with `unit_backend=None` data units
-  are inert (no base unit, coordinate `unit`s stay opaque strings), so the whole
-  layer is zero-overhead by default.
+- **Reuses `unit_backend` (0001)** for *all* the unit **algebra**, so we
+  implement almost none of it ourselves. pint supplies: parse/normalise
+  (`ureg.Unit(s)`), multiply/divide/power (`Unit * Unit`, `Unit ** n`),
+  compatibility & dimensionless checks (`.dimensionality`, `.dimensionless`),
+  and the conversion **factor** (`ureg.Quantity(1, a).to(b).magnitude` — a
+  scalar we multiply into the tensor). What *this package* implements is only
+  the thin wiring: which op maps to which unit transform (§4), the `unit_policy`
+  drop/strict switch, and the metadata plumbing (`_data_unit` + coordinate
+  `unit`s). With `unit_backend=None` the whole layer is inert (no base unit,
+  coordinate `unit`s stay opaque strings) — zero overhead by default.
 
 ## 6. Suggested phasing
 
