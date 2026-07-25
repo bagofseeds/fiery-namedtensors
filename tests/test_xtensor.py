@@ -1978,6 +1978,102 @@ def test_hetero_units_are_inert_without_a_backend():
     assert x.sum(dim="q").unit is None
 
 
+# -- phase 4: detach, implicit conversion, heterogeneous contraction ----------
+
+
+def test_magnitude_drops_the_data_unit_but_keeps_names():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), names=("t",), unit="V")
+        m = x.magnitude
+        assert m.unit is None  # the data unit is stripped
+        assert m.names == ("t",)  # names/coords ride through
+        assert m.tolist() == [0.0, 1.0, 2.0]
+        assert x.unit == "volt"  # the original is unchanged (a view)
+
+
+def test_add_implicitly_converts_compatible_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), names=("t",), unit="V")
+        millivolts = XTensor(torch.full((3,), 500.0), names=("t",), unit="mV")
+        # right operand converts to the left's unit before adding
+        left = volts + millivolts
+        assert left.unit == "volt"
+        assert left.tolist() == [1.5, 1.5, 1.5]
+        right = millivolts + volts
+        assert right.unit == "millivolt"
+        assert right.tolist() == [1500.0, 1500.0, 1500.0]
+        # comparisons convert too
+        assert (volts > millivolts).tolist() == [True, True, True]
+
+
+def test_add_incompatible_units_still_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), unit="V")
+        amps = XTensor(torch.ones(3), unit="A")
+        assert (volts + amps).unit is None  # incompatible -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                _ = volts + amps
+
+
+def test_matmul_folds_uniform_contracted_axis_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        a = XTensor(
+            torch.ones(2, 3),
+            names=("i", "k"),
+            coords={"k": [{"name": c, "unit": "m"} for c in "abc"]},
+            unit="V",
+        )
+        b = XTensor(
+            torch.ones(3, 2),
+            names=("k", "j"),
+            coords={"k": [{"name": c, "unit": "s"} for c in "abc"]},
+            unit="A",
+        )
+        # (V·m) · (A·s) — each side's uniform contracted-axis unit folds in
+        assert (a @ b).unit == "ampere * meter * second * volt"
+
+
+def test_contraction_over_non_uniform_axis_drops_or_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        a = XTensor(
+            torch.ones(2, 3),
+            names=("i", "k"),
+            coords={
+                "k": [
+                    {"name": "x", "unit": "m"},
+                    {"name": "y", "unit": "s"},
+                    {"name": "z", "unit": "kg"},
+                ]
+            },
+        )
+        b = XTensor(torch.ones(3, 2), names=("k", "j"))
+        assert (a @ b).unit is None  # non-uniform contracted axis -> dropped
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="non-uniform"):
+                _ = a @ b
+
+
+def test_einsum_and_tensordot_multiply_operand_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        m = XTensor(torch.ones(2, 2), unit="V")
+        n = XTensor(torch.ones(2, 2), unit="A")
+        # einsum previously kept only the first operand's base unit
+        assert torch.einsum("ij,jk->ik", m, n).unit == "ampere * volt"
+        assert torch.tensordot(m, n, dims=1).unit == "ampere * volt"
+        # an unparsable equation (ellipsis) falls back to the base product
+        p = XTensor(torch.ones(2, 2, 2), unit="V")
+        q = XTensor(torch.ones(2, 2, 2), unit="A")
+        out = torch.einsum("...ij,...jk->...ik", p, q)
+        assert out.unit == "ampere * volt"
+
+
 def test_combine_axes_accepts_a_per_field_policy():
     a = XTensor(
         torch.ones(3),

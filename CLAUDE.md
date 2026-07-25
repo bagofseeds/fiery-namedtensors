@@ -70,6 +70,17 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   Non-unit operands fall straight back to `Tensor.__mul__` &c. `unit * x`
   (unit on the left) is not interceptable — use `x * unit`.
 
+- **more phase 4** — `.magnitude` (property) drops the data unit, returning a
+  unit-free **view** that keeps names/coords (original untouched). `add`/`cmp`
+  of **compatible-but-different** units implicitly convert the *right* operand
+  to the left's unit (`_reconcile_units` rescales via `_units.factor` before
+  the op; only incompatible dims drop/raise). **Contraction** unit algebra
+  (`matmul`/`einsum`/`tensordot`) folds each side's *uniform* contracted-axis
+  unit into its base and multiplies (`_contraction_unit` / `_axis_uniform_unit`
+  / `_matmul_contracted_axes` / `_einsum_contracted_axes`); a non-uniform
+  contracted axis drops/raises. An `einsum` equation the parser can't read
+  (ellipsis) falls back to the base-unit product.
+
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
 work-in-progress in `balbasty/magnetix`
