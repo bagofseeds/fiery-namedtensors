@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — representation under discussion |
+| **Status** | Draft — converging (spacing + origin; `Quantity` representation) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); builds on Proposal 0002 (structured coordinates); supersedes the "axis unit" sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |
@@ -51,57 +51,71 @@ The split is clear:
 They are **not exclusive**: the general model is a function `i ↦ coordinate(i)`,
 which a compact affine expresses in `O(1)` and an explicit array in `O(n)`.
 
-## How generic should the metric be? (the open question)
+## Generality — decided: spacing + origin
 
-In increasing power:
+The metric is **spacing + origin** (level 2 of the ladder): `coordinate(i) =
+origin + i · spacing`, each of `spacing`/`origin` a value **and** a unit. It
+matches OME-NGFF (`scale` + `translation`) and ITK (`Spacing` + `Origin`)
+exactly, keeps regular grids `O(1)`, and leaves the harder cases as clean
+extensions:
 
-1. **Spacing** `Δ` + unit — regular, no offset. *(OME `scale`, napari `scale`,
-   ITK `Spacing`.)* — your bullet.
-2. **Spacing + origin** — `coordinate(i) = o + i·Δ`. *(OME `scale`+`translation`,
-   ITK `Spacing`+`Origin`, pandas `DatetimeIndex`+`freq`.)*
-3. **+ direction / full affine** — index→world affine, incl. rotated/sheared
-   grids. *(ITK `Direction`, NIfTI `affine`.)* Couples axes.
-4. **Explicit coordinate values** — arbitrary/irregular ticks, a value per
-   position. *(xarray, pandas, CF.)*
+- **irregular** axes → explicit numeric coordinates (structured coordinates,
+  0002, already store a value per position); a `spacing`/`origin` is just the
+  compact regular form of the same `i ↦ coordinate(i)` function.
+- **rotated / sheared** grids → a full affine (level 3, ITK `Direction` / NIfTI
+  affine) — couples axes, a separable step for later.
 
-**Leaning: 2 (spacing + origin), with 4 available separately** — it matches
-OME-NGFF/ITK exactly, keeps regular grids `O(1)`, and irregular axes fall back to
-explicit numeric coordinates (which structured coordinates, 0002, already store
-per position). Full affine (3) couples axes and is a bigger, separable step.
+## Representation — a lightweight `Quantity`
 
-## Representation — one form
+`spacing` and `origin` are each a **`Quantity`** — a small `(value, unit)`
+named-tuple, deliberately parallel to how 0003 stores a unit as a string rather
+than wrapping data in `pint`:
 
-The metric lives on the axis descriptor as a **`spacing`** (and, under option 2,
-an `origin`):
+- **`value`** — a Python scalar, **or** a **0-rank `XTensor`** when the value
+  needs autograd (a *learnable* spacing). This is the neat bit: a
+  differentiable scalar-with-a-unit already *is* a 0-d data-united tensor
+  (0003), so `Quantity` and "0-d `XTensor` with `.unit`" are two forms of the
+  same thing — swap in the tensor form exactly when you need gradients.
+- **`unit`** — a **canonical string** (backend-normalised), same storage rule as
+  0003, so the metric is picklable and backend-independent.
 
-- **Without a backend** (`unit_backend=None`, default): a **`(value, unit)`
-  tuple** — `{"name": "x", "spacing": (0.5, "um")}` — stored and carried, not
-  interpreted (today's opaque behaviour, now *with a value*).
-- **With a backend**: a `Quantity` (`0.5 * ureg.um`), enabling normalised
-  equality and conversion.
+`Quantity` carries **its own light arithmetic**, deferring the unit part to the
+active `unit_backend` (the shared `_units` algebra) and never wrapping the data:
 
 ```python
-names=[{"name": "x", "type": "space", "spacing": (0.5, "um")}]
+Quantity(0.5, "um") * 2            # Quantity(1.0, "um")           — scale
+Quantity(0.5, "um") * u.mm         # combine with a real pint unit → "um·mm"…
+Quantity(0.5, "um").to("nm")       # Quantity(500.0, "nm")         — convert
+Quantity(grad_scalar_xt, "um")     # value is a 0-d XTensor → learnable + autograd
 ```
 
-Under a backend, `to_unit(x="nm")` rescales the spacing value + unit
-(`0.5 µm → 500 nm`); the tensor data is untouched. Irregular axes use explicit
-numeric coordinates (0002) instead of a spacing.
+Stored on the axis descriptor:
+
+```python
+names=[{"name": "x", "type": "space",
+        "spacing": Quantity(0.5, "um"), "origin": Quantity(0.0, "um")}]
+# a bare (value, unit) tuple is accepted and coerced to a Quantity
+```
+
+With `unit_backend=None` a `Quantity` is inert (carried, its `unit` an opaque
+string, no algebra) — today's behaviour, now *with a value*. Under a backend it
+normalises, compares, and converts (`to_unit(x="nm")` rescales `spacing`/`origin`
+and their unit; the **tensor data is never touched**).
 
 ## Backwards compatibility
 
-Unchanged by default. `spacing` is new optional axis-descriptor metadata; with
-`unit_backend=None` it is a carried `(value, unit)` tuple with no behaviour.
+Unchanged by default. `spacing`/`origin` are new optional axis-descriptor
+metadata; with `unit_backend=None` they are inert carried `Quantity`s.
 
 ## Open questions
 
-1. **Generality 1–4 above** — spacing only, spacing+origin (leaning), affine, or
-   explicit — and whether to include `origin` from the start.
-2. Conversion API surface (`to_unit`, unit-aware `sel`, a `Quantity` input).
-3. Backend interface shared with 0003 (`normalise`, `equal`, `convert`).
-4. `spacing`/`origin` naming vs the coordinate-label `unit` used for *data*
-   units in 0003 — different fields, different levels, so probably no clash now
-   that the axis metric is `spacing` (not `unit`).
+1. Should `Quantity` be a **shared public type** (used by 0001 metrics *and*
+   0003 as the scalar-quantity form), and live in `_units`?
+2. Conversion API surface (`to_unit`, unit-aware `sel` taking a `Quantity`).
+3. The 0-d-`XTensor`-as-`Quantity.value` unification — how automatic (detect a
+   0-d united tensor and treat it as a `Quantity`, and vice-versa)?
+4. Naming: `spacing`/`origin` on the axis descriptor vs the coordinate-label
+   `unit` (data units, 0003) — different fields/levels, so no clash.
 
 ## References
 
