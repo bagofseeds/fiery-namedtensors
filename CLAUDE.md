@@ -136,7 +136,11 @@ matching section (or a new one):
   indexes — a bare `str` like an int there, a `list` of `str` as an advanced
   index — via `_resolve_label_slicer`/`_label_to_index`, so `x[..., "y", "z"]`
   addresses the last two axes by label), `__getattr__` (label access),
-  `rename`, `refine_names`/`align_to`/`align_as`.
+  `rename`, `refine_names`/`align_to`/`align_as`. A single `...` in any
+  name-tuple expands via `_expand_name_ellipsis` to the run of axes it stands
+  for: unnamed (`None`) on assignment (`names=`/setter), unchanged on
+  modification (`rename`/`refine_names`), the remaining axes in current order
+  on reorder (`permute`/`align_to`).
 - **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
   `view`/`reshape`), and rank-changers `flatten`/`unflatten`/`expand`/
   `broadcast_to`/`diagonal`.

@@ -94,6 +94,26 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     return dim
 
 
+def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
+    """
+    Expand a single `...` in a name tuple into the run of axes it stands for,
+    so the tuple reaches `ndim` -- `...` means "the axes not named here". Each
+    spanned position takes its value from `fill` (the same length as `ndim`):
+    `(None,) * ndim` leaves the run **unnamed** (assignment), while the current
+    names keep the run **unchanged** (modification). A tuple with no `...` is
+    returned as-is; more than one `...` is an error.
+    """
+    if Ellipsis not in names:
+        return names
+    if names.count(Ellipsis) > 1:
+        raise ValueError("only one '...' is allowed in a name list")
+    i = names.index(Ellipsis)
+    span = ndim - (len(names) - 1)
+    if span < 0:
+        raise ValueError(f"too many names for {ndim} axes: {names}")
+    return names[:i] + tuple(fill[i : i + span]) + names[i + 1 :]
+
+
 def _match_axes(input: XTensor, query: tx.Mapping) -> list:
     """
     Positions whose axis **descriptor** matches every key/value in `query`
@@ -299,7 +319,11 @@ class XTensor(ExtendedTensor):
 
     @property
     def names(self) -> tuple[str | None, ...]:
-        """The name of each axis (`None` for unnamed axes)."""
+        """
+        The name of each axis (`None` for unnamed axes). On assignment a single
+        `...` expands to a run of unnamed axes, so `x.names = ("b", ..., "w")`
+        names only the ends and leaves the middle unnamed.
+        """
         names = self.__dict__.get("_axis_names", None)
         # Fall back to all-unnamed if metadata is missing or stale (e.g. it
         # was propagated onto the output of an op that changed the rank but
@@ -315,6 +339,9 @@ class XTensor(ExtendedTensor):
             self.__dict__.pop("_axis_meta", None)
             return
         value = tuple(value)
+        # A single `...` fills the unspecified middle with unnamed axes, so
+        # `names=("b", ..., "x")` on a 4-D tensor -> ("b", None, None, "x").
+        value = _expand_name_ellipsis(value, self.ndim, (None,) * self.ndim)
         if len(value) != self.ndim:
             raise ValueError(
                 f"Expected {self.ndim} names, got {len(value)}: {value}"
@@ -466,7 +493,11 @@ class XTensor(ExtendedTensor):
             return (None,) * self.ndim
         if len(names) == 1 and isinstance(names[0], (tuple, list)):
             names = tuple(names[0])
-        new_names = tuple(names)
+        # A single `...` keeps the axes it spans unchanged (`rename` modifies,
+        # so an unspecified run is left as-is, not unnamed).
+        new_names = _expand_name_ellipsis(
+            tuple(names), self.ndim, tuple(self.names)
+        )
         if len(new_names) != self.ndim:
             raise ValueError(
                 f"rename: expected {self.ndim} names, got {len(new_names)}"
@@ -494,7 +525,9 @@ class XTensor(ExtendedTensor):
 
         Call positionally (`x.rename("a", "b")`), with `None` to clear all
         names (`x.rename(None)`), or with a mapping to rename specific axes
-        (`x.rename(old="new")`). Coordinates follow their (renamed) dimension.
+        (`x.rename(old="new")`). A single `...` keeps the axes it spans
+        unchanged (`x.rename("A", ..., "Z")`). Coordinates follow their
+        (renamed) dimension.
         """
         new_names = self._resolve_rename(names, rename_map)
         # `as_subclass` returns a view but does not copy `__dict__`, so carry
@@ -738,15 +771,9 @@ class XTensor(ExtendedTensor):
         of the axes it spans. Self-managed (not the builtin op).
         """
         current = list(self.names)
-        if Ellipsis in names:
-            i = names.index(Ellipsis)
-            n_explicit = len(names) - 1
-            span = self.ndim - n_explicit
-            if span < 0:
-                raise ValueError(
-                    f"refine_names: too many names for {self.ndim} axes"
-                )
-            names = names[:i] + tuple(current[i : i + span]) + names[i + 1 :]
+        # A single `...` keeps the names of the axes it spans (refine only
+        # touches the *unnamed* axes; the spanned run rides through unchanged).
+        names = _expand_name_ellipsis(names, self.ndim, tuple(current))
         if len(names) != self.ndim:
             raise ValueError(
                 f"refine_names: expected {self.ndim} names, got {len(names)}"
@@ -939,6 +966,10 @@ def _(input: XTensor, *dims: int | str | tuple) -> XTensor:
     if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
         dims = tuple(dims[0])
     names = input.names
+    # A single `...` stands for every axis not listed, in their current order
+    # (the `align_to` semantics), so `x.permute("w", ...)` moves `w` to front.
+    if Ellipsis in dims:
+        dims = tuple(input._align_order(dims))
     dims = tuple(_resolve_axis(names, dim) for dim in dims)
     result = Tensor.permute(input, dims)
     return _carry(input, result, _axis_names=tuple(names[dim] for dim in dims))

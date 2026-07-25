@@ -362,6 +362,61 @@ def test_refine_names_ellipsis_keeps_spanned_names():
     assert x.refine_names("a", ..., "d").names == ("a", "b", "c", "d")
 
 
+def test_names_ellipsis_fills_the_middle_with_unnamed_axes():
+    # a single `...` in `names=` stands for a run of unnamed (None) axes
+    t = torch.zeros(2, 3, 4, 5)
+    assert XTensor(t, names=("b", ..., "x")).names == ("b", None, None, "x")
+    assert XTensor(t, names=(..., "x")).names == (None, None, None, "x")
+    assert XTensor(t, names=("b", ...)).names == ("b", None, None, None)
+    assert XTensor(t, names=(...,)).names == (None,) * 4
+
+
+def test_names_setter_accepts_ellipsis():
+    x = XTensor(torch.zeros(2, 3, 4))
+    x.names = ("b", ..., "w")
+    assert x.names == ("b", None, "w")
+
+
+def test_names_ellipsis_with_a_descriptor_dict():
+    x = XTensor(
+        torch.zeros(2, 3, 4),
+        names=[{"name": "b", "type": "batch"}, ..., "w"],
+    )
+    assert x.names == ("b", None, "w")
+    assert x.axes[0] == {"name": "b", "type": "batch"}
+
+
+def test_names_ellipsis_rejects_more_than_one_and_overflow():
+    t = torch.zeros(2, 3)
+    with pytest.raises(ValueError, match="only one '...'"):
+        XTensor(t, names=("a", ..., "b", ...))
+    with pytest.raises(ValueError, match="too many names"):
+        XTensor(t, names=("a", "b", "c", ...))
+
+
+def test_rename_ellipsis_keeps_the_spanned_names():
+    # `rename` modifies, so `...` leaves the spanned axes unchanged
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=("b", "c", "h", "w"),
+        coords={"w": ("a", "b", "c", "d", "e")},
+    )
+    renamed = x.rename("B", ..., "W")
+    assert renamed.names == ("B", "c", "h", "W")
+    assert renamed.coords == {"W": ("a", "b", "c", "d", "e")}
+
+
+def test_permute_ellipsis_stands_for_the_remaining_axes():
+    x = XTensor(
+        torch.zeros(2, 3, 4, 5),
+        names=("b", "c", "h", "w"),
+        coords={"w": ("a", "b", "c", "d", "e")},
+    )
+    assert x.permute("w", ...).names == ("w", "b", "c", "h")
+    assert x.permute(..., "b").names == ("c", "h", "w", "b")
+    assert x.permute("w", ...).coords == {"w": ("a", "b", "c", "d", "e")}
+
+
 def test_refine_names_rejects_renaming_a_named_axis():
     x = XTensor(torch.zeros(2, 3), names=("a", "b"))
     with pytest.raises(ValueError, match="cannot rename"):

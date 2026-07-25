@@ -29,6 +29,10 @@ x = XTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
 x.T.names                       # ('width', 'height', 'batch')
 x.unsqueeze(1).names            # ('batch', None, 'height', 'width')
 
+# `...` stands for a run of axes you don't name here (name just the ends)
+XTensor(torch.zeros(2, 3, 4, 5), names=("batch", ..., "width")).names
+#                               # ('batch', None, None, 'width')
+
 # Refer to a dimension by name (method form)
 x.transpose("height", "width").names   # ('batch', 'width', 'height')
 x.sum(dim="batch").names               # ('height', 'width')
