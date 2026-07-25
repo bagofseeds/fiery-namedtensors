@@ -17,7 +17,11 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
 - **coordinates** label positions along a named dimension (`coords`, a
   `{dim name: labels}` dict, self-managed in `_coords`) — **keyed by dimension
   name**, so they follow their dim through permute/reduce with no positional
-  bookkeeping. A labelled dim must be named.
+  bookkeeping. A labelled dim must be named. A label may be a bare `str`/`None`
+  or a **structured** dict (Proposal 0002): its `"name"` is its selection
+  identity (`_label_name`), and a **query** dict in a `[]`/`sel` slot selects
+  the matching *positions* (`_match_positions` → `slice`/list, keeps the axis)
+  — the position-level analogue of the axis-descriptor query.
 - `XVector` / `XMatrix` — conveniences that pre-name+label their channel
   axes (`"channel"`; `"row"`/`"col"`).
 - **axis descriptors** (OME-NGFF-style, #39): a name may be given as a dict

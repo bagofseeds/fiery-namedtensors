@@ -489,8 +489,13 @@ class XTensor(ExtendedTensor):
         if not any(_is_label_index(v) for v in items):
             return slicer
         # Axes consumed by the explicit (non-newaxis, non-ellipsis) items; the
-        # ellipsis, if any, fills the remaining axes in the middle.
-        consumed = arrayutils._count_input_axes(items)
+        # ellipsis, if any, fills the remaining axes in the middle. A label
+        # index (str / list-of-str / query dict) consumes exactly one axis.
+        consumed = sum(
+            1 if _is_label_index(v) else arrayutils._count_input_axes((v,))
+            for v in items
+            if v is not None and v is not ...
+        )
         gap = self.ndim - consumed
         resolved, axis = [], 0
         for value in items:
@@ -508,19 +513,31 @@ class XTensor(ExtendedTensor):
         return tuple(resolved)
 
     def _label_to_index(self, axis: int, value: tx.Any) -> tx.Any:
-        """One label -> its integer position on `axis` (a list of labels ->
-        a list of positions); raises if the axis is unlabelled or the label
-        is absent."""
+        """
+        Resolve a positional label index against `axis`:
+
+        - a `str` -> the integer position whose label **identity** matches
+          (drops the axis, like an int);
+        - a list of `str` -> the list of such positions;
+        - a `dict` -> a *query* over structured labels, giving a `slice`
+          (contiguous) or index list of the matches (keeps the axis).
+
+        Raises if the axis is unlabelled or a named label is absent.
+        """
         name = self.names[axis % self.ndim]
         labels = self.coords.get(name) if name is not None else None
         if labels is None:
             raise KeyError(
                 f"axis {name!r} has no coordinates for label {value!r}"
             )
+        if isinstance(value, dict):
+            return _positions_to_index(_match_positions(labels, value))
+
+        identities = [_label_name(label) for label in labels]
 
         def _one(label: str) -> int:
             try:
-                return labels.index(label)
+                return identities.index(label)
             except ValueError:
                 raise KeyError(
                     f"no label {label!r} on axis {name!r}"
@@ -588,7 +605,10 @@ class XTensor(ExtendedTensor):
 
         `x.sel(channel="red")` selects the position whose label is `"red"`. A
         list of labels selects several positions; a single label drops the
-        dimension (like integer indexing).
+        dimension (like integer indexing). For **structured** coordinates, a
+        `str` matches a label's `"name"`, and a **dict** queries the labels'
+        fields (`x.sel(channel={"type": "signal"})`), keeping the axis and
+        selecting every match.
         """
         coords = self.coords
         positional = {}
@@ -596,12 +616,18 @@ class XTensor(ExtendedTensor):
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
             labels = coords[name]
+            if isinstance(label, dict):
+                positional[name] = _positions_to_index(
+                    _match_positions(labels, label)
+                )
+                continue
+            identities = [_label_name(one) for one in labels]
             is_many = isinstance(label, (list, tuple))
             wanted = list(label) if is_many else [label]
             positions = []
             for one in wanted:
                 try:
-                    positions.append(labels.index(one))
+                    positions.append(identities.index(one))
                 except ValueError:
                     raise ValueError(
                         f"sel: no label {one!r} on dim {name!r}"
@@ -610,8 +636,12 @@ class XTensor(ExtendedTensor):
         return self.isel(**positional)
 
     def _dims_with_label(self, label: str) -> list:
-        """Named dims whose coordinates include `label` (usually 0 or 1)."""
-        return [dim for dim, labels in self.coords.items() if label in labels]
+        """Named dims a label **identity** appears on (usually 0 or 1)."""
+        return [
+            dim
+            for dim, labels in self.coords.items()
+            if any(_label_name(one) == label for one in labels)
+        ]
 
     def __getattr__(self, name: str) -> tx.Self:
         # Only consulted when normal attribute lookup fails, so real methods
@@ -746,13 +776,14 @@ def _coords_for(input: XTensor, result_names: tuple) -> dict:
 
 def _is_label_index(value: tx.Any) -> bool:
     """
-    Whether a slicer element is a **coordinate label** index: a bare `str`, or
-    a non-empty **list** of `str` (an advanced index by label). A *tuple* is
-    not, so a top-level `x["y", "z"]` stays one label per axis rather than a
-    single advanced index. Plain ints, slices, `None`, ellipsis and tensors
-    are not labels either.
+    Whether a slicer element is a **coordinate label** index: a bare `str`, a
+    non-empty **list** of `str` (an advanced index by label), or a **dict**
+    (a structured-coordinate *query* selecting the matching positions). A
+    *tuple* is not, so a top-level `x["y", "z"]` stays one label per axis
+    rather than a single advanced index. Plain ints, slices, `None`, ellipsis
+    and tensors are not labels either.
     """
-    if isinstance(value, str):
+    if isinstance(value, (str, dict)):
         return True
     return (
         isinstance(value, list)
@@ -772,6 +803,43 @@ def _single_source(src: tx.Any) -> tx.Optional[int]:
     if isinstance(src, tuple) and len(src) == 1:
         return src[0]
     return None
+
+
+def _label_name(label: tx.Any) -> tx.Optional[str]:
+    """
+    A label's **identity** for name-based selection: a `str` is itself, a
+    **structured** label (dict) is its `"name"` field, anything else `None`.
+    """
+    if isinstance(label, str):
+        return label
+    if isinstance(label, dict):
+        return label.get("name")
+    return None
+
+
+def _label_matches(label: tx.Any, query: tx.Mapping) -> bool:
+    """Whether a **structured** `label` contains every key/value in `query`."""
+    return isinstance(label, dict) and all(
+        label.get(key) == value for key, value in query.items()
+    )
+
+
+def _match_positions(labels: LabelsT, query: tx.Mapping) -> list:
+    """Positions whose structured label matches `query`, in axis order."""
+    return [
+        i for i, label in enumerate(labels) if _label_matches(label, query)
+    ]
+
+
+def _positions_to_index(positions: list) -> tx.Any:
+    """
+    Turn matched positions into an index that **keeps the axis**: a `slice`
+    when they are contiguous (stays a basic index), else the position list (an
+    advanced index). An empty match yields an empty list (a size-0 axis).
+    """
+    if positions and positions == list(range(positions[0], positions[-1] + 1)):
+        return slice(positions[0], positions[-1] + 1)
+    return positions
 
 
 def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:
@@ -2011,8 +2079,8 @@ def _align_by_name(a: XTensor, b: XTensor) -> tuple:
     for name in order:
         ca, cb = a.coords.get(name), b.coords.get(name)
         if ca is not None and cb is not None and ca != cb:
-            shared = set(cb)
-            common = tuple(label for label in ca if label in shared)
+            # list membership (not a set) so unhashable structured labels align
+            common = tuple(label for label in ca if label in cb)
             a = _reindex_axis(a, name, ca, common)
             b = _reindex_axis(b, name, cb, common)
             coords[name] = common

@@ -217,6 +217,80 @@ def test_getitem_label_on_an_unlabelled_or_missing_axis_raises():
         _ = x[:, "nope"]
 
 
+# ----------------------------------------------------------------------
+# structured coordinates (dict-valued labels + field queries)
+# ----------------------------------------------------------------------
+
+
+def _channels():
+    return XTensor(
+        torch.arange(6).reshape(3, 2).float(),
+        names=("c", "x"),
+        coords={
+            "c": [
+                {"name": "DAPI", "type": "nucleus"},
+                {"name": "GFP", "type": "signal"},
+                {"name": "RFP", "type": "signal"},
+            ]
+        },
+    )
+
+
+def test_structured_labels_select_by_name_everywhere():
+    img = _channels()
+    expected = img.as_subclass(torch.Tensor)[1]
+    assert torch.equal(img.sel(c="GFP"), expected)  # keyword
+    assert torch.equal(img.GFP, expected)  # attribute
+    assert torch.equal(img["GFP"], expected)  # positional string
+    assert img.sel(c="GFP").names == ("x",)  # a single name drops the axis
+
+
+def test_structured_query_selects_contiguous_matches_as_a_slice():
+    img = _channels()
+    sig = img[{"type": "signal"}]  # positions 1,2 -> a slice, keeps the axis
+    assert sig.names == ("c", "x")
+    assert sig.shape == (2, 2)
+    assert [label["name"] for label in sig.coords["c"]] == ["GFP", "RFP"]
+    # the sel keyword spelling is equivalent
+    assert torch.equal(img.sel(c={"type": "signal"}), sig)
+
+
+def test_structured_query_selects_non_contiguous_matches_as_a_list():
+    img = XTensor(
+        torch.arange(6).reshape(3, 2).float(),
+        names=("c", "x"),
+        coords={
+            "c": [
+                {"name": "A", "type": "signal"},
+                {"name": "B", "type": "nucleus"},
+                {"name": "C", "type": "signal"},
+            ]
+        },
+    )
+    out = img[{"type": "signal"}]  # positions 0,2 -> advanced index
+    assert [label["name"] for label in out.coords["c"]] == ["A", "C"]
+    assert out.shape == (2, 2)
+
+
+def test_structured_query_composes_positionally_and_can_be_empty():
+    vol = XTensor(
+        torch.zeros(4, 3, 2),
+        names=("z", "c", "x"),
+        coords={
+            "c": [
+                {"name": "A", "type": "s"},
+                {"name": "B", "type": "s"},
+                {"name": "C", "type": "t"},
+            ]
+        },
+    )
+    # a query addresses the axis it sits on, mixing with an int index
+    assert vol[0, {"type": "s"}].names == ("c", "x")
+    assert vol[0, {"type": "s"}].shape == (2, 2)
+    # a query matching nothing gives a size-0 axis (no error)
+    assert vol[:, {"type": "nope"}].shape == (4, 0, 2)
+
+
 def test_permute_carries_coordinates_unchanged():
     x = _labelled()
     assert x.T.coords == {"col": ("w", "x", "y", "z")}
