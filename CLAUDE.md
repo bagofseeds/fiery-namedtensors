@@ -105,8 +105,10 @@ Named-aware overrides are grouped into labelled banners; add new ops to the
 matching section (or a new one):
 
 - **NAMED TENSOR** — the `XTensor` class: `names`/`coords` properties,
-  `sel`/`isel`, `__getitem__` (slices labels of kept axes), `__getattr__`
-  (label access), `rename`, `refine_names`/`align_to`/`align_as`.
+  `sel`/`isel`, `__getitem__` (positional slicing that also slices the labels
+  of kept axes; a `{dim: label(s)}` dict or bare-`str` slicer selects by label,
+  like `.sel`), `__getattr__` (label access), `rename`,
+  `refine_names`/`align_to`/`align_as`.
 - **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
   `view`/`reshape`), and rank-changers `flatten`/`unflatten`/`expand`/
   `broadcast_to`/`diagonal`.

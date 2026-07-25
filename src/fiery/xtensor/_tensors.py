@@ -481,6 +481,20 @@ class XTensor(ExtendedTensor):
     # -- indexing / selection ---------------------------------------------
 
     def __getitem__(self, slicer: SmartSlicerT) -> tx.Self:
+        # Label indexing, mirroring `.sel`: a `{dim: label(s)}` dict selects by
+        # coordinate label, and a bare `str` selects that label on whichever
+        # dim carries it (like attribute access, but through `[]`).
+        if isinstance(slicer, dict):
+            return self.sel(**slicer)
+        if isinstance(slicer, str):
+            hits = self._dims_with_label(slicer)
+            if len(hits) == 1:
+                return self.sel(**{hits[0]: slicer})
+            if len(hits) > 1:
+                raise KeyError(
+                    f"label {slicer!r} is ambiguous across dims {hits}"
+                )
+            raise KeyError(f"no coordinate label {slicer!r}")
         # The underlying tensor carries no builtin names, so basic indexing
         # (including newaxis via `None`) works directly.
         out = Tensor.__getitem__(self, slicer)
@@ -556,13 +570,16 @@ class XTensor(ExtendedTensor):
             positional[name] = positions if is_many else positions[0]
         return self.isel(**positional)
 
+    def _dims_with_label(self, label: str) -> list:
+        """Named dims whose coordinates include `label` (usually 0 or 1)."""
+        return [dim for dim, labels in self.coords.items() if label in labels]
+
     def __getattr__(self, name: str) -> tx.Self:
         # Only consulted when normal attribute lookup fails, so real methods
         # and attributes always win. Private / dunder names are never labels.
         if name.startswith("_"):
             raise AttributeError(name)
-        coords = self.coords
-        hits = [dim for dim, labels in coords.items() if name in labels]
+        hits = self._dims_with_label(name)
         if len(hits) == 1:
             return self.sel(**{hits[0]: name})
         if len(hits) > 1:
