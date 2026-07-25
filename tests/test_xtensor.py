@@ -107,6 +107,81 @@ def test_coords_ellipsis_fills_unlabelled_positions():
     assert x.coords["col"] == ("a", None, None, "z")
 
 
+# -- compact numeric coordinates (Proposal 0001 phase 1) ----------------------
+
+
+def test_compact_numeric_coordinate_stores_and_materialises():
+    x = XTensor(
+        torch.zeros(2, 4),
+        names=("y", "x"),
+        coords={"x": {"spacing": (0.5, "mm"), "origin": (-1.0, "mm")}},
+    )
+    cx = x.coords["x"]
+    assert cx["spacing"]["value"] == 0.5
+    assert cx["spacing"].unit == "mm"  # attribute sugar for a safe key
+    # `["values"]` is a derived key: origin + i*spacing
+    assert cx["values"].tolist() == [-1.0, -0.5, 0.0, 0.5]
+    assert cx["values"].unit == "mm"  # the POSITION unit
+
+
+def test_numeric_and_categorical_coords_coexist():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=("c", "x"),
+        coords={"c": ["r", "g", "b"], "x": {"spacing": (0.5, "mm")}},
+    )
+    assert x.coords["c"] == ("r", "g", "b")  # labels
+    assert x.coords["x"]["values"].tolist() == [0.0, 0.5, 1.0, 1.5]
+
+
+def test_numeric_coord_propagates_and_drops_with_its_axis():
+    x = XTensor(
+        torch.zeros(2, 4),
+        names=("y", "x"),
+        coords={"x": {"spacing": (0.5, "mm")}},
+    )
+    assert x.T.coords["x"]["spacing"]["value"] == 0.5  # transpose keeps it
+    reduced = x.sum(dim="y")
+    assert reduced.coords["x"]["spacing"]["value"] == 0.5  # reduce other axis
+    assert "x" not in x.sum(dim="x").coords  # reducing its axis drops it
+    assert x.rename(x="u").coords["u"]["spacing"]["value"] == 0.5  # rename
+
+
+def test_numeric_coord_attribute_sugar_does_not_shadow_dict_api():
+    x = XTensor(
+        torch.zeros(4), names=("x",), coords={"x": {"spacing": (2, "m")}}
+    )
+    sp = x.coords["x"]["spacing"]
+    assert callable(sp.values)  # `values` stays the dict method...
+    assert sp["value"] == 2  # ...the key is item-access only
+    assert sp.unit == "m"  # safe key reachable as an attribute
+
+
+def test_learnable_spacing_keeps_its_gradient():
+    pytest.importorskip("pint")
+    leaf = torch.tensor(0.5, requires_grad=True)
+    with set_options(unit_backend="pint"):
+        step = XTensor(leaf, unit="mm")
+        x = XTensor(
+            torch.zeros(5), names=("t",), coords={"t": {"spacing": step}}
+        )
+        x.coords["t"]["values"].sum().backward()
+        assert leaf.grad.item() == 10.0  # d/dstep sum(i*step) = 0+1+2+3+4
+
+
+def test_spacing_unitful_converts():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.zeros(4),
+            names=("x",),
+            coords={"x": {"spacing": (2.0, "mm")}},
+        )
+        converted = x.coords["x"]["spacing"].to("um")
+        assert converted["value"] == 2000.0
+        assert converted["unit"] == "micrometer"
+
+
 def test_sel_selects_a_labelled_position_and_drops_the_axis():
     x = _labelled()
     y = x.sel(col="y")

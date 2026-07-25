@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — design settled (one coordinate per axis; unified value / label / spacing model); ready to implement |
+| **Status** | Accepted — implementing. Phase 1 landed (compact numeric coordinates: the internal `Unitful`/magic-dict family + `coords={dim: {spacing, origin}}` storage + `coords[dim]["values"]` materialisation, backend-optional, autograd-preserving). Next: explicit numeric coords + coordinate conversion (phase 2), then the `axes=`/`names=`-strings-only constructor cleanup (phase 3) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); builds on Proposal 0002 (structured coordinates); multi-coordinate follow-up in [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); supersedes the "axis unit" sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |

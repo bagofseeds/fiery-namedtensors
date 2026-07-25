@@ -149,3 +149,77 @@ def split_quantity(obj: tx.Any) -> tx.Tuple[tx.Any, str]:
     if isinstance(obj, pint.Unit):
         return 1.0, str(obj)
     return obj.magnitude, str(obj.units)
+
+
+# -- the "magic dict" family (Proposal 0001) ---------------------------------
+#
+# Metadata dicts (a unitful value, a coordinate, ...) are plain `dict`s that
+# also expose *whitelisted* keys as attributes and preserve tensor values
+# untouched. Item access is canonical for every key; attribute sugar covers
+# only keys that do not shadow the `dict` API (never `values`/`keys`/`items`).
+
+#: Keys reachable as attributes (they don't collide with `dict` methods).
+_MAGIC_ATTR_KEYS = frozenset(
+    {"value", "unit", "name", "spacing", "origin", "type", "orientation"}
+)
+
+
+class MagicDict(dict):
+    """A `dict` whose whitelisted keys are also attribute-accessible."""
+
+    def __getattr__(self, name: str) -> tx.Any:
+        if name in _MAGIC_ATTR_KEYS and name in self:
+            return self[name]
+        raise AttributeError(name)
+
+
+class Unitful(MagicDict):
+    """
+    A `{value, unit}` pair. `value` may be a scalar **or** a live 0-rank
+    tensor (kept untouched, so a learnable value keeps its autograd graph);
+    `unit` is a canonical string. Read as `q["value"]` / `q.unit`; convert
+    with `.to(unit)`.
+    """
+
+    def to(self, unit: tx.Any) -> "Unitful":
+        """Convert to `unit` (needs a backend), rescaling value and unit."""
+        target = normalise(unit)
+        scale = factor(self["unit"], target)
+        return Unitful(value=self["value"] * scale, unit=target)
+
+
+def _parse_unit_string(text: str) -> tx.Tuple[tx.Any, str]:
+    """
+    `"0.5mm"` -> `(0.5, "mm")`, `"mm"` -> `(1, "mm")`. A value+unit string
+    needs a backend to parse; without one the whole string is an opaque unit.
+    """
+    if active() != "pint":
+        return 1, text
+    _, ureg = _pint()
+    try:
+        quantity = ureg.Quantity(text)
+        return quantity.magnitude, str(quantity.units)
+    except Exception:
+        return 1, normalise(text)
+
+
+def as_unitful(obj: tx.Any) -> Unitful:
+    """
+    Coerce an accepted *unitful* input into a `Unitful`: a `Unitful`, a
+    `{"value", "unit"}` dict, a `(value, unit)` tuple, a backend `Unit`/
+    `Quantity`, a unit string, or a bare value (dimensionless). A united
+    `XTensor` value is handled by the caller (it needs the tensor type).
+    """
+    if isinstance(obj, Unitful):
+        return obj
+    if isinstance(obj, dict) and "value" in obj:
+        return Unitful(value=obj["value"], unit=normalise(obj.get("unit", "")))
+    if isinstance(obj, tuple) and len(obj) == 2:
+        return Unitful(value=obj[0], unit=normalise(obj[1]))
+    if is_unit_like(obj):
+        magnitude, unit = split_quantity(obj)
+        return Unitful(value=magnitude, unit=normalise(unit))
+    if isinstance(obj, str):
+        value, unit = _parse_unit_string(obj)
+        return Unitful(value=value, unit=unit)
+    return Unitful(value=obj, unit=normalise(""))
