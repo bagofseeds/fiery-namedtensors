@@ -204,6 +204,31 @@ x.sum(dim={"type": "channel"})     # reduce every channel axis
 A query that matches a single axis behaves exactly like naming it (so it still
 works with single-`dim`-only ops such as `prod`).
 
+## Structured coordinates
+
+A coordinate **label** can itself be a descriptor dict, so each *position* along
+an axis is described — the position-level analogue of an axis descriptor. A
+label's `"name"` is still its identity for selection; the other fields are
+queryable:
+
+```python
+img = xtensor(data, names=("c", "y", "x"), coords={"c": [
+    {"name": "DAPI", "type": "nucleus"},
+    {"name": "GFP",  "type": "signal"},
+    {"name": "RFP",  "type": "signal"},
+]})
+
+img.sel(c="GFP")            # by name — drops the axis (as before)
+img[{"type": "signal"}]     # by query — every matching position, keeps the axis
+img.sel(c={"type": "signal"})   # ... the sel-keyword spelling
+```
+
+A **query** (a dict where a coordinate label is expected) selects *positions* —
+the matches become a `slice` when contiguous, else an index list — and always
+keeps the axis. It mirrors the descriptor query for *axes*: a `{"type": ...}`
+dict picks **axes** in a `dim=`/`movedim` slot and **positions** in a `[]`/`sel`
+slot, so the two never collide.
+
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or

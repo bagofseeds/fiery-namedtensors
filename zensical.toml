@@ -6,6 +6,9 @@ nav = [
   {"All the Matches" = "https://bagofseeds.github.io/fiery/"},
   {"Named Tensors" = "index.md"},
   {"API" = "api/index.md"},
+  {"Proposals" = [
+    {"0002 — Structured coordinates" = "proposals/0002-structured-coordinates.md"},
+  ]},
 ]
 
 # The site_name is shown in the page header and the browser window title
