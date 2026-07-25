@@ -311,5 +311,5 @@ file) is wanted for *all* options, that's a separate issue — happy to file it.
 ## References
 
 - pint unit algebra — <https://pint.readthedocs.io>
-- Proposal 0001 (coordinate units) — the *other* unit
+- Proposal 0001 (coordinate metric) — the *other* unit
 - Proposal 0002 (structured coordinates) — storage for heterogeneous units
