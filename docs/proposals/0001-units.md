@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — under discussion (implementation not started) |
+| **Status** | Draft — converging (design below reflects discussion) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); supersedes the units sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |
@@ -45,64 +45,67 @@ x.axes[0]          # {'name': 'x', 'type': 'space', 'unit': 'um'}  (works now)
 x.T.axes[-1]       # unchanged — the unit follows its dim
 ```
 
-So the axis unit already *rides along*. The only thing a proposal could add is
-**validation** (and maybe normalisation). That is the whole question.
+So the axis unit already *rides along*. The only thing worth adding for an axis
+unit is **normalisation and normalised equality** — there is nothing to
+*convert* (a bare dimension has no values). This is deliberately modest; the
+interesting unit work is locus 2 (coordinate units), where values exist.
 
-## The question to settle
+## Design — an explicit `unit backend`
 
-**Should an axis `unit` be validated/normalised, and if so, how?** The options,
-smallest to largest commitment:
+Behaviour must **not** depend on whether pint happens to be importable; it is
+opt-in through a package **option**, so it is deterministic and reproducible.
 
-1. **Leave it free-form** — a `unit` is documentation, never checked. Zero deps,
-   zero risk, but `"metre"`, `"metres"`, `"m"`, and `"meter"` are all "valid"
-   and mutually unequal, and a typo (`"metr"`) is silent.
-2. **Validate when a unit library is present** — parse the string through
-   `pint` (an optional `[units]` extra) and raise on failure; stay free-form
-   when the extra is absent. Catches typos where the extra is installed; keeps
-   the zero-dep default and the 3.7 floor. *(Sketched below.)*
-3. **Validate *and* normalise** — canonicalise to a single spelling
-   (`"micron"` → `"micrometer"`), so equality (and the `combine_axes` merge)
-   compares units meaningfully. More surface, and it rewrites the author's
-   spelling.
+- A new option, **`unit_backend`**, **default `None`** — today's behaviour: a
+  `unit` is a free-form string, never inspected, string-compared.
+- Set it explicitly to opt into unit semantics — reusing the existing
+  `set_options` (which is *both* a permanent setter and a context manager, so no
+  new machinery):
 
-Sub-questions that hang off the choice:
+  ```python
+  from fiery.xtensor import set_options
 
-- **Library** — `pint` (domain-neutral de-facto standard) vs `astropy.units`
-  (heavier) vs a bespoke string-unit vs none.
-- **Optional vs hard dep** — an optional extra preserves the zero-dep default
-  and wide-Python floor; a hard dep simplifies the code but raises the floor
-  (recent pint needs Python ≥ 3.8/3.9).
-- **Never wrap the data** — whatever the choice, a `pint.Quantity` around the
-  tensor is off the table: it would forfeit autograd/GPU/dispatch (the reason
-  this package is native over torch). A library would parse the unit *symbol*
-  only.
-- **Unit equality under merge** — with option 3, should `_merge_axis_meta`
-  compare *parsed* units so `"um"` and `"micrometer"` agree instead of
-  conflicting as strings?
+  set_options(unit_backend="pint")                 # for the session
+  with set_options(unit_backend="pint"):           # for a block
+      ...
+  ```
 
-## Sketch (if option 2 is chosen)
+- A backend is a small interface — `normalise(unit) -> str` (canonical form;
+  raising on an unparsable unit) and, from it, `equal(a, b)` (normalised
+  equality). Built-ins: `None` (identity + string equality) and `"pint"`;
+  the seam leaves room for `"astropy"` or a custom backend later.
+- Setting `unit_backend="pint"` when pint is not installed **raises at set
+  time** — a clear, immediate error rather than silent degradation.
+- **Never wraps the data.** The backend touches unit *symbols* only; the tensor
+  stays a plain `torch.Tensor` (autograd/GPU/dispatch intact).
 
-A `_units` module with a lazily-built, cached registry: `units_available()` and
-`validate_unit(unit)` (parse via pint when present, raise `ValueError` on
-failure; a no-op otherwise). The `names`/`axes` setter calls it alongside
-`_validate_orientation`. `pyproject` grows a `units = ["pint>=0.18"]` extra;
-CI installs pint where the interpreter supports it so the path is exercised,
-while the 3.7 job keeps units opaque. *(Prototyped, then set aside pending this
-discussion.)*
+### What a backend changes
+
+With a non-`None` backend:
+
+1. a `unit` descriptor field is **normalised** when set (so `.axes` shows a
+   canonical spelling, and typos raise);
+2. `_merge_axis_meta` compares units by **normalised equality**, so `"um"` and
+   `"micrometer"` agree instead of conflicting as strings.
+
+No conversion, no arithmetic — that is all an *axis* unit can meaningfully do.
 
 ## Backwards compatibility
 
-Any option is compatible with today's stored `unit` strings. Option 2/3 add one
-observable change **only where the extra is installed**: an unparsable unit
-would newly raise at construction.
+Fully compatible and **behaviour is unchanged by default** (`unit_backend` is
+`None`): a `unit` stays a free-form string. Semantics appear only when a backend
+is explicitly selected.
 
 ## Open questions
 
-1. Validate at all, or stay free-form? (The core decision above.)
-2. If validating: which library, optional vs hard dep, normalise or not?
-3. Should axis units even exist independently of coordinate values (locus 2), or
-   is an axis unit only meaningful once the axis has numeric coordinates?
-4. Unit equality in the descriptor merge (string vs parsed).
+1. **Normalise-on-store vs on-compare** — rewrite the stored `unit` to the
+   canonical spelling (so `.axes` is canonical, but the author's `"um"` becomes
+   `"micrometer"`), or keep the original and normalise only for equality?
+   *(Leaning: normalise on store — one source of truth.)*
+2. **Backend names / packaging** — ship `"pint"` as an optional `[units]` extra
+   (import lazily, error if selected-but-absent); reserve room for other
+   backends.
+3. This is the small half. **Locus 2 (coordinate units) is the priority** —
+   see Proposal 0003 — because that is where conversion actually applies.
 
 ## References
 
