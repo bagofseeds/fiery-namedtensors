@@ -159,10 +159,11 @@ touched**.
 
 `.sel` selects by **categorical label** only (as today); numeric positions use
 `.isel`. Selecting by a numeric coordinate value (xarray's `da.sel(x=0.5)`,
-`method="nearest"` + tolerance) is a deliberate **later** addition — it brings
-the exact/nearest/tolerance machinery, and named-label selection covers the
-current need. So this proposal adds coordinate *storage* and *arithmetic*
-(distance, conversion, materialisation), not numeric selection.
+`method="nearest"` + tolerance) is a deliberate **later** addition, tracked in
+[#66](https://github.com/bagofseeds/fiery-xtensor/issues/66) — it brings the
+exact/nearest/tolerance machinery, and named-label selection covers the current
+need. So this proposal adds coordinate *storage* and *arithmetic* (distance,
+conversion, materialisation), not numeric selection.
 
 ## Autograd
 
@@ -229,8 +230,9 @@ coordinates of [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
    returns the compact dict (as shown) or eagerly the materialised tensor.
 2. **Unitful helper surface** — `.pair()` / `.to(...)` names; whether the dict
    subclass is public or internal.
-3. **Numeric `.sel`** — if/when to add value-based selection and its
-   nearest/tolerance semantics (xarray parity).
+3. **Numeric `.sel`** — value-based selection and its nearest/tolerance
+   semantics (xarray parity) are deferred to
+   [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66).
 4. **`coord` key vs `coords`** on the axis descriptor — singular `coord`
    (one-per-axis) reads well now; revisit under
    [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65).
