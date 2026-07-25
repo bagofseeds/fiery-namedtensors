@@ -82,6 +82,24 @@ x[..., "r1", "y"]   # label the last two axes; a bare label drops its axis
 x[:, ["w", "y"]]    # a list of labels is an advanced index (keeps the axis)
 ```
 
+### Numeric coordinates
+
+A coordinate can also be **numeric** — a physical position per element — given
+compactly as a `spacing` (and optional `origin`), each a value with a unit
+(Proposal 0001):
+
+```python
+img = xtensor(data, names=("y", "x"),
+              coords={"x": {"spacing": (0.5, "mm"), "origin": (-16, "mm")}})
+
+img.coords["x"]["spacing"].unit   # "mm"  — the position unit
+img.coords["x"]["values"]         # tensor([-16, -15.5, …]) with .unit == "mm"
+```
+
+`["values"]` materializes `origin + i·spacing` on demand (differentiable — a
+learnable `spacing` tensor keeps its gradient). The position unit is separate
+from the *data* unit of the tensor's values (see [Data units](#data-units)).
+
 ## Referring to a dimension by name
 
 Anywhere an operation takes a `dim` (or `dim0`/`dim1`, `source`/`destination`,

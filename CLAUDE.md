@@ -60,6 +60,21 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `unit_backend=None`). Heterogeneous matmul/einsum contraction is not yet
   wired (rides on base units only).
 
+- **numeric coordinates** (Proposal 0001 phase 1): a `coords[dim]` may be a
+  compact **`Coordinate`** (`{spacing[, origin]}`) instead of a label tuple,
+  stored in a separate `_axis_coord` attr (in `_ATTRS`, so it rides through ops
+  like the others; the `coords` getter filters stale entries by name and binds
+  the axis size). `coords[dim]["values"]` is a **derived** key materialising
+  `origin + i*spacing` fresh each access (no cache) as a 1-D unitful `XTensor`
+  — differentiable when `spacing` is a 0-rank tensor. `spacing`/`origin` are
+  `Unitful` **magic dicts** (`{value, unit}`, in `_units`): dict-inheriting,
+  tensor-preserving, item-access canonical + whitelisted attribute sugar
+  (`.value`/`.unit`/…, never the colliding `.values`/`.keys`/`.items`), with a
+  `.to(unit)` conversion. `_units.as_unitful` ingests tuple/dict/pint/str/
+  number; the family is internal (no export → no `pint.Quantity` clash). The
+  **position** unit (a coordinate's values) is distinct from the **data** unit
+  (0003, the tensor values).
+
 - **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
   attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in
   `XTensor`'s operator **dunders** (`__mul__`/`__rmul__`/`__truediv__`), *not*

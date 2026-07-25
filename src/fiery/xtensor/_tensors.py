@@ -279,7 +279,13 @@ class XTensor(ExtendedTensor):
     single label by attribute (`x.red`).
     """
 
-    _ATTRS = {"_axis_names", "_coords", "_axis_meta", "_data_unit"}
+    _ATTRS = {
+        "_axis_names",
+        "_coords",
+        "_axis_meta",
+        "_data_unit",
+        "_axis_coord",
+    }
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
         # NOTE: remove arguments that `Tensor.__new__` does not support.
@@ -399,34 +405,46 @@ class XTensor(ExtendedTensor):
     @property
     def coords(self) -> dict[str, LabelsT]:
         """
-        The coordinate labels, as a `{dim name: labels}` dict.
+        The coordinates, as a `{dim name: coordinate}` dict. A coordinate is a
+        tuple of **labels**, or a compact numeric [`Coordinate`][fiery.xtensor.
+        _tensors.Coordinate] (`{spacing[, origin]}`, whose `["values"]` key
+        materialises the positions; Proposal 0001).
 
         Only entries that are still valid are returned -- their dimension must
-        be named on this tensor and its size must match the number of labels
-        -- so stale metadata propagated onto a shape-changing op is hidden.
+        be named on this tensor (and, for labels, its size must match the label
+        count) -- so stale metadata propagated onto a shape-changing op is
+        hidden.
         """
-        stored = self.__dict__.get("_coords") or {}
         names = self.names
         valid = {}
+        stored = self.__dict__.get("_coords") or {}
         for dim, labels in stored.items():
             if dim in names and len(labels) == self.shape[names.index(dim)]:
                 valid[dim] = labels
+        numeric = self.__dict__.get("_axis_coord") or {}
+        for dim, coord in numeric.items():
+            if dim in names:
+                valid[dim] = coord._bound(self.shape[names.index(dim)])
         return valid
 
     @coords.setter
     def coords(self, value: tx.Optional[CoordsT]) -> None:
         if value is None:
             self.__dict__.pop("_coords", None)
+            self.__dict__.pop("_axis_coord", None)
             return
         names = self.names
-        normalized = {}
-        for dim, labels in dict(value).items():
+        labels_by_dim, numeric_by_dim = {}, {}
+        for dim, spec in dict(value).items():
             if dim not in names:
                 raise ValueError(
                     f"coords: no axis named {dim!r} in {tuple(names)}"
                 )
+            if _is_compact_coord(spec):
+                numeric_by_dim[dim] = _make_coordinate(spec)
+                continue
             size = self.shape[names.index(dim)]
-            labels = tuple(labels)
+            labels = tuple(spec)
             # `...` fills the middle with unlabelled positions.
             if Ellipsis in labels:
                 labels = tuple(arrayutils._unroll(labels, size))
@@ -435,8 +453,12 @@ class XTensor(ExtendedTensor):
                     f"coords: dim {dim!r} has {len(labels)} labels "
                     f"for size {size}"
                 )
-            normalized[dim] = labels
-        self._coords = normalized
+            labels_by_dim[dim] = labels
+        self._coords = labels_by_dim
+        if numeric_by_dim:
+            self._axis_coord = numeric_by_dim
+        else:
+            self.__dict__.pop("_axis_coord", None)
 
     # -- data unit ---------------------------------------------------------
 
@@ -576,6 +598,7 @@ class XTensor(ExtendedTensor):
         out.__dict__.update(self.__dict__)
         out._coords = self._remap_coords(new_names)
         out._axis_meta = self._remap_named("_axis_meta", new_names)
+        out._axis_coord = self._remap_named("_axis_coord", new_names)
         out._axis_names = new_names
         return out
 
@@ -584,8 +607,10 @@ class XTensor(ExtendedTensor):
         new_names = self._resolve_rename(names, rename_map)
         coords = self._remap_coords(new_names)
         meta = self._remap_named("_axis_meta", new_names)
+        axis_coord = self._remap_named("_axis_coord", new_names)
         self._coords = coords
         self._axis_meta = meta
+        self._axis_coord = axis_coord
         self._axis_names = new_names
         return self
 
@@ -877,6 +902,71 @@ class XTensor(ExtendedTensor):
             if name not in mine:
                 out = out.unsqueeze(pos)
         return out.rename(*target)
+
+
+# ---- numeric coordinates (Proposal 0001) ----------------------------------
+
+
+class Coordinate(_units.MagicDict):
+    """
+    A **compact numeric coordinate** -- a `{spacing[, origin]}` magic dict,
+    each a [`Unitful`][fiery.xtensor._units.Unitful] value. `["values"]` is a
+    **derived** key: it materialises `origin + i * spacing` as a 1-D unitful
+    tensor **fresh on each access** (no cache, so a learnable spacing never
+    goes stale and gradients flow back through the materialised values). The
+    **position** unit (`["spacing"].unit`) is distinct from the tensor's data
+    unit (Proposal 0003).
+    """
+
+    def _bound(self, size: int) -> "Coordinate":
+        """A copy that knows its axis `size`, so `["values"]` materialises."""
+        out = Coordinate(self)
+        out._size = size
+        return out
+
+    def __getitem__(self, key: tx.Any) -> tx.Any:
+        if key == "values":
+            return self._materialise()
+        return dict.__getitem__(self, key)
+
+    def _materialise(self) -> "XTensor":
+        spacing = dict.__getitem__(self, "spacing")
+        origin = dict.get(self, "origin")
+        step = spacing["value"]
+        start = origin["value"] if origin is not None else 0
+        index = torch.arange(self._size)
+        if isinstance(step, Tensor):
+            index = index.to(step)
+        values = start + index * step
+        return XTensor(values, unit=spacing["unit"])
+
+
+def _as_unitful(obj: tx.Any) -> tx.Any:
+    """Coerce a spacing/origin input to a `Unitful`, preserving a tensor."""
+    if isinstance(obj, XTensor):
+        unit = obj.unit
+        if unit is None:
+            return _units.Unitful(value=obj, unit=_units.normalise(""))
+        return _units.Unitful(value=obj.magnitude, unit=unit)
+    return _units.as_unitful(obj)
+
+
+def _is_compact_coord(spec: tx.Any) -> bool:
+    """Whether a `coords[dim]` value is a compact numeric coordinate (a mapping
+    with `spacing`/`origin`) rather than a sequence of labels."""
+    return isinstance(spec, tx.Mapping) and (
+        "spacing" in spec or "origin" in spec
+    )
+
+
+def _make_coordinate(spec: tx.Mapping) -> Coordinate:
+    """Build a `Coordinate` from a `{spacing[, origin]}` spec."""
+    coord = Coordinate()
+    if "spacing" in spec:
+        coord["spacing"] = _as_unitful(spec["spacing"])
+    if "origin" in spec:
+        coord["origin"] = _as_unitful(spec["origin"])
+    return coord
 
 
 # ---- coordinate helpers ---------------------------------------------------
