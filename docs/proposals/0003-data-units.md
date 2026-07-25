@@ -118,10 +118,31 @@ x.unit                                                # -> "V"  (None when unset
 - **Detach** drops back to a plain, unit-free tensor (`.magnitude`, spelling TBD
   — §7).
 
-*(Naming note: `.unit` is the **data** unit; an axis' tick unit is
-`x.axes[i]["unit"]` (Proposal 0001). Different levels — whole-tensor vs
-per-axis — but if the shared word is a concern, `.data_unit` is the fallback
-spelling. §7.)*
+`.unit` is the **data** unit; an axis' tick unit is `x.axes[i]["unit"]`
+(Proposal 0001) — different levels (whole-tensor vs per-axis), same word,
+unambiguous in practice.
+
+### 2.4 Attaching a unit by multiplication (`x * mm`)
+
+Because a backend recognises its own library's unit objects, ordinary
+multiplication/division attaches and derives units — the way pint itself builds
+a `Quantity` from `5 * ureg.metre`:
+
+```python
+from pint import UnitRegistry
+u = UnitRegistry()
+set_options(unit_backend="pint")
+
+(x * u.mm).unit          # "mm"      — x was unitless; data unchanged (a Unit has magnitude 1)
+(x * (3 * u.mm)).unit    # "mm", and data ×3   — a Quantity carries a magnitude
+(v / u.s).unit           # f"{v.unit}/s"
+```
+
+Mechanically this lives in the pointwise `*` / `/` overrides: an operand the
+backend recognises as one of its **unit** or **quantity** objects is split into
+`(magnitude, unit)`; the magnitude multiplies the data (1 for a bare unit), the
+unit combines with `x.unit` through the backend's algebra. A backend that can't
+recognise such an operand (e.g. `None`) just treats it as today.
 
 ## 3. The `unit_policy` (drop by default, strict on request)
 
@@ -197,6 +218,38 @@ with set_options(unit_policy="strict"):
   `unit`s). With `unit_backend=None` the whole layer is inert (no base unit,
   coordinate `unit`s stay opaque strings) — zero overhead by default.
 
+## 5a. The backend protocol — and why it isn't pint-specific
+
+A `unit_backend` is a small **adapter** over some unit library. The rest of the
+package never touches the library directly; it only calls this protocol, and it
+stores every unit as a **canonical string** (so storage is
+backend-independent, picklable, and survives a backend swap as long as the
+string re-parses). The protocol is a handful of pure operations on opaque units:
+
+| method | used for |
+| --- | --- |
+| `normalise(str) -> str` | canonical spelling; raise on unparsable |
+| `equal(a, b)` / `compatible(a, b)` / `dimensionless(a)` | merge equality, `add` compat, transcendental guard |
+| `mul(a, b)` / `div(a, b)` / `pow(a, n)` | the unit algebra (`*`/`/`/matmul/`pow`) |
+| `factor(from, to) -> float` | conversion scalar (multiplied into the data) |
+| `unit_of(obj)` / `magnitude_of(obj)` | recognise the library's own `Unit`/`Quantity` objects → `(unit, magnitude)`, so `x * u.mm` works |
+
+Any library that exposes **unit multiplication + dimensionality + conversion**
+satisfies this. Candidates, in rough order of fit:
+
+- **pint** — the de-facto standard; the reference backend we ship.
+- **astropy.units** — very mature `Unit`/`Quantity`; natural adapter.
+- **unyt** — array-oriented (yt project); adapter is straightforward.
+- **quantities** — older, numpy-based; possible.
+- **`None`** *(default)* — the trivial backend: identity `normalise`, string
+  `equal`, **no** algebra/convert/recognition — i.e. today's behaviour.
+
+So the design is generic by construction: adding astropy or unyt is writing one
+adapter class, not touching the tensor code. The only pint-specific thing in the
+whole proposal is the *name* `"pint"` and the module that adapts it. (The
+storage-as-string choice is what buys this — if we stored a native `pint.Unit`
+in `_data_unit`, the metadata would be pint-locked and unpicklable.)
+
 ## 6. Suggested phasing
 
 The general rule is adopted from the start; phasing is about **op coverage**,
@@ -218,6 +271,10 @@ not restricting the model:
 4. **Per-op policy override** — is one global `unit_policy` enough, or do some
    ops want their own (mirroring `combine_axes`'s per-field dict)? Deferred
    until a need appears.
+
+*Settled:* the property is `.unit` (not `.data_unit`); units are stored as
+canonical strings so the backend is swappable; `x * <unit>` attaches a unit
+(§2.4).
 
 ## Related note
 
