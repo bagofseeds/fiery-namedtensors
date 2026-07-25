@@ -1072,6 +1072,60 @@ def test_tensordot_keeps_descriptors_of_surviving_axes_only():
     assert out.axes == ({"name": "a", "type": "space"}, {"name": "n"})
 
 
+def test_matmul_keeps_each_operands_surviving_descriptor():
+    # each result axis keeps the descriptor of the operand it came from; the
+    # right operand's trailing axis used to lose it.
+    a = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "m", "type": "space"}, {"name": "k", "type": "chan"}],
+    )
+    b = XTensor(
+        torch.zeros(3, 4),
+        names=[{"name": "k", "type": "chan"}, {"name": "n", "type": "time"}],
+    )
+    out = a @ b
+    assert out.names == ("m", "n")
+    assert out.axes == (
+        {"name": "m", "type": "space"},
+        {"name": "n", "type": "time"},
+    )
+
+
+def test_cat_merges_descriptors_keeping_agreement_dropping_conflicts():
+    a = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
+    )
+    b = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "time"}],
+    )
+    out = torch.cat([a, b], dim=0)
+    # "r" agrees -> kept; "c" conflicts (chan vs time) -> field dropped
+    assert out.axes == ({"name": "r", "type": "space"}, {"name": "c"})
+
+
+def test_stack_keeps_existing_descriptors_new_axis_unnamed():
+    a = XTensor(
+        torch.zeros(2, 3),
+        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
+    )
+    out = torch.stack([a, a], dim=0)
+    assert out.axes == (
+        None,
+        {"name": "r", "type": "space"},
+        {"name": "c", "type": "chan"},
+    )
+
+
+def test_combine_op_strict_policy_raises_on_conflicting_descriptor():
+    a = XTensor(torch.zeros(2, 3), names=["r", {"name": "c", "type": "chan"}])
+    b = XTensor(torch.zeros(2, 3), names=["r", {"name": "c", "type": "time"}])
+    with set_options(combine_axes="strict"):
+        with pytest.raises(ValueError, match="conflicting 'type'"):
+            torch.cat([a, b], dim=0)
+
+
 # ----------------------------------------------------------------------
 # gather / scatter / where / masked_select
 # ----------------------------------------------------------------------
