@@ -22,8 +22,11 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   identity (`_label_name`), and a **query** dict in a `[]`/`sel` slot selects
   the matching *positions* (`_match_positions` → `slice`/list, keeps the axis)
   — the position-level analogue of the axis-descriptor query.
-- `XVector` / `XMatrix` — conveniences that pre-name+label their channel
-  axes (`"channel"`; `"row"`/`"col"`).
+- `xvector` / `xmatrix` (in `_factories.py`) — one-line **factory functions**
+  that name+label a `"channel"` axis (or `"row"`/`"col"`) and return a **plain
+  `XTensor`**. Deliberately *not* subclasses: an op that drops the labelled
+  axis must yield an ordinary `XTensor`, so the type never outlives its
+  meaning (the removed `XVector`/`XMatrix` subclasses did not maintain that).
 - **axis descriptors** (OME-NGFF-style, #39): a name may be given as a dict
   `{"name": "x", "type": "space", "orientation": "left-to-right"}` instead of a
   bare string. The extra fields (`type`/`unit`/`orientation`) live in
@@ -176,7 +179,8 @@ matching section (or a new one):
   (`drop_conflicts`/`strict`(=`raise`)/`override`/`drop`) or a `{field: policy}`
   dict with `"*"` as the default. Registers both `torch.<op>` and
   `Tensor.<op>` (operators dispatch the latter).
-- **CONVENIENCE** — `XVector`/`XMatrix`.
+- **CONVENIENCE** — `xvector`/`xmatrix` factory functions (in `_factories.py`),
+  not subclasses.
 
 Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 (1-D label slicer), `_reconcile_axis_names` (multi-operand), `_matmul_names`.

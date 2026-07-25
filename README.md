@@ -10,12 +10,33 @@ optionally, per-dimension coordinate **labels** through operations — so you ca
 refer to a dimension by name and a position along it by label, without leaving
 torch (autograd, device, and `__torch_function__` all keep working).
 
-## Classes
+## The class
 
-| Class | What it adds |
-| ----- | ------------ |
-| `XTensor` | Named **dimensions** (`names`) and coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both self-managed (independent of PyTorch's experimental builtin named tensors) so they work across a wide torch range. Names *and* labels propagate through reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`, transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`, `T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`, `split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`, …), and combine ops (`cat`, `stack`, `matmul`/`@`, `einsum`, `tensordot`). Select by label with `.sel`, by position with `.isel`, or reach a single label by attribute. |
-| `XVector` / `XMatrix` | Convenience specializations that pre-name and label their channel axes (`"channel"`; `"row"`/`"col"`). |
+`XTensor` (lowercase alias `xtensor`) adds named **dimensions** (`names`) and
+coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both
+self-managed (independent of PyTorch's experimental builtin named tensors) so
+they work across a wide torch range. Names *and* labels propagate through
+reshaping/reordering (`permute`, `view`/`reshape`, `squeeze`/`unsqueeze`,
+transpose & `movedim` families, `flatten`/`unflatten`, `expand`, `diagonal`,
+`T`/`mT`), slicing/splitting (`__getitem__`, `select`, `narrow`, `unbind`,
+`split`/`chunk`, `flip`/`roll`), reductions (`sum`, `mean`, `amax`, `argmax`,
+…), and combine ops (`cat`, `stack`, `matmul`/`@`, `einsum`, `tensordot`).
+Select by label with `.sel`, by position with `.isel`, or reach a single label
+by attribute.
+
+For the common cases, `xvector` and `xmatrix` are one-line factories that name
+and label a `"channel"` axis (or `"row"`/`"col"`) and return a plain `XTensor`:
+
+```python
+from fiery.xtensor import xvector, xmatrix
+
+v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))   # last axis -> "channel"
+m = xmatrix(torch.zeros(2, 3), rows=("r0", "r1"), cols=("c0", "c1", "c2"))
+```
+
+They are just `XTensor(..., names=..., coords=...)` spelled shorter — the result
+is an ordinary `XTensor`, so a reduction or selection that drops the labelled
+axis simply yields a normal `XTensor` (no "vector" that has lost its axis).
 
 Labels are keyed by dimension **name**, so — like xarray — they simply follow
 their dimension through a `permute`/`transpose`/reduction with no bookkeeping.
