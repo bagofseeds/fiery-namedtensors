@@ -73,7 +73,13 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `.to(unit)` conversion. `_units.as_unitful` ingests tuple/dict/pint/str/
   number; the family is internal (no export → no `pint.Quantity` clash). The
   **position** unit (a coordinate's values) is distinct from the **data** unit
-  (0003, the tensor values).
+  (0003, the tensor values). A `Coordinate` may also be **explicit**
+  (`{"values": <unitful 1-D tensor>}`, from `coords={dim: tensor}`);
+  `__getitem__` slices numeric coords **affinely** (`_slice_coordinate`:
+  compact updates `spacing*=step`/`origin+=start*spacing`, explicit slices the
+  array, advanced index materialises a compact coord to explicit).
+  `Coordinate.to(unit)` converts the position unit. `_coords_for` excludes
+  `Coordinate`s (they ride on `_axis_coord`, never `_coords`).
 
 - **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
   attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in
