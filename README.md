@@ -97,8 +97,18 @@ img.coords["x"]["values"]         # tensor([-16, -15.5, …]) with .unit == "mm"
 ```
 
 `["values"]` materializes `origin + i·spacing` on demand (differentiable — a
-learnable `spacing` tensor keeps its gradient). The position unit is separate
-from the *data* unit of the tensor's values (see [Data units](#data-units)).
+learnable `spacing` tensor keeps its gradient). An **irregular** axis instead
+takes an explicit unitful tensor of positions:
+
+```python
+sig = xtensor(trace, names=("t",),
+              coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
+```
+
+Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
+`img[..., ::2]` scales the spacing) and convert with `img.coords["x"].to("um")`.
+The position unit is separate from the *data* unit of the tensor's values (see
+[Data units](#data-units)).
 
 ## Referring to a dimension by name
 

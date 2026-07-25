@@ -423,8 +423,13 @@ class XTensor(ExtendedTensor):
                 valid[dim] = labels
         numeric = self.__dict__.get("_axis_coord") or {}
         for dim, coord in numeric.items():
-            if dim in names:
-                valid[dim] = coord._bound(self.shape[names.index(dim)])
+            if dim not in names:
+                continue
+            size = self.shape[names.index(dim)]
+            if coord._compact():
+                valid[dim] = coord._bound(size)
+            elif len(dict.__getitem__(coord, "values")) == size:
+                valid[dim] = coord  # explicit: keep only if length matches
         return valid
 
     @coords.setter
@@ -440,7 +445,7 @@ class XTensor(ExtendedTensor):
                 raise ValueError(
                     f"coords: no axis named {dim!r} in {tuple(names)}"
                 )
-            if _is_compact_coord(spec):
+            if _is_compact_coord(spec) or _is_explicit_coord(spec):
                 numeric_by_dim[dim] = _make_coordinate(spec)
                 continue
             size = self.shape[names.index(dim)]
@@ -708,8 +713,24 @@ class XTensor(ExtendedTensor):
         out._axis_names = out_names
         # Slice the labels of every kept axis that carries coordinates.
         coords = self.__dict__.get("_coords") or {}
-        if coords:
+        axis_coord = self.__dict__.get("_axis_coord") or {}
+        if coords or axis_coord:
             unrolled = arrayutils._unroll_slicer(slicer, self.ndim)
+        if axis_coord:
+            new_axis_coord = {}
+            for out_axis, src in enumerate(sources):
+                name = out_names[out_axis]
+                if src is None or name is None:
+                    continue
+                coord = axis_coord.get(in_names[src])
+                if coord is None:
+                    continue
+                piece = arrayutils._get_slicer_by_index(unrolled, src)
+                adjusted = _slice_coordinate(coord, piece, self.shape[src])
+                if adjusted is not None:
+                    new_axis_coord[name] = adjusted
+            out._axis_coord = new_axis_coord
+        if coords:
             new_coords = {}
             for out_axis, src in enumerate(sources):
                 name = out_names[out_axis]
@@ -909,14 +930,23 @@ class XTensor(ExtendedTensor):
 
 class Coordinate(_units.MagicDict):
     """
-    A **compact numeric coordinate** -- a `{spacing[, origin]}` magic dict,
-    each a [`Unitful`][fiery.xtensor._units.Unitful] value. `["values"]` is a
-    **derived** key: it materialises `origin + i * spacing` as a 1-D unitful
-    tensor **fresh on each access** (no cache, so a learnable spacing never
-    goes stale and gradients flow back through the materialised values). The
-    **position** unit (`["spacing"].unit`) is distinct from the tensor's data
-    unit (Proposal 0003).
+    A **numeric coordinate** (Proposal 0001) -- a magic dict in one of two
+    forms:
+
+    - **compact / regular** -- `{spacing[, origin]}` (each a
+      [`Unitful`][fiery.xtensor._units.Unitful]); `["values"]` is a **derived**
+      key materialising `origin + i * spacing` **fresh each access** (no cache,
+      so a learnable spacing never goes stale and gradients flow back);
+    - **explicit / irregular** -- `{"values": <unitful 1-D tensor>}`;
+      `["values"]` returns the stored array.
+
+    The **position** unit (`["values"].unit`) is distinct from the tensor's
+    data unit (Proposal 0003).
     """
+
+    def _compact(self) -> bool:
+        """Whether this is a compact (spacing/origin) coordinate."""
+        return "spacing" in self or "origin" in self
 
     def _bound(self, size: int) -> "Coordinate":
         """A copy that knows its axis `size`, so `["values"]` materialises."""
@@ -925,7 +955,7 @@ class Coordinate(_units.MagicDict):
         return out
 
     def __getitem__(self, key: tx.Any) -> tx.Any:
-        if key == "values":
+        if key == "values" and self._compact():
             return self._materialise()
         return dict.__getitem__(self, key)
 
@@ -939,6 +969,22 @@ class Coordinate(_units.MagicDict):
             index = index.to(step)
         values = start + index * step
         return XTensor(values, unit=spacing["unit"])
+
+    def to(self, unit: tx.Any) -> "Coordinate":
+        """
+        Convert the coordinate's **position** unit, rescaling
+        `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
+        backend.
+        """
+        if self._compact():
+            out = Coordinate()
+            out["spacing"] = dict.__getitem__(self, "spacing").to(unit)
+            if "origin" in self:
+                out["origin"] = dict.__getitem__(self, "origin").to(unit)
+            return out
+        return Coordinate(
+            values=dict.__getitem__(self, "values").to_unit(unit)
+        )
 
 
 def _as_unitful(obj: tx.Any) -> tx.Any:
@@ -959,8 +1005,20 @@ def _is_compact_coord(spec: tx.Any) -> bool:
     )
 
 
-def _make_coordinate(spec: tx.Mapping) -> Coordinate:
-    """Build a `Coordinate` from a `{spacing[, origin]}` spec."""
+def _is_explicit_coord(spec: tx.Any) -> bool:
+    """Whether a `coords[dim]` value is an **explicit** numeric coordinate -- a
+    tensor of positions -- rather than a sequence of labels."""
+    return isinstance(spec, Tensor)
+
+
+def _make_coordinate(spec: tx.Any) -> Coordinate:
+    """Build a `Coordinate` from a compact spec or an explicit tensor."""
+    if _is_explicit_coord(spec):
+        if isinstance(spec, XTensor) and spec.unit is not None:
+            values = spec
+        else:
+            values = XTensor(spec, unit=_units.normalise(""))
+        return Coordinate(values=values)
     coord = Coordinate()
     if "spacing" in spec:
         coord["spacing"] = _as_unitful(spec["spacing"])
@@ -981,12 +1039,17 @@ def _coords_of(tensor: tx.Any) -> dict:
 
 def _coords_for(input: XTensor, result_names: tuple) -> dict:
     """
-    Keep only the coordinates whose dimension survives (by name) into
+    Keep only the **label** coordinates whose dimension survives (by name) into
     `result_names`. Merged / split / removed axes lose their name and so drop
-    their coordinates automatically.
+    their coordinates automatically. Numeric `Coordinate`s are excluded -- they
+    ride on `_axis_coord`, not `_coords`.
     """
     kept = {name for name in result_names if name is not None}
-    return {k: v for k, v in _coords_of(input).items() if k in kept}
+    return {
+        k: v
+        for k, v in _coords_of(input).items()
+        if k in kept and not isinstance(v, Coordinate)
+    }
 
 
 def _is_label_index(value: tx.Any) -> bool:
@@ -1077,6 +1140,45 @@ def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:
         return tuple(x for x, keep in zip(labels, slicer) if keep)
     if arrayutils._is_advanced_index(slicer):
         return tuple(labels[int(i)] for i in slicer)
+    return None
+
+
+def _slice_coordinate(
+    coord: Coordinate, slicer: _SmartSlicerT, size: int
+) -> tx.Optional[Coordinate]:
+    """
+    Apply a 1-D `slicer` to a numeric `Coordinate` on an axis of `size`. A
+    **basic slice** stays exact: a compact coordinate updates its affine
+    (`spacing *= step`, `origin += start * spacing`); an explicit one slices
+    its values. An **advanced** index materialises a compact coordinate to
+    explicit first. Returns `None` for a slicer that cannot be applied (the
+    coordinate then drops).
+    """
+    if isinstance(slicer, slice):
+        start, stop, step = slicer.indices(size)
+        if start == 0 and step == 1 and stop >= size:
+            return coord  # a full slice leaves the coordinate untouched
+        if coord._compact():
+            spacing = dict.__getitem__(coord, "spacing")
+            origin = dict.get(coord, "origin")
+            base = origin["value"] if origin is not None else 0
+            out = Coordinate()
+            out["spacing"] = _units.Unitful(
+                value=spacing["value"] * step, unit=spacing["unit"]
+            )
+            out["origin"] = _units.Unitful(
+                value=base + start * spacing["value"], unit=spacing["unit"]
+            )
+            return out
+        return Coordinate(values=dict.__getitem__(coord, "values")[slicer])
+    if arrayutils._is_boolean_index(slicer) or arrayutils._is_advanced_index(
+        slicer
+    ):
+        if coord._compact():
+            values = coord._bound(size)["values"]
+        else:
+            values = dict.__getitem__(coord, "values")
+        return Coordinate(values=values[slicer])
     return None
 
 

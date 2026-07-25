@@ -182,6 +182,66 @@ def test_spacing_unitful_converts():
         assert converted["unit"] == "micrometer"
 
 
+# -- explicit numeric coords + slicing + conversion (0001 phase 2) ------------
+
+
+def test_explicit_numeric_coordinate_stores_positions():
+    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
+    x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
+    assert x.coords["t"]["values"].tolist() == [0.0, 0.5, 2.0, 4.0]
+    assert x.coords["t"]["values"].unit == "s"  # position unit
+
+
+def test_compact_coord_slices_affinely():
+    x = XTensor(
+        torch.arange(8.0),
+        names=("x",),
+        coords={"x": {"spacing": (0.5, "mm"), "origin": (0.0, "mm")}},
+    )
+    # an offset slice shifts origin; a strided slice scales spacing
+    off = x[2:].coords["x"]["values"].tolist()
+    assert off == [1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+    assert x[::2].coords["x"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert x[1:6:2].coords["x"]["values"].tolist() == [0.5, 1.5, 2.5]
+    assert "x" not in x[3].coords  # integer index drops the axis + coord
+
+
+def test_explicit_coord_slices_including_advanced():
+    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
+    x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
+    assert x[1:3].coords["t"]["values"].tolist() == [0.5, 2.0]
+    assert x[[0, 2]].coords["t"]["values"].tolist() == [0.0, 2.0]
+
+
+def test_compact_advanced_index_materialises_to_explicit():
+    x = XTensor(
+        torch.arange(8.0),
+        names=("x",),
+        coords={"x": {"spacing": (0.5, "mm")}},
+    )
+    picked = x[[1, 3]].coords["x"]
+    assert not picked._compact()  # became an explicit coordinate
+    assert picked["values"].tolist() == [0.5, 1.5]
+
+
+def test_coordinate_converts_its_position_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        compact = XTensor(
+            torch.arange(4.0),
+            names=("x",),
+            coords={"x": {"spacing": (2.0, "mm")}},
+        )
+        assert compact.coords["x"].to("um")["spacing"]["value"] == 2000.0
+        explicit = XTensor(
+            torch.arange(3.0),
+            names=("t",),
+            coords={"t": XTensor(torch.tensor([1.0, 2.0, 3.0]), unit="mm")},
+        )
+        got = explicit.coords["t"].to("um")["values"].tolist()
+        assert got == [1000.0, 2000.0, 3000.0]
+
+
 def test_sel_selects_a_labelled_position_and_drops_the_axis():
     x = _labelled()
     y = x.sel(col="y")
