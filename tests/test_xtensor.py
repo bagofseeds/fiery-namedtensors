@@ -1834,6 +1834,50 @@ def test_data_unit_algebra_is_inert_without_a_backend():
     assert torch.exp(V).unit == "V"  # not dropped
 
 
+# -- attaching a unit by multiplication (Proposal 0003 phase 4, §2.4) ---------
+
+
+def test_multiplying_by_a_unit_attaches_it():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), names=("t",))
+        attached = x * u.mm  # a bare Unit: data unchanged, unit attached
+        assert attached.unit == "millimeter"
+        assert attached.tolist() == [0.0, 1.0, 2.0]
+        assert attached.names == ("t",)  # names ride through
+        assert x.unit is None  # the original is never annotated in place
+
+
+def test_multiplying_by_a_quantity_scales_the_data():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0))
+        scaled = x * (3 * u.mm)  # a Quantity carries a magnitude
+        assert scaled.unit == "millimeter"
+        assert scaled.tolist() == [0.0, 3.0, 6.0]
+
+
+def test_dividing_by_a_unit_derives_the_quotient_unit():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        v = XTensor(torch.ones(3), unit="V")
+        assert (v / u.s).unit == "volt / second"
+        assert (v * u.ohm).unit == "ohm * volt"
+
+
+def test_unit_multiplication_leaves_ordinary_operands_untouched():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.arange(3.0), unit="m")
+        assert (x * 2).tolist() == [0.0, 2.0, 4.0]  # scalar mul, not a unit
+        assert (2 * x).tolist() == [0.0, 2.0, 4.0]  # reflected scalar
+        assert (x * x).unit == "meter ** 2"  # two united tensors: algebra
+        assert (x / 2).unit == "meter"  # scalar divide keeps the unit
+
+
 # -- heterogeneous (per-axis) data units (Proposal 0003 phase 3) --------------
 
 

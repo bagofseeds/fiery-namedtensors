@@ -60,6 +60,16 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `unit_backend=None`). Heterogeneous matmul/einsum contraction is not yet
   wired (rides on base units only).
 
+- **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
+  attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in
+  `XTensor`'s operator **dunders** (`__mul__`/`__rmul__`/`__truediv__`), *not*
+  the `__torch_function__` overrides — otherwise pint's reflected `__rmul__`
+  grabs `x * <unit>` first and returns a wrapped object. `_attach_unit` splits
+  the operand into `(magnitude, unit)`, scales the data (through a **fresh
+  view**, so the original is never annotated in place), and combines the unit.
+  Non-unit operands fall straight back to `Tensor.__mul__` &c. `unit * x`
+  (unit on the left) is not interceptable — use `x * unit`.
+
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
 work-in-progress in `balbasty/magnetix`

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — phases 1-3 landed (uniform units + algebra + heterogeneous per-axis units); x*mm + heterogeneous matmul contraction next |
+| **Status** | Accepted — phases 1-3 + `x*mm` attach landed (uniform + algebra + heterogeneous per-axis units + attach-by-multiplication); heterogeneous matmul contraction, detach/`repr`, implicit conversion next |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); the *other* meaning of "unit" from Proposal 0001; builds on Proposal 0002 (structured coordinates) |
@@ -164,11 +164,17 @@ set_options(unit_backend="pint")
 (v / u.s).unit           # f"{v.unit}/s"
 ```
 
-Mechanically this lives in the pointwise `*` / `/` overrides: an operand the
-backend recognises as one of its **unit** or **quantity** objects is split into
-`(magnitude, unit)`; the magnitude multiplies the data (1 for a bare unit), the
-unit combines with `x.unit` through the backend's algebra. A backend that can't
-recognise such an operand (e.g. `None`) just treats it as today.
+Mechanically (landed in phase 4) this lives in `XTensor`'s operator **dunders**
+(`__mul__`/`__rmul__`/`__truediv__`), *not* the `__torch_function__` overrides:
+Python's protocol otherwise lets the unit library's reflected `__rmul__`
+intercept `x * <unit>` first and return a wrapped object instead of an
+`XTensor`. An operand the backend recognises as one of its **unit**/**quantity**
+objects is split into `(magnitude, unit)` — the magnitude multiplies the data (1
+for a bare unit, through a *fresh view* so the original is never annotated in
+place), the unit combines with `x.unit` through the backend's algebra. A
+non-unit operand (scalar, tensor, `unit_backend=None`) falls straight back to
+the normal path. `unit * x` (unit on the **left**) is claimed by the unit
+library before we are consulted, so the supported spelling is `x * unit`.
 
 ## 3. The `unit_policy` (drop by default, strict on request)
 
@@ -293,11 +299,12 @@ not restricting the model:
    per-position units under `unit_policy`. (Heterogeneous **matmul/einsum**
    contraction — requiring the contracted axis to be unit-uniform per side —
    still rides on base units only; it moves with phase 4.)
-4. **conveniences** — `x * u.mm` attach (deferred — Python's operator protocol
-   lets pint's reflected `__rmul__` intercept `x * <quantity>` before the
-   override runs, so it needs bespoke handling), heterogeneous matmul/einsum
-   contraction compat, `.magnitude`/detach, unit-aware `repr`, richer/implicit
-   conversions.
+4. **conveniences** — `x * u.mm` **attach** *(landed)* — caught at the operator
+   dunders (`__mul__`/`__rmul__`/`__truediv__`) rather than the
+   `__torch_function__` overrides, so the unit library's reflected `__rmul__`
+   never intercepts `x * <unit>` first (§2.4). Still open in this phase:
+   heterogeneous matmul/einsum contraction compat, `.magnitude`/detach,
+   unit-aware `repr`, richer/implicit conversions (the §7 open questions).
 
 ## 7. Open questions
 
@@ -312,7 +319,7 @@ not restricting the model:
 
 *Settled:* the property is `.unit` (not `.data_unit`); units are stored as
 canonical strings so the backend is swappable; `x * <unit>` attaches a unit
-(§2.4).
+(§2.4, landed in phase 4).
 
 ## Related note
 
