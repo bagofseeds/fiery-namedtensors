@@ -1,114 +1,74 @@
-# Proposal 0001 — Axis units
+# Proposal 0001 — Coordinate units
 
 | | |
 | --- | --- |
-| **Status** | Draft — converging (design below reflects discussion) |
+| **Status** | Draft — converging |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
-| **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); supersedes the units sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |
+| **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); builds on Proposal 0002 (structured coordinates); supersedes the "axis unit" sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |
 
 ## Abstract
 
-This proposal asks what — if anything — the axis-descriptor `unit` field (from
-#39) should *mean*. It is the **axis-name** unit, one of three distinct places a
-unit can attach (see *Scope*); the other two are separate proposals. **Nothing
-here is decided** — it is written to frame the discussion.
+A **coordinate unit** qualifies the *values along an axis* — a `t` axis whose
+ticks are `0.0, 0.5, 1.0` **seconds**. It is one of the two genuinely different
+things "unit" can mean (the other is the **data** unit — the unit of the tensor
+*values* — which is Proposal 0003). This is the *coordinate metric*: a property
+of the **dimension**, it composes trivially, and a conversion rescales the
+**ticks**, never the tensor data.
 
-## Scope — the three unit loci
+## Why this replaces "axis units"
 
-"Unit" attaches in three different places, each with its own owner and
-conversion story. This proposal is **only about the first**:
+An earlier draft proposed a unit on an axis *name* with nothing else. That was
+incomplete: a unit with no value describes nothing measurable. What an axis
+actually needs is the **coordinate metric** — the value at each position and its
+unit (equivalently, for a regular grid, a *spacing*). Spacing is just the
+regular special case of coordinate values (`Δ = 0.5 µm` ≡ ticks
+`0, 0.5, 1.0, … µm`). So the "axis unit" folds into **coordinate values + a
+unit**, and there is no separate axis-level unit concept.
 
-| # | Unit on… | Example | Proposal |
-| --- | --- | --- | --- |
-| **1** | **axis name** (descriptor) | `{"name": "x", "unit": "um"}` | **this one** |
-| 2 | **coordinate labels** | `coords={"t": [{"name": "t0", "value": 0.0, "unit": "s"}, …]}` | 0003 |
-| 3 | **tensor data** | `xtensor(volts, …)` (dimensional analysis) | later |
+## Representation — one form
 
-Why keep them apart: an **axis** unit is metadata on the dimension (there are no
-values to convert unless the axis also carries numeric coordinates — that's
-locus 2); a **data** unit drives dimensional analysis through arithmetic (locus
-3). Bundling them forced the hard locus-3 questions onto the small locus-1 one.
+A coordinate stays **a single tuple of per-position values** (today's labels;
+they may already be numbers). There is **no** second "compact spacing" type — a
+regular grid is written as its explicit values.
 
-## What an axis unit is (today)
+- **Without a unit backend** (`unit_backend=None`, the default) a coordinate is
+  a **plain tuple**, exactly as today — no unit, no conversion, string/label
+  semantics unchanged.
+- **With a backend selected** (`set_options(unit_backend="pint")`) a numeric
+  coordinate gains a **unit**, enabling normalised equality and conversion.
 
-The `unit` field on an axis descriptor is meant to state the physical unit of
-that **dimension** — an `x` axis in micrometres, a `t` axis in seconds. Today it
-is stored and carried like any other descriptor field (`_axis_meta`, keyed by
-dim name; merged across operands by `_merge_axis_meta`), but **never inspected**
-— it is an opaque string. It is *not* transformed by tensor arithmetic
-(multiplying two images does not make the `x` axis µm²).
+The unit lives on the axis descriptor's existing `unit` field (one unit per
+coordinate, since all ticks of one axis share it) — so
+`names=[{"name": "t", "unit": "s"}]` + `coords={"t": (0.0, 0.5, 1.0)}` is a time
+coordinate in seconds. (When the axis has no explicit coordinate, the unit is
+the metric of the implicit integer index — still just metadata.)
 
-```python
-x = xtensor(data, names=[{"name": "x", "type": "space", "unit": "um"}, "y"])
-x.axes[0]          # {'name': 'x', 'type': 'space', 'unit': 'um'}  (works now)
-x.T.axes[-1]       # unchanged — the unit follows its dim
-```
+## Behaviour under a backend
 
-So the axis unit already *rides along*. The only thing worth adding for an axis
-unit is **normalisation and normalised equality** — there is nothing to
-*convert* (a bare dimension has no values). This is deliberately modest; the
-interesting unit work is locus 2 (coordinate units), where values exist.
+- **Normalise + normalised equality** (from the axis-unit discussion): the
+  `unit` is normalised on set, and `_merge_axis_meta` compares normalised units
+  so `"um"` and `"micrometer"` agree.
+- **Conversion**: `x.to_unit(t="ms")` rescales the numeric coordinate values
+  (`0, 0.5, 1.0 → 0, 500, 1000`) and updates the unit — **the tensor data is
+  untouched**.
+- **Unit-aware `sel`** *(optional)*: `x.sel(t=Quantity(500, "ms"))` converts to
+  the coordinate's unit, then matches a position.
 
-## Design — an explicit `unit backend`
-
-Behaviour must **not** depend on whether pint happens to be importable; it is
-opt-in through a package **option**, so it is deterministic and reproducible.
-
-- A new option, **`unit_backend`**, **default `None`** — today's behaviour: a
-  `unit` is a free-form string, never inspected, string-compared.
-- Set it explicitly to opt into unit semantics — reusing the existing
-  `set_options` (which is *both* a permanent setter and a context manager, so no
-  new machinery):
-
-  ```python
-  from fiery.xtensor import set_options
-
-  set_options(unit_backend="pint")                 # for the session
-  with set_options(unit_backend="pint"):           # for a block
-      ...
-  ```
-
-- A backend is a small interface — `normalise(unit) -> str` (canonical form;
-  raising on an unparsable unit) and, from it, `equal(a, b)` (normalised
-  equality). Built-ins: `None` (identity + string equality) and `"pint"`;
-  the seam leaves room for `"astropy"` or a custom backend later.
-- Setting `unit_backend="pint"` when pint is not installed **raises at set
-  time** — a clear, immediate error rather than silent degradation.
-- **Never wraps the data.** The backend touches unit *symbols* only; the tensor
-  stays a plain `torch.Tensor` (autograd/GPU/dispatch intact).
-
-### What a backend changes
-
-With a non-`None` backend:
-
-1. a `unit` descriptor field is **normalised** when set (so `.axes` shows a
-   canonical spelling, and typos raise);
-2. `_merge_axis_meta` compares units by **normalised equality**, so `"um"` and
-   `"micrometer"` agree instead of conflicting as strings.
-
-No conversion, no arithmetic — that is all an *axis* unit can meaningfully do.
-
-## Backwards compatibility
-
-Fully compatible and **behaviour is unchanged by default** (`unit_backend` is
-`None`): a `unit` stays a free-form string. Semantics appear only when a backend
-is explicitly selected.
+Everything is gated on `unit_backend`; with `None` none of it activates and the
+package behaves exactly as it does now.
 
 ## Open questions
 
-1. **Normalise-on-store vs on-compare** — rewrite the stored `unit` to the
-   canonical spelling (so `.axes` is canonical, but the author's `"um"` becomes
-   `"micrometer"`), or keep the original and normalise only for equality?
-   *(Leaning: normalise on store — one source of truth.)*
-2. **Backend names / packaging** — ship `"pint"` as an optional `[units]` extra
-   (import lazily, error if selected-but-absent); reserve room for other
-   backends.
-3. This is the small half. **Locus 2 (coordinate units) is the priority** —
-   see Proposal 0003 — because that is where conversion actually applies.
+1. The conversion API surface (`to_unit`, unit-aware `sel`, a `Quantity` input
+   type) — how much to expose first.
+2. Whether a unit on an axis with **no** coordinate values is allowed (a pure
+   metric label) or requires coordinates to be meaningful.
+3. Backend interface shared with Proposal 0003 (`normalise`, `equal`, and — new
+   here — `convert(value, from, to)`).
 
 ## References
 
-- OME-NGFF axes — <https://ngff.openmicroscopy.org/latest/#axes-md>
-- pint — <https://pint.readthedocs.io>
-- Proposal 0002 (structured coordinates) — the substrate for locus 2
+- OME-NGFF axes + `coordinateTransformations` — <https://ngff.openmicroscopy.org/latest/>
+- Proposal 0002 (structured coordinates) — the substrate for numeric/rich coordinates
+- Proposal 0003 (data units) — the *other* meaning of "unit"
