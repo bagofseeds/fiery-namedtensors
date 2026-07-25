@@ -1698,6 +1698,70 @@ def test_to_unit_converts_the_data_by_the_conversion_factor():
             XTensor(torch.ones(2)).to_unit("V")
 
 
+def _united(**kw):
+    return {name: XTensor(torch.ones(3), unit=u) for name, u in kw.items()}
+
+
+def test_data_unit_algebra_mul_div_pow():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        u = _united(V="V", A="A", s="s")
+        V, A, s = u["V"], u["A"], u["s"]
+        assert (V * A).unit == "ampere * volt"  # product
+        assert (V / s).unit == "volt / second"  # quotient
+        assert (V * 2).unit == "volt"  # a scalar is dimensionless
+        assert (V**2).unit == "volt ** 2"  # power (via the `**` operator)
+
+
+def test_data_unit_algebra_add_and_compare():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        V = XTensor(torch.ones(3), unit="V")
+        A = XTensor(torch.ones(3), unit="A")
+        assert (V + V).unit == "volt"  # same unit kept
+        assert (V + A).unit is None  # incompatible -> dropped (default policy)
+        assert (V < V).unit is None  # comparison result is unitless
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="incompatible units"):
+                _ = V + A
+
+
+def test_data_unit_matmul_multiplies_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        M = XTensor(torch.ones(2, 2), unit="V")
+        N = XTensor(torch.ones(2, 2), unit="A")
+        assert (M @ N).unit == "ampere * volt"
+
+
+def test_data_unit_transcendental_requires_dimensionless():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        V = XTensor(torch.ones(3), unit="V")
+        assert torch.exp(V).unit is None  # drop the unit (default policy)
+        assert torch.log(XTensor(torch.ones(3))).unit is None  # unitless
+        with set_options(unit_policy="strict"):
+            with pytest.raises(ValueError, match="dimensionless"):
+                torch.exp(V)
+
+
+def test_data_unit_algebra_preserves_autograd():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        leaf = torch.ones(3, requires_grad=True)
+        A = XTensor(torch.ones(3), unit="A")
+        (XTensor(leaf, unit="V") * A).sum().backward()
+        assert leaf.grad is not None
+
+
+def test_data_unit_algebra_is_inert_without_a_backend():
+    # no backend: no algebra, the unit just rides along opaquely
+    V = XTensor(torch.ones(3), unit="V")
+    A = XTensor(torch.ones(3), unit="A")
+    assert (V * A).unit == "V"  # carried from the left operand, not combined
+    assert torch.exp(V).unit == "V"  # not dropped
+
+
 def test_combine_axes_accepts_a_per_field_policy():
     a = XTensor(
         torch.ones(3),

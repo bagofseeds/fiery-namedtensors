@@ -111,6 +111,14 @@ def compatible(a: tx.Any, b: tx.Any) -> bool:
     return ureg.Unit(a).dimensionality == ureg.Unit(b).dimensionality
 
 
+def pow_(a: tx.Any, n: tx.Any) -> tx.Any:
+    """A unit raised to the (scalar) power `n`; `None` stays `None`."""
+    if a is None:
+        return None
+    _, ureg = _pint()
+    return str(ureg.Unit(a) ** n)
+
+
 def dimensionless(a: tx.Any) -> bool:
     """Whether a unit is dimensionless (`None` counts as dimensionless)."""
     if a is None:
@@ -119,3 +127,25 @@ def dimensionless(a: tx.Any) -> bool:
         return False
     _, ureg = _pint()
     return ureg.Unit(a).dimensionless
+
+
+# -- recognising the backend's own unit / quantity objects (for `x * mm`) -----
+
+
+def is_unit_like(obj: tx.Any) -> bool:
+    """Whether `obj` is a `Unit`/`Quantity` of the active backend."""
+    if active() != "pint":
+        return False
+    pint, _ = _pint()
+    return isinstance(obj, (pint.Unit, pint.Quantity))
+
+
+def split_quantity(obj: tx.Any) -> tx.Tuple[tx.Any, str]:
+    """
+    Decompose a backend unit/quantity into `(magnitude, unit_string)`: a bare
+    `Unit` is `(1.0, "unit")`; a `Quantity` is `(its magnitude, its units)`.
+    """
+    pint, _ = _pint()
+    if isinstance(obj, pint.Unit):
+        return 1.0, str(obj)
+    return obj.magnitude, str(obj.units)

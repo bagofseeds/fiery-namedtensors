@@ -40,8 +40,12 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   tensor **values**, self-managed in `_data_unit` (in `_ATTRS`, so it
   propagates like names/coords). `.unit` gets/sets it; `unit=` is a constructor
   kwarg; `to_unit` converts (rescaling data). Opaque unless the `unit_backend`
-  option selects one (`"pint"` → validate/normalise/convert via `_units`);
-  dimensional **algebra** on ops is a later phase.
+  option selects one (`"pint"` → validate/normalise/convert via `_units`).
+  Under a backend the ops do dimensional **algebra** (`*`/`/`/`pow`/matmul
+  multiply/divide units, `add`/compare need compatible units, transcendentals
+  require dimensionless) — an invalid step drops the unit, or raises under
+  `unit_policy="strict"`. See the POINTWISE `_UNIT_RULE`/`_binary_unit` and the
+  transcendental factory.
 
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
