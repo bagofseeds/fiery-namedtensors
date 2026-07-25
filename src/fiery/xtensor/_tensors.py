@@ -623,6 +623,26 @@ class XTensor(ExtendedTensor):
                         if sliced is not None:
                             new_coords[name] = tuple(sliced)
             out._coords = new_coords
+            # Selecting a single position on a unit-carrying axis collapses
+            # that axis away; its per-position data unit folds into the base
+            # data unit (effective unit = base * product of coord units).
+            if _units.active():
+                folded = self.__dict__.get("_data_unit")
+                kept = {src for src in sources if src is not None}
+                changed = False
+                for ax, in_name in enumerate(in_names):
+                    if ax in kept or in_name is None:
+                        continue
+                    piece = arrayutils._get_slicer_by_index(unrolled, ax)
+                    if not isinstance(piece, int):
+                        continue
+                    labels = coords.get(in_name)
+                    unit = _label_unit(labels[piece]) if labels else None
+                    if unit is not None:
+                        folded = _units.mul(folded, unit)
+                        changed = True
+                if changed:
+                    out._data_unit = folded
         return out
 
     def isel(self, **indexers: tx.Any) -> tx.Self:
@@ -852,6 +872,16 @@ def _label_name(label: tx.Any) -> tx.Optional[str]:
         return label
     if isinstance(label, dict):
         return label.get("name")
+    return None
+
+
+def _label_unit(label: tx.Any) -> tx.Optional[str]:
+    """
+    A structured label's **per-position data unit** (its `"unit"` field), or
+    `None` (Proposal 0003 phase 3 — heterogeneous, per-axis data units).
+    """
+    if isinstance(label, dict):
+        return label.get("unit")
     return None
 
 
@@ -1207,24 +1237,84 @@ def _resolve_reduce_dim(input: XTensor, dim: tx.Any) -> tx.Any:
     return positions[0] if len(positions) == 1 else positions
 
 
+#: Sentinel: an axis's per-position units disagree (dimensionally invalid).
+_INCOMPATIBLE = object()
+
+
+def _uniform_unit(labels: LabelsT) -> tx.Any:
+    """
+    The single per-position data unit shared by every label on an axis:
+    `None` if the axis carries no units, the common unit if they all agree
+    (under the backend), or `_INCOMPATIBLE` when they differ or only some
+    positions carry one.
+    """
+    units = [_label_unit(one) for one in labels]
+    present = [u for u in units if u is not None]
+    if not present:
+        return None
+    first = present[0]
+    if len(present) != len(units):
+        return _INCOMPATIBLE
+    if any(not _units.equal(first, other) for other in present[1:]):
+        return _INCOMPATIBLE
+    return first
+
+
+def _reduce_unit(input: XTensor, removed: tx.Set) -> dict:
+    """
+    Fold the per-position units of any reduced unit-carrying axis into the base
+    data unit (a reduction sums positions, so their unit must be uniform).
+    Incompatible units are dimensionally invalid: drop the unit (default) or
+    raise under `unit_policy="strict"`. Returns an override for `_carry` (empty
+    when nothing changes, so the base unit propagates untouched).
+    """
+    if not _units.active():
+        return {}
+    coords = input.__dict__.get("_coords") or {}
+    if not coords:
+        return {}
+    names = input.names
+    base = input.__dict__.get("_data_unit")
+    changed = False
+    for ax in removed:
+        name = names[ax] if ax < len(names) else None
+        labels = coords.get(name) if name is not None else None
+        if not labels:
+            continue
+        unit = _uniform_unit(labels)
+        if unit is _INCOMPATIBLE:
+            _unit_strict(True, f"reducing incompatible units on axis {name!r}")
+            return {"_data_unit": None}
+        if unit is not None:
+            base = _units.mul(base, unit)
+            changed = True
+    return {"_data_unit": base} if changed else {}
+
+
 def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     """Recompute the name metadata for a dimension-reducing op's result."""
     if not isinstance(result, Tensor):
         # e.g. a (values, indices) namedtuple: left to a bespoke override.
         return result
     ndim = input.ndim
-    # `keepdim` is inferable from the output rank: a reduction either removes
-    # the reduced axes or keeps them as size-1.
-    if dim is not None and result.ndim == ndim:
-        return _carry(input, result, _axis_names=input.names)
     if dim is None:
         removed = set(range(ndim))
     else:
         dims = dim if isinstance(dim, (tuple, list)) else (dim,)
         removed = {d % ndim for d in dims}
+    unit_kw = _reduce_unit(input, removed)
+    # `keepdim` is inferable from the output rank: a reduction either removes
+    # the reduced axes or keeps them as size-1. Either way the reduced axis's
+    # coordinates go, so its folded unit still applies.
+    if dim is not None and result.ndim == ndim:
+        return _carry(input, result, _axis_names=input.names, **unit_kw)
     names = tuple(n for i, n in enumerate(input.names) if i not in removed)
     return _carry(
-        input, result, _axis_names=names, _coords=_coords_for(input, names)
+        input,
+        result,
+        _axis_names=names,
+        _coords=_coords_for(input, names),
+        **unit_kw,
     )
 
 
