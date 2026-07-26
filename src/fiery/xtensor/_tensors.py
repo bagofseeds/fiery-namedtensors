@@ -926,7 +926,7 @@ class XTensor(ExtendedTensor):
         if not coord._compact():
             raise NotImplementedError(
                 f"interp on the irregular coordinate {name!r} is not "
-                "supported yet (regular spacing/origin only for now)"
+                "supported yet (regular spacing/origin only for now; see #73)"
             )
         spacing = dict.__getitem__(coord, "spacing")
         origin = dict.get(coord, "origin")

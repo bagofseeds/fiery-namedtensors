@@ -148,7 +148,8 @@ are usually resampled.
 The first slice supports **regular** (compact `spacing`/`origin`) coordinates
 only — the affine value→index map is exact. Interpolation over an **irregular**
 (explicit, non-uniform) coordinate needs a monotonic value→index inversion
-(a searchsorted-style step) and is deferred to its own issue; calling `.interp`
+(a searchsorted-style step) and is deferred to
+[#73](https://github.com/bagofseeds/fiery-xtensor/issues/73); calling `.interp`
 on one raises `NotImplementedError` for now.
 
 ## What the first slice implements
@@ -167,7 +168,8 @@ on one raises `NotImplementedError` for now.
 
 ## Open questions (for discussion)
 
-1. **Irregular-coordinate interpolation** — the deferred half above. Worth an
+1. **Irregular-coordinate interpolation** — the deferred half above
+   ([#73](https://github.com/bagofseeds/fiery-xtensor/issues/73)). Worth an
    O(log n) searchsorted inversion, or is regular-only enough in practice?
 2. **Range selection** on `.sel` — `x.sel(t=slice("1s", "5s"))` (a value range
    → a contiguous slice). Natural and useful; not in this slice.
