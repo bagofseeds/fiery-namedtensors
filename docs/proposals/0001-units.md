@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Accepted — implementing. Phases 1-2 landed: compact numeric coordinates (`Unitful`/magic-dict family, `coords={dim: {spacing, origin}}`, `coords[dim]["values"]` materialisation, autograd-preserving) **and** explicit numeric coordinates (a unitful tensor), affine-correct slicing (`spacing *= step`, `origin += start*spacing`), and `Coordinate.to(unit)` conversion. Next: the `axes=`/`names=`-strings-only constructor cleanup (phase 3). Deferred: numeric `.sel` (#66), multiple coords per axis (#65) |
+| **Status** | Accepted — implemented (phases 1-3). Compact + explicit numeric coordinates (`Unitful`/magic-dict family, `coords={dim: {spacing, origin}}` or a unitful tensor, `coords[dim]["values"]` materialisation, affine-correct slicing, `Coordinate.to(unit)`, autograd-preserving) **and** the constructor cleanup: `names=` takes bare strings only, `axes=` is the general per-axis container (descriptors with `type`/`unit`/`orientation`/`coord`/`labels`), `names`/`coords` are shortcuts into it. Deferred: numeric `.sel` (#66), multiple coords per axis (#65) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-25 |
 | **Tracking** | part of [#3](https://github.com/bagofseeds/fiery-xtensor/issues/3); builds on Proposal 0002 (structured coordinates); multi-coordinate follow-up in [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); supersedes the "axis unit" sketch in [#39](https://github.com/bagofseeds/fiery-xtensor/issues/39) / [#48](https://github.com/bagofseeds/fiery-xtensor/issues/48) |

@@ -6,13 +6,15 @@ dimension the way coordinates do, merge across name-aware ops, and can address
 whole groups of axes at once.
 
 A name can be enriched into an [OME-NGFF](https://ngff.openmicroscopy.org)-style
-**descriptor** — a dict with a required `name` plus optional `type`, `unit`, and
-`orientation` — by passing it in place of a bare string:
+**descriptor** — a dict with a required `name` plus optional `type`, `unit`,
+`orientation` (and a `coord`/`labels`, see [Coordinates](coordinates.md)) — by
+passing it through **`axes=`**. (`names=` takes bare strings only; descriptors
+go through `axes=`.)
 
 ```python
 x = xtensor(
     torch.zeros(2, 3, 4),
-    names=[
+    axes=[
         {"name": "b", "type": "batch"},
         "h",
         {"name": "w", "type": "space", "orientation": "left-to-right"},
@@ -22,6 +24,9 @@ x.names          # ('b', 'h', 'w')          — the bare, ergonomic view
 x.axes           # full descriptors, one dict per axis
 x.flip("w").axes[2]["orientation"]   # 'right-to-left'  — flip reverses it
 ```
+
+`axes=` is the general per-axis container; `names=` (bare strings) and
+`coords=` are shortcuts into it.
 
 Descriptor fields are keyed by dimension name, so — like coordinates — they
 follow their dimension through `permute`, reductions, `rename`, etc. An
@@ -38,8 +43,8 @@ context manager:
 ```python
 from fiery.xtensor import set_options
 
-a = xtensor(torch.ones(3), names=[{"name": "x", "type": "space"}])
-b = xtensor(torch.ones(3), names=[{"name": "x", "type": "time"}])
+a = xtensor(torch.ones(3), axes=[{"name": "x", "type": "space"}])
+b = xtensor(torch.ones(3), axes=[{"name": "x", "type": "time"}])
 (a + b).axes                      # ({'name': 'x'},)  — the clash drops 'type'
 
 with set_options(combine_axes="strict"):

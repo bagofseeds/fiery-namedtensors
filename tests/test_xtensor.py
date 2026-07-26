@@ -515,7 +515,7 @@ def test_names_setter_accepts_ellipsis():
 def test_names_ellipsis_with_a_descriptor_dict():
     x = XTensor(
         torch.zeros(2, 3, 4),
-        names=[{"name": "b", "type": "batch"}, ..., "w"],
+        axes=[{"name": "b", "type": "batch"}, ..., "w"],
     )
     assert x.names == ("b", None, "w")
     assert x.axes[0] == {"name": "b", "type": "batch"}
@@ -1324,7 +1324,7 @@ def test_einsum_keeps_descriptors_of_surviving_axes_only():
     # descriptor is dropped with the axis — no leak onto the survivor.
     a = XTensor(
         torch.zeros(5, 2, 3),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             "i",
             {"name": "j", "type": "k"},
@@ -1343,7 +1343,7 @@ def test_einsum_keeps_descriptors_of_surviving_axes_only():
 def test_tensordot_keeps_descriptors_of_surviving_axes_only():
     a = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "a", "type": "space"}, {"name": "k", "type": "chan"}],
+        axes=[{"name": "a", "type": "space"}, {"name": "k", "type": "chan"}],
     )
     b = XTensor(torch.zeros(3, 4), names=("k", "n"))
     out = torch.tensordot(a, b, dims=1)
@@ -1356,11 +1356,11 @@ def test_matmul_keeps_each_operands_surviving_descriptor():
     # right operand's trailing axis used to lose it.
     a = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "m", "type": "space"}, {"name": "k", "type": "chan"}],
+        axes=[{"name": "m", "type": "space"}, {"name": "k", "type": "chan"}],
     )
     b = XTensor(
         torch.zeros(3, 4),
-        names=[{"name": "k", "type": "chan"}, {"name": "n", "type": "time"}],
+        axes=[{"name": "k", "type": "chan"}, {"name": "n", "type": "time"}],
     )
     out = a @ b
     assert out.names == ("m", "n")
@@ -1373,11 +1373,11 @@ def test_matmul_keeps_each_operands_surviving_descriptor():
 def test_cat_merges_descriptors_keeping_agreement_dropping_conflicts():
     a = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
+        axes=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
     )
     b = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "time"}],
+        axes=[{"name": "r", "type": "space"}, {"name": "c", "type": "time"}],
     )
     out = torch.cat([a, b], dim=0)
     # "r" agrees -> kept; "c" conflicts (chan vs time) -> field dropped
@@ -1387,7 +1387,7 @@ def test_cat_merges_descriptors_keeping_agreement_dropping_conflicts():
 def test_stack_keeps_existing_descriptors_new_axis_unnamed():
     a = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
+        axes=[{"name": "r", "type": "space"}, {"name": "c", "type": "chan"}],
     )
     out = torch.stack([a, a], dim=0)
     assert out.axes == (
@@ -1398,8 +1398,8 @@ def test_stack_keeps_existing_descriptors_new_axis_unnamed():
 
 
 def test_combine_op_strict_policy_raises_on_conflicting_descriptor():
-    a = XTensor(torch.zeros(2, 3), names=["r", {"name": "c", "type": "chan"}])
-    b = XTensor(torch.zeros(2, 3), names=["r", {"name": "c", "type": "time"}])
+    a = XTensor(torch.zeros(2, 3), axes=["r", {"name": "c", "type": "chan"}])
+    b = XTensor(torch.zeros(2, 3), axes=["r", {"name": "c", "type": "time"}])
     with set_options(combine_axes="strict"):
         with pytest.raises(ValueError, match="conflicting 'type'"):
             torch.cat([a, b], dim=0)
@@ -1712,7 +1712,7 @@ def test_pointwise_one_sided_labels_stay_positional():
 def test_descriptor_axes_expose_extra_fields_while_names_stay_bare():
     x = XTensor(
         torch.zeros(2, 3, 4),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             "h",
             {"name": "w", "type": "space", "orientation": "left-to-right"},
@@ -1733,15 +1733,44 @@ def test_axes_keyword_is_an_alias_for_names():
 
 def test_descriptor_requires_a_name_and_valid_orientation():
     with pytest.raises(ValueError, match="must have a 'name'"):
-        XTensor(torch.zeros(2), names=[{"type": "space"}])
+        XTensor(torch.zeros(2), axes=[{"type": "space"}])
     with pytest.raises(ValueError, match="a}-to-{b"):
-        XTensor(torch.zeros(2), names=[{"name": "x", "orientation": "lr"}])
+        XTensor(torch.zeros(2), axes=[{"name": "x", "orientation": "lr"}])
+
+
+def test_names_takes_strings_only_descriptors_go_through_axes():
+    with pytest.raises(TypeError, match="descriptor dict through axes="):
+        XTensor(torch.zeros(2), names=[{"name": "x", "type": "space"}])
+
+
+def test_axes_embeds_coordinates():
+    x = XTensor(
+        torch.zeros(3, 4),
+        axes=[
+            {"name": "c", "labels": ["r", "g", "b"]},
+            {"name": "x", "type": "space", "coord": {"spacing": (0.5, "mm")}},
+        ],
+    )
+    assert x.names == ("c", "x")
+    assert x.coords["c"] == ("r", "g", "b")  # `labels` -> categorical coord
+    assert x.coords["x"]["values"].tolist() == [0.0, 0.5, 1.0, 1.5]  # `coord`
+    assert x.axes[1] == {"name": "x", "type": "space"}  # meta kept
+
+
+def test_axes_and_coords_merge_at_construction():
+    x = XTensor(
+        torch.zeros(2, 3),
+        axes=[{"name": "a"}, {"name": "b", "type": "chan"}],
+        coords={"b": ["p", "q", "r"]},
+    )
+    assert x.coords["b"] == ("p", "q", "r")  # coords= merges onto axes=
+    assert x.axes[1] == {"name": "b", "type": "chan"}
 
 
 def test_axis_meta_follows_the_dimension_through_ops():
     x = XTensor(
         torch.zeros(2, 3, 4),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             "h",
             {"name": "w", "type": "space"},
@@ -1757,14 +1786,14 @@ def test_axis_meta_follows_the_dimension_through_ops():
 
 
 def test_rename_moves_axis_metadata_to_the_new_name():
-    x = XTensor(torch.zeros(2, 3), names=[{"name": "w", "type": "space"}, "h"])
+    x = XTensor(torch.zeros(2, 3), axes=[{"name": "w", "type": "space"}, "h"])
     assert x.rename(w="width").axes[0] == {"name": "width", "type": "space"}
 
 
 def test_flip_reverses_the_orientation_of_a_flipped_axis():
     x = XTensor(
         torch.zeros(2, 3),
-        names=[{"name": "y", "orientation": "top-to-bottom"}, "x"],
+        axes=[{"name": "y", "orientation": "top-to-bottom"}, "x"],
     )
     assert x.flip("y").axes[0]["orientation"] == "bottom-to-top"
     # an axis without an orientation is untouched
@@ -1774,7 +1803,7 @@ def test_flip_reverses_the_orientation_of_a_flipped_axis():
 def test_descriptors_and_coordinates_coexist():
     z = XTensor(
         torch.zeros(3),
-        names=[{"name": "c", "type": "channel"}],
+        axes=[{"name": "c", "type": "channel"}],
         coords={"c": ("r", "g", "b")},
     )
     assert z.axes == ({"name": "c", "type": "channel"},)
@@ -1798,8 +1827,8 @@ def _tm(name):
 def test_broadcast_keeps_descriptors_of_each_disjoint_dim():
     # both operands contribute a dim; each keeps its own descriptor (the
     # right operand's used to be dropped).
-    a = XTensor(torch.ones(2), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_tm("y")])
+    a = XTensor(torch.ones(2), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_tm("y")])
     assert (a + b).axes == (
         {"name": "x", "type": "space"},
         {"name": "y", "type": "time"},
@@ -1807,8 +1836,8 @@ def test_broadcast_keeps_descriptors_of_each_disjoint_dim():
 
 
 def test_shared_dim_keeps_agreeing_fields_and_one_sided_fields():
-    a = XTensor(torch.ones(3), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_sp("x")])
+    a = XTensor(torch.ones(3), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_sp("x")])
     assert (a + b).axes == ({"name": "x", "type": "space"},)
     # a field on only one side is not a conflict -- it is kept
     c = XTensor(torch.ones(3), names=["x"])
@@ -1816,16 +1845,16 @@ def test_shared_dim_keeps_agreeing_fields_and_one_sided_fields():
 
 
 def test_conflicting_field_is_dropped_and_order_independent():
-    a = XTensor(torch.ones(3), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_tm("x")])
+    a = XTensor(torch.ones(3), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_tm("x")])
     # type conflicts (space vs time) -> the field drops; the bare name stays
     assert (a + b).axes == ({"name": "x"},)
     assert (b + a).axes == ({"name": "x"},)  # no left-operand bias
 
 
 def test_strict_policy_raises_on_conflict_and_restores_after_block():
-    a = XTensor(torch.ones(3), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_tm("x")])
+    a = XTensor(torch.ones(3), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_tm("x")])
     with set_options(combine_axes="strict"):
         with pytest.raises(ValueError, match="conflicting 'type'"):
             _ = a + b
@@ -1836,16 +1865,16 @@ def test_strict_policy_raises_on_conflict_and_restores_after_block():
 
 
 def test_override_policy_lets_the_left_operand_win():
-    a = XTensor(torch.ones(3), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_tm("x")])
+    a = XTensor(torch.ones(3), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_tm("x")])
     with set_options(combine_axes="override"):
         assert (a + b).axes == ({"name": "x", "type": "space"},)
         assert (b + a).axes == ({"name": "x", "type": "time"},)
 
 
 def test_drop_policy_removes_all_descriptors():
-    a = XTensor(torch.ones(2), names=[_sp("x")])
-    b = XTensor(torch.ones(3), names=[_tm("y")])
+    a = XTensor(torch.ones(2), axes=[_sp("x")])
+    b = XTensor(torch.ones(3), axes=[_tm("y")])
     with set_options(combine_axes="drop"):
         assert (a + b).axes == ({"name": "x"}, {"name": "y"})
 
@@ -2212,11 +2241,11 @@ def test_einsum_and_tensordot_multiply_operand_units():
 def test_combine_axes_accepts_a_per_field_policy():
     a = XTensor(
         torch.ones(3),
-        names=[{"name": "x", "type": "space", "unit": "um"}],
+        axes=[{"name": "x", "type": "space", "unit": "um"}],
     )
     b = XTensor(
         torch.ones(3),
-        names=[{"name": "x", "type": "time", "unit": "um"}],
+        axes=[{"name": "x", "type": "time", "unit": "um"}],
     )
     # default drops every field, but an agreeing "unit" is kept
     with set_options(combine_axes={"*": "drop", "unit": "raise"}):
@@ -2224,8 +2253,8 @@ def test_combine_axes_accepts_a_per_field_policy():
 
 
 def test_per_field_raise_policy_fires_only_for_that_field():
-    a = XTensor(torch.ones(3), names=[{"name": "x", "unit": "um"}])
-    b = XTensor(torch.ones(3), names=[{"name": "x", "unit": "mm"}])
+    a = XTensor(torch.ones(3), axes=[{"name": "x", "unit": "um"}])
+    b = XTensor(torch.ones(3), axes=[{"name": "x", "unit": "mm"}])
     with set_options(combine_axes={"*": "drop", "unit": "raise"}):
         with pytest.raises(ValueError, match="conflicting 'unit'"):
             _ = a + b
@@ -2234,11 +2263,11 @@ def test_per_field_raise_policy_fires_only_for_that_field():
 def test_per_field_override_keeps_the_left_value_for_one_field():
     a = XTensor(
         torch.ones(3),
-        names=[{"name": "x", "type": "space", "orientation": "left-to-right"}],
+        axes=[{"name": "x", "type": "space", "orientation": "left-to-right"}],
     )
     b = XTensor(
         torch.ones(3),
-        names=[{"name": "x", "type": "space", "orientation": "right-to-left"}],
+        axes=[{"name": "x", "type": "space", "orientation": "right-to-left"}],
     )
     with set_options(combine_axes={"orientation": "override"}):
         # "type" agrees (kept); "orientation" takes the left operand's value
@@ -2247,8 +2276,8 @@ def test_per_field_override_keeps_the_left_value_for_one_field():
 
 
 def test_unlisted_fields_fall_back_to_drop_conflicts():
-    a = XTensor(torch.ones(3), names=[{"name": "x", "type": "space"}])
-    b = XTensor(torch.ones(3), names=[{"name": "x", "type": "time"}])
+    a = XTensor(torch.ones(3), axes=[{"name": "x", "type": "space"}])
+    b = XTensor(torch.ones(3), axes=[{"name": "x", "type": "time"}])
     # only "unit" is customised; "type" uses the drop_conflicts default
     with set_options(combine_axes={"unit": "strict"}):
         assert (a + b).axes == ({"name": "x"},)
@@ -2257,7 +2286,7 @@ def test_unlisted_fields_fall_back_to_drop_conflicts():
 def test_movedim_by_type_moves_the_whole_block_to_the_back():
     x = XTensor(
         torch.zeros(2, 3, 4, 5),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             {"name": "h", "type": "space"},
             {"name": "c", "type": "channel"},
@@ -2273,7 +2302,7 @@ def test_movedim_by_type_moves_the_whole_block_to_the_back():
 def test_moveaxis_by_type_moves_the_block_to_the_front():
     x = XTensor(
         torch.zeros(2, 3, 4, 5),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             {"name": "h", "type": "space"},
             {"name": "c", "type": "channel"},
@@ -2288,7 +2317,7 @@ def test_moveaxis_by_type_moves_the_block_to_the_front():
 def test_sum_by_type_reduces_every_matching_axis():
     y = XTensor(
         torch.ones(2, 3, 4),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             {"name": "c1", "type": "channel"},
             {"name": "c2", "type": "channel"},
@@ -2304,7 +2333,7 @@ def test_single_match_query_stays_prod_safe():
     # single-`dim`-only reducers (`prod`) accept it
     y = XTensor(
         torch.ones(2, 3, 4),
-        names=[
+        axes=[
             {"name": "b", "type": "batch"},
             {"name": "c1", "type": "channel"},
             {"name": "c2", "type": "channel"},

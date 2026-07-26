@@ -27,9 +27,12 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `XTensor`**. Deliberately *not* subclasses: an op that drops the labelled
   axis must yield an ordinary `XTensor`, so the type never outlives its
   meaning (the removed `XVector`/`XMatrix` subclasses did not maintain that).
-- **axis descriptors** (OME-NGFF-style, #39): a name may be given as a dict
-  `{"name": "x", "type": "space", "orientation": "left-to-right"}` instead of a
-  bare string. The extra fields (`type`/`unit`/`orientation`) live in
+- **axis descriptors** (OME-NGFF-style, #39): an axis may be given as a dict
+  `{"name": "x", "type": "space", "orientation": "left-to-right"}` through
+  **`axes=`** (the general per-axis container; `names=` takes bare strings only
+  and rejects dicts — `_parse_axes` splits an `axes=` spec into names +
+  `_axis_meta` + coord specs, and a descriptor's `coord`/`labels` key feeds the
+  `coords` setter). The extra fields (`type`/`unit`/`orientation`) live in
   `_axis_meta`, **keyed by dim name** (so they follow the dim exactly like
   coords). `.names` stays the bare view; `.axes` returns the full descriptors.
   `flip` reverses a flipped axis' `orientation`; `rename` remaps meta keys.
