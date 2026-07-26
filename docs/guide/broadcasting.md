@@ -40,9 +40,10 @@ so *always* aligns by name. Here, a single unnamed axis on one operand drops
 the **whole** op to positional — even the axes that *are* named. This is a
 deliberately conservative first cut (positional broadcasting is unambiguous);
 whether a *partially* named operand should still align its named axes by name,
-and only treat the unnamed ones positionally, is an open design question. If you
-rely on name-alignment, name **every** axis of both operands (`refine_names`
-fills the gaps).
+and only treat the unnamed ones positionally, is an open design question
+([#75](https://github.com/bagofseeds/fiery-xtensor/issues/75)). If you rely on
+name-alignment, name **every** axis of both operands (`refine_names` fills the
+gaps).
 
 ## Coordinate alignment
 

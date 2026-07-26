@@ -64,8 +64,8 @@ This page lists where the two diverge, in both directions.
   any axis is unnamed (or an operand is a plain tensor / scalar) it uses
   ordinary positional broadcasting. xarray has no unnamed dims, so it always
   aligns by name. (Whether a *partially* named operand should still align its
-  named axes is an open question — see
-  [broadcasting](broadcasting.md).)
+  named axes is an open question — see [broadcasting](broadcasting.md) and
+  [#75](https://github.com/bagofseeds/fiery-xtensor/issues/75).)
 - **Selection vs interpolation are separate verbs.** Like xarray, `.sel` picks
   an existing position (exact or `method="nearest"`) and `.interp` computes
   values off the grid; numeric `.sel`/`.interp` are covered by
