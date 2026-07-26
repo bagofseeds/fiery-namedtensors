@@ -821,9 +821,14 @@ class XTensor(ExtendedTensor):
             slicer[_resolve_axis(self.names, name)] = index
         return self[tuple(slicer)]
 
-    def sel(self, **indexers: tx.Any) -> tx.Self:
+    def sel(
+        self,
+        method: tx.Optional[str] = None,
+        tolerance: tx.Any = None,
+        **indexers: tx.Any,
+    ) -> tx.Self:
         """
-        Select by coordinate **label** along named dimensions.
+        Select by coordinate **label** (or numeric value) along named dims.
 
         `x.sel(channel="red")` selects the position whose label is `"red"`. A
         list of labels selects several positions; a single label drops the
@@ -831,6 +836,11 @@ class XTensor(ExtendedTensor):
         `str` matches a label's `"name"`, and a **dict** queries the labels'
         fields (`x.sel(channel={"type": "signal"})`), keeping the axis and
         selecting every match.
+
+        On a **numeric** coordinate (Proposal 0001), the selector is a value
+        (`x.sel(t="2s")`): an (near-)exact match by default, or the nearest
+        tick with `method="nearest"` (optionally capped by `tolerance`), the
+        xarray way (Proposal 0004).
         """
         coords = self.coords
         positional = {}
@@ -838,6 +848,11 @@ class XTensor(ExtendedTensor):
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
             labels = coords[name]
+            if isinstance(labels, Coordinate):
+                positional[name] = _numeric_select(
+                    labels, label, method, tolerance, name
+                )
+                continue
             if isinstance(label, dict):
                 positional[name] = _positions_to_index(
                     _match_positions(labels, label)
@@ -1173,6 +1188,72 @@ def _positions_to_index(positions: list) -> tx.Any:
     if positions and positions == list(range(positions[0], positions[-1] + 1)):
         return slice(positions[0], positions[-1] + 1)
     return positions
+
+
+#: Relative tolerance for an "exact" numeric-coordinate match (floats).
+_EXACT_MATCH_REL = 1e-6
+
+
+def _selector_value(selector: tx.Any, unit: tx.Optional[str]) -> float:
+    """
+    A numeric selector as a plain float in the coordinate's position `unit`. A
+    bare number is taken as already in that unit; a unitful selector (`"2mm"`,
+    `(2, "mm")`, a pint quantity, ...) is converted under an active backend.
+    """
+    if isinstance(selector, (int, float)):
+        return float(selector)
+    quantity = _as_unitful(selector)
+    value, sel_unit = quantity["value"], quantity["unit"]
+    if (
+        unit
+        and sel_unit
+        and _units.active()
+        and not _units.equal(sel_unit, unit)
+    ):
+        value = value * _units.factor(sel_unit, unit)
+    return float(value)
+
+
+def _numeric_select(
+    coord: "Coordinate",
+    selector: tx.Any,
+    method: tx.Optional[str],
+    tolerance: tx.Any,
+    name: str,
+) -> tx.Any:
+    """
+    Resolve a value-based selector against a numeric `Coordinate` to integer
+    position(s) (Proposal 0004). `method=None` requires an (near-)exact match;
+    `method="nearest"` snaps to the closest tick; `tolerance` (a delta in the
+    position unit) caps the allowed gap.
+    """
+    materialised = coord["values"]
+    values = materialised.as_subclass(Tensor)
+    unit = materialised.unit
+    # a `list` selects several positions; a `tuple` is a unitful (value, unit)
+    is_many = isinstance(selector, list)
+    wanted = list(selector) if is_many else [selector]
+    tol = None if tolerance is None else _selector_value(tolerance, unit)
+    positions = []
+    for one in wanted:
+        target = _selector_value(one, unit)
+        gaps = (values - target).abs()
+        j = int(gaps.argmin())
+        gap = float(gaps[j])
+        if method != "nearest":
+            scale = _EXACT_MATCH_REL * max(1.0, abs(target))
+            if gap > scale:
+                raise ValueError(
+                    f"sel: no position at {one!r} on {name!r} "
+                    f"(use method='nearest')"
+                )
+        if tol is not None and gap > tol:
+            raise ValueError(
+                f"sel: nearest position to {one!r} on {name!r} is "
+                f"{gap} away, over tolerance {tol}"
+            )
+        positions.append(j)
+    return positions if is_many else positions[0]
 
 
 def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:

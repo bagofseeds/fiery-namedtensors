@@ -242,6 +242,44 @@ def test_coordinate_converts_its_position_unit():
         assert got == [1000.0, 2000.0, 3000.0]
 
 
+def test_sel_by_numeric_coordinate_value():
+    # values 0, 0.5, 1.0, ... 3.5 along t
+    x = XTensor(
+        torch.arange(8.0),
+        names=("t",),
+        coords={"t": {"spacing": (0.5, "s"), "origin": (0.0, "s")}},
+    )
+    assert x.sel(t=1.5).item() == 3.0  # exact value -> index 3
+    assert x.sel(t=[0.5, 2.0]).tolist() == [1.0, 4.0]  # a list keeps the axis
+    with pytest.raises(ValueError, match="no position at"):
+        x.sel(t=1.7)  # no exact tick
+    assert x.sel(t=1.7, method="nearest").item() == 3.0  # nearest is 1.5
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(t=1.7, method="nearest", tolerance=0.1)
+
+
+def test_sel_numeric_is_unit_aware():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.arange(4.0),  # positions 0,1,2,3 mm
+            names=("x",),
+            coords={"x": {"spacing": (1.0, "mm")}},
+        )
+        assert x.sel(x="2000um", method="nearest").item() == 2.0  # converted
+        assert x.sel(x=(2, "mm")).item() == 2.0  # a (value, unit) tuple
+
+
+def test_sel_explicit_numeric_coordinate():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")},
+    )
+    assert x.sel(t=2.0).item() == 2.0
+    assert x.sel(t=1.0, method="nearest").item() == 1.0  # nearest tick is 0.5
+
+
 def test_sel_selects_a_labelled_position_and_drops_the_axis():
     x = _labelled()
     y = x.sel(col="y")
