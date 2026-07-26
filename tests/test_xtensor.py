@@ -11,6 +11,12 @@ from fiery.xtensor import (
 )
 from fiery.xtensor._tensors import _slice_labels, _torch_func
 
+# Ops added in torch 1.8; the package registers them only when present, so on
+# an older torch (the 1.7 floor) the corresponding tests are skipped.
+_HAS_SWAPAXES = hasattr(torch, "swapaxes")  # swapaxes / swapdims
+_HAS_MOVEAXIS = hasattr(torch, "moveaxis")
+_HAS_BROADCAST_TO = hasattr(torch, "broadcast_to")
+
 # ----------------------------------------------------------------------
 # dimensions (names)
 # ----------------------------------------------------------------------
@@ -641,9 +647,16 @@ def test_functional_permute_carries_coordinates():
 def test_transpose_family_swaps_axis_names():
     x = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
     assert x.transpose(0, 2).names == ("c", "b", "a")
+    assert torch.transpose(x, 0, 2).names == ("c", "b", "a")
+
+
+@pytest.mark.skipif(
+    not _HAS_SWAPAXES, reason="torch.swapaxes/swapdims added in torch 1.8"
+)
+def test_swapaxes_family_swaps_axis_names():
+    x = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
     assert x.swapaxes(0, 1).names == ("b", "a", "c")
     assert x.swapdims(1, 2).names == ("a", "c", "b")
-    assert torch.transpose(x, 0, 2).names == ("c", "b", "a")
 
 
 def test_mT_transposes_last_two_axis_names():
@@ -657,6 +670,13 @@ def test_movedim_reorders_axis_names_like_torch():
     y = x.movedim(0, 2)
     assert y.names == ("b", "c", "a", "d")
     assert y.shape == tuple(torch.movedim(torch.zeros(2, 3, 4, 5), 0, 2).shape)
+
+
+@pytest.mark.skipif(
+    not _HAS_MOVEAXIS, reason="torch.moveaxis added in torch 1.8"
+)
+def test_moveaxis_reorders_axis_names_like_torch():
+    x = XTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
     assert x.moveaxis((0, 1), (2, 3)).names == ("c", "d", "a", "b")
 
 
@@ -687,6 +707,13 @@ def test_transpose_family_accepts_axis_names():
     # `__torch_function__` runs.
     x = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
     assert x.transpose("a", "c").names == ("c", "b", "a")
+
+
+@pytest.mark.skipif(
+    not _HAS_SWAPAXES, reason="torch.swapaxes/swapdims added in torch 1.8"
+)
+def test_swapaxes_family_accepts_axis_names():
+    x = XTensor(torch.zeros(2, 3, 4), names=("a", "b", "c"))
     assert x.swapaxes("a", "b").names == ("b", "a", "c")
     assert x.swapdims("b", "c").names == ("a", "c", "b")
 
@@ -694,6 +721,13 @@ def test_transpose_family_accepts_axis_names():
 def test_movedim_accepts_axis_names_for_source():
     x = XTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
     assert x.movedim("a", 2).names == ("b", "c", "a", "d")
+
+
+@pytest.mark.skipif(
+    not _HAS_MOVEAXIS, reason="torch.moveaxis added in torch 1.8"
+)
+def test_moveaxis_accepts_axis_names_for_source():
+    x = XTensor(torch.zeros(2, 3, 4, 5), names=("a", "b", "c", "d"))
     assert x.moveaxis(("a", "b"), (2, 3)).names == ("c", "d", "a", "b")
 
 
@@ -1023,9 +1057,16 @@ def test_unflatten_marks_split_axes_unnamed():
     assert x.unflatten(0, (6,)).names == ("a", "b")  # single split = no-op
 
 
-def test_expand_and_broadcast_to_prepend_unnamed_axes():
+def test_expand_prepends_unnamed_axes():
     x = XTensor(torch.zeros(3, 4), names=("b", "c"))
     assert x.expand(2, 3, 4).names == (None, "b", "c")
+
+
+@pytest.mark.skipif(
+    not _HAS_BROADCAST_TO, reason="torch.broadcast_to added in torch 1.8"
+)
+def test_broadcast_to_prepends_unnamed_axes():
+    x = XTensor(torch.zeros(3, 4), names=("b", "c"))
     assert torch.broadcast_to(x, (2, 3, 4)).names == (None, "b", "c")
 
 
@@ -2299,6 +2340,9 @@ def test_movedim_by_type_moves_the_whole_block_to_the_back():
     assert tuple(moved.shape) == (2, 4, 3, 5)
 
 
+@pytest.mark.skipif(
+    not _HAS_MOVEAXIS, reason="torch.moveaxis added in torch 1.8"
+)
 def test_moveaxis_by_type_moves_the_block_to_the_front():
     x = XTensor(
         torch.zeros(2, 3, 4, 5),

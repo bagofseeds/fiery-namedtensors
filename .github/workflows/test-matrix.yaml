@@ -29,7 +29,13 @@ jobs:
           # CPU-only torch wheels. numpy is pinned <2 for the numpy 2 C-ABI on
           # older torch. Axis names are self-managed, so the matrix spans the
           # whole range from old torch up to and including the *latest* build
-          # (which no longer ships the builtin named-tensor API).
+          # (which no longer ships the builtin named-tensor API). The 1.7 floor
+          # is the earliest that exposes the `__torch_function__`-disable guard
+          # `_compat` needs; a few ops added in 1.8 are absent there and their
+          # tests skip.
+          - python-version: "3.7"
+            os: "ubuntu-22.04"
+            pip-install: "torch==1.7.1+cpu numpy==1.21.6 -f https://download.pytorch.org/whl/torch_stable.html"
           - python-version: "3.7"
             os: "ubuntu-22.04"
             pip-install: "torch==1.8.1+cpu numpy==1.21.6 -f https://download.pytorch.org/whl/torch_stable.html"

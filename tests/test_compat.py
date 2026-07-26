@@ -29,8 +29,10 @@ def test_broadcast_shape_matches_torch(shapes, expected):
     result = broadcast_shape(*shapes)
     assert isinstance(result, torch.Size)
     assert tuple(result) == expected
-    # Agrees with PyTorch's own broadcasting.
-    assert tuple(result) == tuple(torch.broadcast_shapes(*shapes))
+    # Agrees with PyTorch's own broadcasting, where available (torch >= 1.8;
+    # `broadcast_shape` exists precisely to cover the torch that predate it).
+    if hasattr(torch, "broadcast_shapes"):
+        assert tuple(result) == tuple(torch.broadcast_shapes(*shapes))
 
 
 def test_broadcast_shape_rejects_incompatible():

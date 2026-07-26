@@ -37,15 +37,18 @@ classifiers = [
 ]
 dynamic = ["version"]
 # The named-tensor subclassing needs tensor-subclass `__torch_function__`
-# support and `Tensor.as_subclass` (both torch >= 1.7). Shape broadcasting is
-# implemented in-package (`_compat.broadcast_shape`), so it is NOT a floor
-# constraint. Tested floor is torch 1.8 / Python 3.7; the code uses only
+# support and `Tensor.as_subclass` (both torch >= 1.7), plus the
+# `torch._C.DisableTorchFunction` guard used by `_compat` (also >= 1.7). Shape
+# broadcasting is implemented in-package (`_compat.broadcast_shape`), so it is
+# NOT a floor constraint. Tested floor is torch 1.7 / Python 3.7; a handful of
+# ops added in 1.8 (`swapaxes`/`swapdims`/`moveaxis`/`broadcast_to`) are simply
+# absent under 1.7 (registered only when present). The code uses only
 # old-compatible runtime syntax plus `typing_extensions`. Upper bound is the
 # last release that ships the builtin named-tensor API (`.names` / `.rename`);
 # supporting newer torch is tracked (self-managed axis names).
 requires-python = ">=3.7"
 dependencies = [
-    "torch>=1.8",
+    "torch>=1.7",
     "typing_extensions>=4.0",
 ]
 
