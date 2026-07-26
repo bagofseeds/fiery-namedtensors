@@ -28,6 +28,7 @@ For the common cases, `xvector` and `xmatrix` are one-line factories that name
 and label a `"channel"` axis (or `"row"`/`"col"`) and return a plain `XTensor`:
 
 ```python
+import torch
 from fiery.xtensor import xvector, xmatrix
 
 v = xvector(torch.zeros(2, 3), channels=("x", "y", "z"))   # last axis -> "channel"
@@ -48,16 +49,6 @@ from fiery.xtensor import XTensor
 # Named dimensions
 x = XTensor(torch.zeros(2, 3, 4), names=("batch", "height", "width"))
 x.T.names                       # ('width', 'height', 'batch')
-x.unsqueeze(1).names            # ('batch', None, 'height', 'width')
-
-# `...` stands for a run of axes you don't name here (name just the ends)
-XTensor(torch.zeros(2, 3, 4, 5), names=("batch", ..., "width")).names
-#                               # ('batch', None, None, 'width')
-
-# Refer to a dimension by name (method form)
-x.transpose("height", "width").names   # ('batch', 'width', 'height')
-x.sum(dim="batch").names               # ('height', 'width')
-x.mean(dim="height", keepdim=True).names  # ('batch', 'height', 'width')
 
 # Coordinate labels: address positions along a dimension by label
 m = XTensor(
@@ -67,315 +58,23 @@ m = XTensor(
 )
 m.sel(channel="y")              # selects position 1 along "channel"
 m.y                             # ... same, by attribute
-m[:, "y"]                       # ... same, positional label on the 2nd axis
 m.isel(channel=1)               # ... same, by integer position
-m.coords                        # {'channel': ('x', 'y', 'z')}
-m.T.coords                      # {'channel': ('x', 'y', 'z')} — follows the dim
 ```
 
-A **positional** coordinate label works anywhere an integer index does, resolved
-against the axis it sits on — so it composes with ints, slices, `...` and
-newaxis:
+## Documentation
 
-```python
-x[..., "r1", "y"]   # label the last two axes; a bare label drops its axis
-x[:, ["w", "y"]]    # a list of labels is an advanced index (keeps the axis)
-```
+Full docs — with examples for each topic — live at
+<https://bagofseeds.github.io/fiery-xtensor/>:
 
-### Numeric coordinates
-
-A coordinate can also be **numeric** — a physical position per element — given
-compactly as a `spacing` (and optional `origin`), each a value with a unit
-(Proposal 0001):
-
-```python
-img = xtensor(data, names=("y", "x"),
-              coords={"x": {"spacing": (0.5, "mm"), "origin": (-16, "mm")}})
-
-img.coords["x"]["spacing"].unit   # "mm"  — the position unit
-img.coords["x"]["values"]         # tensor([-16, -15.5, …]) with .unit == "mm"
-```
-
-`["values"]` materializes `origin + i·spacing` on demand (differentiable — a
-learnable `spacing` tensor keeps its gradient). An **irregular** axis instead
-takes an explicit unitful tensor of positions:
-
-```python
-sig = xtensor(trace, names=("t",),
-              coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
-```
-
-Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
-`img[..., ::2]` scales the spacing) and convert with `img.coords["x"].to("um")`.
-The position unit is separate from the *data* unit of the tensor's values (see
-[Data units](#data-units)).
-
-## Referring to a dimension by name
-
-Anywhere an operation takes a `dim` (or `dim0`/`dim1`, `source`/`destination`,
-…), you can pass an axis **name** instead of an integer — **on the method
-form**:
-
-```python
-x.transpose("height", "width")   # ok
-x.sum(dim="height")              # ok
-x.movedim("batch", -1)           # ok (names or ints, mixed)
-```
-
-Name-as-dim is **not** available on the *functional* form
-(`torch.transpose(x, "height", "width")`, `torch.sum(x, dim="height")`), and
-this is by design rather than an oversight:
-
-- The **method** form (`x.op(...)`) resolves to a function this package
-  installs on the tensor subclass, so a name is turned into an integer in
-  Python *before* PyTorch ever sees the arguments.
-- The **functional** form (`torch.op(x, ...)`) goes straight into PyTorch's
-  C-level argument parser, which validates that `dim` is an integer *before*
-  the `__torch_function__` hook that would let us intercept the call runs. On
-  recent PyTorch a string `dim` therefore raises `TypeError` from PyTorch
-  itself, before this package is consulted. Older PyTorch happened to dispatch
-  first, so the behaviour was version-dependent and is not relied upon.
-
-Intercepting the functional form would require monkey-patching the `torch.*`
-functions globally, which this package deliberately does not do. The functional
-form still works perfectly with an **integer** `dim` — and still carries names
-through the result (`torch.sum(x, 1).names == x.sum(dim=1).names`); only the
-name-*as*-dim convenience is method-only. Operations that have no method form
-at all (`torch.cat`, `torch.stack`) take an integer `dim` only.
-
-## Broadcast by name
-
-When **both** operands of a pointwise op (`+`, `-`, `*`, `/`, comparisons, …)
-are fully-named `XTensor`s, their axes are aligned **by name** — the xarray way
-— instead of by position:
-
-```python
-a = xtensor(torch.arange(6).reshape(2, 3), names=("x", "y"))
-b = xtensor(torch.arange(6).reshape(3, 2), names=("y", "x"))  # transposed
-(a + b).names            # ('x', 'y')  — b is transposed to match, then added
-
-c = xtensor(torch.arange(2), names=("x",))
-d = xtensor(torch.arange(3), names=("y",))
-(c + d).shape            # (2, 3)  — disjoint dims broadcast to the outer grid
-```
-
-The result's dimensions are the **union** of the operands' names; a shared name
-is broadcast together (its sizes must match, or one must be 1) and coordinates
-that agree are carried through. If **any** axis is unnamed — or an operand is a
-plain tensor or a scalar — the op falls back to ordinary positional
-broadcasting.
-
-### Coordinate alignment
-
-When a shared dimension is **labelled on both operands** but the labels are in a
-different order — or only partly overlap — the operands are aligned **by label**
-before the op, the xarray `join="inner"` way: both are reindexed to the
-intersection of their labels (in the left operand's order), so positions are
-matched by *label*, not by position.
-
-```python
-a = xtensor(torch.tensor([1., 2., 3.]), names=("x",), coords={"x": ("A", "B", "C")})
-b = xtensor(torch.tensor([10., 20., 30.]), names=("x",), coords={"x": ("C", "B", "A")})
-(a + b).coords            # {'x': ('A', 'B', 'C')}
-(a + b).tolist()          # [31.0, 22.0, 13.0]  — A+A, B+B, C+C
-
-c = xtensor(torch.tensor([1., 2., 3.]), names=("x",), coords={"x": ("A", "B", "C")})
-d = xtensor(torch.tensor([10., 20., 30.]), names=("x",), coords={"x": ("B", "C", "D")})
-(c + d).coords            # {'x': ('B', 'C')}    — inner join to the overlap
-```
-
-A dimension labelled on only one side has nothing to align against, so its
-labels simply ride along and the op stays positional.
-
-## Axis descriptors
-
-A name can be enriched into an [OME-NGFF](https://ngff.openmicroscopy.org)-style
-**descriptor** — a dict with a required `name` plus optional `type`, `unit`, and
-`orientation` — by passing it in place of a bare string:
-
-```python
-x = xtensor(
-    torch.zeros(2, 3, 4),
-    names=[
-        {"name": "b", "type": "batch"},
-        "h",
-        {"name": "w", "type": "space", "orientation": "left-to-right"},
-    ],
-)
-x.names          # ('b', 'h', 'w')          — the bare, ergonomic view
-x.axes           # full descriptors, one dict per axis
-x.flip("w").axes[2]["orientation"]   # 'right-to-left'  — flip reverses it
-```
-
-Descriptor fields are keyed by dimension name, so — like coordinates — they
-follow their dimension through `permute`, reductions, `rename`, etc. An
-`orientation` must read `"{a}-to-{b}"`; flipping the axis rewrites it to
-`"{b}-to-{a}"`.
-
-When two operands meet in a name-aware op (broadcast, alignment), their
-descriptors are **merged by dim name** the same way coordinates are: the result
-is the union of the axes, and for a shared dim the fields the operands **agree**
-on are kept while **conflicting** fields are dropped. That policy is
-configurable via `set_options(combine_axes=...)`, usable globally or as a
-context manager:
-
-```python
-from fiery.xtensor import set_options
-
-a = xtensor(torch.ones(3), names=[{"name": "x", "type": "space"}])
-b = xtensor(torch.ones(3), names=[{"name": "x", "type": "time"}])
-(a + b).axes                      # ({'name': 'x'},)  — the clash drops 'type'
-
-with set_options(combine_axes="strict"):
-    a + b                         # raises ValueError: conflicting 'type' …
-```
-
-The policy is one of `"drop_conflicts"` (default), `"strict"` (alias
-`"raise"`), `"override"` (keep the left operand's value) or `"drop"` (always
-drop the field). Pass a `{field: policy}` dict to set it **per descriptor
-field** — `"*"` is the default for fields you don't name:
-
-```python
-# drop everything by default, but a clashing unit is an error
-with set_options(combine_axes={"*": "drop", "unit": "raise"}):
-    ...
-```
-
-`combine_axes` accepts `"drop_conflicts"` (default), `"strict"` (raise on any
-clash), `"override"` (keep the left operand's fields), or `"drop"` (discard all
-descriptors).
-
-A descriptor is also a way to **address** axes. Anywhere you can pass a `dim`
-(method form), a query dict selects *every* axis whose descriptor matches — so
-one call can act on a whole group of axes at once:
-
-```python
-x.movedim({"type": "space"}, -1)   # all space axes to the back, order kept
-x.sum(dim={"type": "channel"})     # reduce every channel axis
-```
-
-A query that matches a single axis behaves exactly like naming it (so it still
-works with single-`dim`-only ops such as `prod`).
-
-## Structured coordinates
-
-A coordinate **label** can itself be a descriptor dict, so each *position* along
-an axis is described — the position-level analogue of an axis descriptor. A
-label's `"name"` is still its identity for selection; the other fields are
-queryable:
-
-```python
-img = xtensor(data, names=("c", "y", "x"), coords={"c": [
-    {"name": "DAPI", "type": "nucleus"},
-    {"name": "GFP",  "type": "signal"},
-    {"name": "RFP",  "type": "signal"},
-]})
-
-img.sel(c="GFP")            # by name — drops the axis (as before)
-img[{"type": "signal"}]     # by query — every matching position, keeps the axis
-img.sel(c={"type": "signal"})   # ... the sel-keyword spelling
-```
-
-A **query** (a dict where a coordinate label is expected) selects *positions* —
-the matches become a `slice` when contiguous, else an index list — and always
-keeps the axis. It mirrors the descriptor query for *axes*: a `{"type": ...}`
-dict picks **axes** in a `dim=`/`movedim` slot and **positions** in a `[]`/`sel`
-slot, so the two never collide.
-
-## Data units
-
-A tensor's **values** can carry a physical unit — the `.unit` property (a
-constructor `unit=` kwarg or a settable attribute). It rides through operations
-like names and coordinates do:
-
-```python
-v = xtensor(data, names=("b", "t"), unit="V")
-v.unit                 # "V"
-v.T.unit               # "V"  — carried through reshaping/reduction/indexing
-v.unit = "mV"          # annotate: never changes the data
-```
-
-By default (`unit_backend=None`) a unit is an **opaque string** — stored and
-carried, never inspected. Selecting a backend turns on validation, conversion,
-and **dimensional algebra**:
-
-```python
-from fiery.xtensor import set_options
-with set_options(unit_backend="pint"):     # needs fiery-xtensor[units]
-    volts = xtensor(v, unit="V")
-    amps  = xtensor(a, unit="A")
-    volts.to_unit("mV")            # converts: rescales the data ×1000
-    (volts * amps).unit           # "ampere * volt"  — units multiply
-    (volts / secs).unit           # "volt / second"
-    (volts ** 2).unit             # "volt ** 2"
-    (volts @ amps).unit           # "ampere * volt"  — matmul multiplies too
-```
-
-You can also **attach** a unit by multiplying with the backend's own unit
-objects, the way pint builds a `Quantity` from `5 * ureg.metre`:
-
-```python
-import pint
-u = pint.UnitRegistry()
-with set_options(unit_backend="pint"):
-    (x * u.mm).unit              # "millimeter"          — bare unit; data unchanged
-    (x * (3 * u.mm)).unit        # "millimeter", data ×3 — a quantity scales too
-    (v / u.s).unit               # "volt / second"
-```
-
-(Write the unit on the **right** — `x * u.mm`, not `u.mm * x` — so the
-`XTensor` handles it before pint's own reflected operator does.)
-
-Whenever a step is dimensionally invalid or ambiguous — adding incompatible
-units, or a transcendental like `exp`/`log` of a united value — the result
-silently **drops** the unit; `set_options(unit_policy="strict")` makes those
-same steps **raise** instead:
-
-```python
-(volts + amps).unit               # None    — incompatible, dropped
-torch.exp(volts).unit             # None    — exp needs a dimensionless argument
-with set_options(unit_policy="strict"):
-    volts + amps                  # ValueError: incompatible units 'volt' and 'ampere'
-```
-
-**Compatible** units are reconciled automatically: adding or comparing `V` and
-`mV` converts the right operand to the left's unit first (only *incompatible*
-dimensions drop/raise). And `.magnitude` drops the unit when you want the bare
-values:
-
-```python
-with set_options(unit_backend="pint"):
-    (xtensor(v, unit="V") + xtensor(mv, unit="mV")).unit   # "volt" — mV converted
-    xtensor(v, unit="V").magnitude.unit                    # None   — unit dropped, still an XTensor
-```
-
-### Heterogeneous (per-axis) units
-
-Units may also **vary along an axis**: give a structured coordinate (Proposal
-0002) a `unit` field per position, and each position stacks a different quantity
-(a `voltage`/`current`/`power` channel stack). The effective element unit is
-`base · Π(coord units)`:
-
-```python
-with set_options(unit_backend="pint"):
-    x = xtensor(data, names=("q", "t"), coords={"q": [
-        {"name": "voltage", "unit": "V"},
-        {"name": "current", "unit": "A"},
-        {"name": "power",   "unit": "W"},
-    ]})
-    x.unit                     # None    — no single base unit (heterogeneous)
-    x.sel(q="voltage").unit    # "V"     — selecting one position folds its unit in
-    x.sum(dim="q").unit        # None    — V/A/W incompatible -> dropped
-    # a *uniform* axis (all positions same unit) folds cleanly on reduction:
-    y.sum(dim="q").unit        # "V"
-```
-
-Reducing over such an axis folds a uniform unit into the base or, on
-incompatible per-position units, drops it (or raises under
-`unit_policy="strict"`).
-
-The data itself is never wrapped in a `pint.Quantity`, so autograd, GPU, and
-`__torch_function__` keep working throughout.
+- **Names & dimensions** — named dimensions, `...` in name-tuples, and referring
+  to a dimension by name (method vs. functional form).
+- **Coordinates** — coordinate labels and positional labels, structured
+  coordinates, and numeric coordinates.
+- **Broadcasting & alignment** — broadcasting by name and coordinate alignment.
+- **Axis descriptors** — OME-NGFF-style descriptors that enrich a name with a
+  type, unit, and orientation.
+- **Data units** — physical units on a tensor's values, with dimensional algebra
+  and per-axis units.
 
 ## Design goals
 
