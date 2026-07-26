@@ -1,15 +1,12 @@
 # Axis descriptors
 
-A dimension name can be enriched into an OME-NGFF-style **descriptor** — a dict
-carrying a `type`, `unit`, and `orientation` — and those fields follow the
-dimension the way coordinates do, merge across name-aware ops, and can address
-whole groups of axes at once.
+A dimension name can be enriched into a **descriptor** — a dict carrying any
+extra fields you like — and those fields follow the dimension the way
+coordinates do, merge across name-aware ops, and can address whole groups of
+axes at once.
 
-A name can be enriched into an [OME-NGFF](https://ngff.openmicroscopy.org)-style
-**descriptor** — a dict with a required `name` plus optional `type`, `unit`,
-`orientation` (and a `coord`/`labels`, see [Coordinates](coordinates.md)) — by
-passing it through **`axes=`**. (`names=` takes bare strings only; descriptors
-go through `axes=`.)
+A name is enriched by passing a dict through **`axes=`** (`names=` takes bare
+strings only). The dict needs a `name`; every other key is up to you:
 
 ```python
 x = xtensor(
@@ -25,13 +22,35 @@ x.axes           # full descriptors, one dict per axis
 x.flip("w").axes[2]["orientation"]   # 'right-to-left'  — flip reverses it
 ```
 
-`axes=` is the general per-axis container; `names=` (bare strings) and
-`coords=` are shortcuts into it.
+## Which keys are special
 
-Descriptor fields are keyed by dimension name, so — like coordinates — they
-follow their dimension through `permute`, reductions, `rename`, etc. An
-`orientation` must read `"{a}-to-{b}"`; flipping the axis rewrites it to
-`"{b}-to-{a}"`.
+A descriptor is an **open** dict — attach whatever metadata suits your data.
+Only a few keys are reserved by the library:
+
+- **`name`** *(required)* — becomes the dimension's name.
+- **`coord`** / **`labels`** — the dimension's coordinate (see
+  [Coordinates](coordinates.md)); handed straight to `coords`.
+- **`orientation`** — the one otherwise-free field with built-in behaviour: it
+  must read `"{a}-to-{b}"`, and flipping the axis rewrites it to `"{b}-to-{a}"`.
+
+**Everything else is free-form.** The `type` in the examples is just the
+[OME-NGFF](https://ngff.openmicroscopy.org) convention — it is **not** a
+first-class key, and nothing in the library privileges it. Use
+`{"name": "c", "modality": "MRI", "role": "readout"}` or whatever keys your
+pipeline cares about; they are stored, carried, merged, and queryable exactly
+the way `type` is.
+
+`axes=` is the general per-axis container; `names=` (bare strings) and
+`coords=` are shortcuts into it. Descriptor fields are keyed by dimension name,
+so — like coordinates — they follow their dimension through `permute`,
+reductions, `rename`, etc.
+
+!!! note "Physical units are not an axis descriptor"
+    There is no blessed axis `unit`. An axis's physical unit is carried by its
+    coordinate values (a **position unit**, see [Coordinates](coordinates.md)),
+    while a tensor's values carry a **data unit** (see
+    [Data units](data-units.md)). A `unit` key placed in a descriptor is just
+    inert free-form metadata — it gets no unit semantics.
 
 When two operands meet in a name-aware op (broadcast, alignment), their
 descriptors are **merged by dim name** the same way coordinates are: the result
@@ -57,8 +76,8 @@ drop the field). Pass a `{field: policy}` dict to set it **per descriptor
 field** — `"*"` is the default for fields you don't name:
 
 ```python
-# drop everything by default, but a clashing unit is an error
-with set_options(combine_axes={"*": "drop", "unit": "raise"}):
+# drop everything by default, but a clashing type is an error
+with set_options(combine_axes={"*": "drop", "type": "raise"}):
     ...
 ```
 

@@ -110,8 +110,8 @@ class set_options:
 
     Options:
 
-    - **`combine_axes`** -- how axis **descriptors** (`type`/`unit`/
-      `orientation`/custom) combine when two operands meet in a name-aware op
+    - **`combine_axes`** -- how axis **descriptors** (`type`/`orientation`/any
+      custom field) combine when two operands meet in a name-aware op
       (broadcast, alignment, `cat`/`stack`/`matmul`/`einsum`/…). Either a
       single policy applied to every field, or a `{field: policy}` dict for
       per-field control (with `"*"` as the default for unlisted fields).
@@ -128,8 +128,8 @@ class set_options:
         set_options(combine_axes="strict")                    # until changed
         with set_options(combine_axes="strict"):              # for this block
             ...
-        # per-field: drop everything, but a clashing `unit` is an error
-        with set_options(combine_axes={"*": "drop", "unit": "raise"}):
+        # per-field: drop everything, but a clashing `type` is an error
+        with set_options(combine_axes={"*": "drop", "type": "raise"}):
             ...
 
     - **`unit_backend`** -- the physical-unit engine for **data units**

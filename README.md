@@ -71,8 +71,8 @@ Full docs — with examples for each topic — live at
 - **Coordinates** — coordinate labels and positional labels, structured
   coordinates, and numeric coordinates.
 - **Broadcasting & alignment** — broadcasting by name and coordinate alignment.
-- **Axis descriptors** — OME-NGFF-style descriptors that enrich a name with a
-  type, unit, and orientation.
+- **Axis descriptors** — OME-NGFF-style descriptors that enrich a name with
+  free-form fields (a `type`, an `orientation`, or any custom key).
 - **Data units** — physical units on a tensor's values, with dimensional algebra
   and per-axis units.
 
@@ -100,5 +100,4 @@ Alpha — ported from a work-in-progress in
 [`balbasty/magnetix`](https://github.com/balbasty/magnetix). Names and
 coordinates are **self-managed**, independent of PyTorch's experimental builtin
 named tensors (which have been dropped in some torch builds), so the package
-spans a wide torch range. See the tracking issues for the roadmap
-(axis `unit` propagation, coordinate alignment, …).
+spans a wide torch range. See the tracking issues for the roadmap.
