@@ -2497,6 +2497,21 @@ def _(input: XTensor, mask: Tensor, **kwargs) -> tx.Any:
     return _carry(ref, result, _axis_names=(None,), _coords={})
 
 
+@XTensor.overrides(_torch_func("nonzero"))
+def _(input: XTensor, **kwargs) -> tx.Any:
+    result = torch.nonzero(input, **kwargs)
+    # The output indexes the *nonzero entries* against the input's dimensions
+    # -- its axes are not the input's named axes, so names/coords are dropped.
+    # `as_tuple=True` gives one 1-D index tensor per input dim; the default
+    # gives a single `(nnz, input.ndim)` index tensor.
+    if isinstance(result, tuple):
+        return tuple(
+            _carry(input, part, _axis_names=(None,), _coords={})
+            for part in result
+        )
+    return _carry(input, result, _axis_names=(None,) * result.ndim, _coords={})
+
+
 # ======================================================================
 #
 #                     P O I N T W I S E   ( B Y   N A M E )
