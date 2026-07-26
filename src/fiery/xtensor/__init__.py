@@ -13,21 +13,35 @@ spirit of [xarray](https://docs.xarray.dev):
   [`xmatrix`][fiery.xtensor.xmatrix] are convenience factories that name and
   label a `"channel"` axis (or `"row"`/`"col"`) and return a plain `XTensor`.
 
-The `named_*` helpers ([`named_zeros`][fiery.xtensor.named_zeros], ...)
-build an `XTensor` directly from the matching `torch.*` factory.
+The `x*` factories ([`xzeros`][fiery.xtensor.xzeros],
+[`xones`][fiery.xtensor.xones], [`xfill`][fiery.xtensor.xfill], ...) build an
+`XTensor` directly from the matching `torch.*` factory, naming (and labelling)
+the axes at creation time; the `x*_like` variants inherit an `XTensor` input's
+names, coordinates, and unit.
 """
 
 from fiery.xtensor._factories import (
-    named_arange,
-    named_empty,
-    named_eye,
-    named_full,
-    named_ones,
-    named_rand,
-    named_randn,
-    named_zeros,
+    xarange,
+    xempty,
+    xempty_like,
+    xeye,
+    xfill,
+    xfull,
+    xfull_like,
+    xlinspace,
+    xlogspace,
     xmatrix,
+    xmeshgrid,
+    xones,
+    xones_like,
+    xrand,
+    xrand_like,
+    xrandn,
+    xrandn_like,
+    xstack,
     xvector,
+    xzeros,
+    xzeros_like,
 )
 from fiery.xtensor._options import set_options
 from fiery.xtensor._tensors import (
@@ -49,14 +63,25 @@ __all__ = [
     "xtensor",
     "xvector",
     "xmatrix",
-    "named_zeros",
-    "named_ones",
-    "named_empty",
-    "named_full",
-    "named_arange",
-    "named_rand",
-    "named_randn",
-    "named_eye",
+    "xstack",
+    "xmeshgrid",
+    "xzeros",
+    "xones",
+    "xempty",
+    "xfull",
+    "xfill",
+    "xarange",
+    "xlinspace",
+    "xlogspace",
+    "xrand",
+    "xrandn",
+    "xeye",
+    "xzeros_like",
+    "xones_like",
+    "xempty_like",
+    "xfull_like",
+    "xrand_like",
+    "xrandn_like",
     "set_options",
     "__version__",
 ]
