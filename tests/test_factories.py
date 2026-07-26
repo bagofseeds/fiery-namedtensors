@@ -9,6 +9,7 @@ from fiery.xtensor import (
     xeye,
     xfill,
     xfull,
+    xlinspace,
     xones,
     xones_like,
     xzeros,
@@ -35,6 +36,13 @@ def test_xfull_and_arange_and_eye():
     assert xarange(5, names=("x",)).names == ("x",)
     assert xarange(5).shape == (5,)
     assert xeye(3, names=("r", "c")).names == ("r", "c")
+
+
+def test_xlinspace_names_a_coordinate_axis():
+    t = xlinspace(0.0, 1.0, 5, names=("t",))
+    assert t.names == ("t",)
+    assert t.shape == (5,)
+    assert t[0].item() == 0.0 and t[-1].item() == 1.0
 
 
 def test_xfill_is_xfull():

@@ -100,6 +100,8 @@ xfull = _make_factory("full")
 #: Alias of [`xfull`][fiery.xtensor.xfull] -- fill a new tensor with a value.
 xfill = xfull
 xarange = _make_factory("arange")
+xlinspace = _make_factory("linspace")
+xlogspace = _make_factory("logspace")
 xrand = _make_factory("rand")
 xrandn = _make_factory("randn")
 xeye = _make_factory("eye")
@@ -174,6 +176,8 @@ __all__ = [
     "xfull",
     "xfill",
     "xarange",
+    "xlinspace",
+    "xlogspace",
     "xrand",
     "xrandn",
     "xeye",
