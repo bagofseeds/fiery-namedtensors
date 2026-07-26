@@ -181,29 +181,32 @@ def xmeshgrid(
     the first two output axes). Inputs must be 1-D. A `None` axis name gets no
     coordinate.
     """
+    if indexing not in ("ij", "xy"):
+        raise ValueError(
+            f"xmeshgrid: indexing must be 'ij' or 'xy', got {indexing!r}"
+        )
     raws = [
         t.as_subclass(torch.Tensor) if isinstance(t, XTensor) else t
         for t in tensors
     ]
+    # Always build the "ij" grids (old torch has no `indexing=`, and passing it
+    # on new torch silences the "pass indexing" warning), then emulate "xy" by
+    # swapping the first two axes -- exactly what "xy" does, on any torch.
     try:
-        grids = torch.meshgrid(*raws, indexing=indexing)
-    except TypeError:
-        # Old torch has no `indexing=` (its meshgrid is always "ij").
-        if indexing != "ij":
-            raise TypeError(
-                "this torch build's meshgrid has no 'indexing='; "
-                "only 'ij' is available"
-            ) from None
+        grids = torch.meshgrid(*raws, indexing="ij")
+    except TypeError:  # pragma: no cover - only on torch without `indexing=`
         grids = torch.meshgrid(*raws)
+    grids = tuple(grids)
     base = (
         tuple(names)
         if names is not None
         else tuple(_single_name(t) for t in tensors)
     )
-    # `"xy"` swaps the first two output axes; the names follow.
+    # `"xy"` swaps the first two output axes (and their names).
     order = list(range(len(tensors)))
     if indexing == "xy" and len(order) >= 2:
         order[0], order[1] = order[1], order[0]
+        grids = tuple(g.transpose(0, 1) for g in grids)
     grid_names = tuple(base[i] for i in order)
     coords = {}
     for name, source in zip(base, tensors):
