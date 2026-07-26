@@ -4,16 +4,18 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"All the Matches" = "https://bagofseeds.github.io/fiery/"},
-  {"Home" = "index.md"},
-  {"Guide" = [
+  {"Fiery XTensor" = [
+    "index.md",
     {"Names & dimensions" = "guide/names.md"},
     {"Coordinates" = "guide/coordinates.md"},
     {"Broadcasting & alignment" = "guide/broadcasting.md"},
     {"Axis descriptors" = "guide/descriptors.md"},
     {"Data units" = "guide/data-units.md"},
+    {"Differences from xarray" = "guide/vs-xarray.md"},
   ]},
   {"API" = "api/index.md"},
   {"Proposals" = [
+    "proposals/index.md",
     {"0001 — Coordinates (values, spacing, units)" = "proposals/0001-units.md"},
     {"0002 — Structured coordinates" = "proposals/0002-structured-coordinates.md"},
     {"0003 — Data units" = "proposals/0003-data-units.md"},

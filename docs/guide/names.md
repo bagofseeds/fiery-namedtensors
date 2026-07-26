@@ -41,8 +41,9 @@ x.movedim("batch", -1)           # ok (names or ints, mixed)
 ```
 
 Name-as-dim is **not** available on the *functional* form
-(`torch.transpose(x, "height", "width")`, `torch.sum(x, dim="height")`), and
-this is by design rather than an oversight:
+(`torch.transpose(x, "height", "width")`, `torch.sum(x, dim="height")`). This
+is a **PyTorch limitation**, not a preference of ours — we would happily accept
+a string `dim` on the functional forms if we could:
 
 - The **method** form (`x.op(...)`) resolves to a function this package
   installs on the tensor subclass, so a name is turned into an integer in

@@ -14,6 +14,13 @@ optionally, per-dimension coordinate **labels** through operations — so you ca
 refer to a dimension by name and a position along it by label, without leaving
 torch (autograd, device, and `__torch_function__` all keep working).
 
+**This is an xarray-like package**, and it deliberately follows xarray's
+conventions — named dimensions, `coords` keyed by dimension name, `.sel` /
+`.isel`, alignment by name — so xarray users feel at home. The headline
+difference is that an `XTensor` *is* a `torch.Tensor` rather than a wrapper
+around an array. For what it adds, what it is still missing, and where behaviour
+or vocabulary differ, see [Differences from xarray](guide/vs-xarray.md).
+
 ## Quickstart
 
 `XTensor` (lowercase alias `xtensor`) adds named **dimensions** (`names`) and
@@ -55,8 +62,12 @@ axis simply yields a normal `XTensor` (no "vector" that has lost its axis).
   enrich a name with a type, unit, and orientation.
 - [Data units](guide/data-units.md) — physical units on a tensor's values, with
   dimensional algebra and per-axis units.
+- [Differences from xarray](guide/vs-xarray.md) — what `xtensor` adds, what it
+  is still missing, and where behaviour or vocabulary differ.
 
 ## Proposals
+
+See the [proposals](proposals/index.md) for the larger design decisions:
 
 - [0001 — Coordinates (values, spacing, units)](proposals/0001-units.md)
 - [0002 — Structured coordinates](proposals/0002-structured-coordinates.md)
