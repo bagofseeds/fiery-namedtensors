@@ -21,11 +21,34 @@ _UNIT_BACKENDS = (None, "pint")
 #: What happens on a dimensionally invalid/ambiguous unit step (Proposal 0003).
 _UNIT_POLICIES = ("drop", "strict")
 
+#: Boundary conditions understood by `.interp` (Proposal 0004). These mirror
+#: `fiery.interpol`'s vocabulary (name -> out-of-bound behaviour); the default,
+#: ``"replicate"``, clamps to the edge value.
+_INTERP_BOUNDS = (
+    "zero",
+    "zeros",
+    "replicate",
+    "nearest",
+    "border",
+    "dct1",
+    "mirror",
+    "dct2",
+    "reflect",
+    "dst1",
+    "antimirror",
+    "dst2",
+    "antireflect",
+    "dft",
+    "wrap",
+)
+
 #: Live option values. Read through `get_option`; write only via `set_options`.
 _OPTIONS = {
     "combine_axes": "drop_conflicts",
     "unit_backend": None,
     "unit_policy": "drop",
+    "interp_bound": "replicate",
+    "interp_extrapolate": True,
 }
 
 
@@ -75,11 +98,31 @@ def _validate_unit_policy(value: tx.Any) -> None:
         )
 
 
+def _validate_interp_bound(value: tx.Any) -> None:
+    # An int order is passed straight through to the backend; a string is
+    # checked against the known names so a typo fails at set time.
+    if isinstance(value, int):
+        return
+    if value not in _INTERP_BOUNDS:
+        raise ValueError(
+            f"invalid interp_bound {value!r}; valid: {list(_INTERP_BOUNDS)}"
+        )
+
+
+def _validate_interp_extrapolate(value: tx.Any) -> None:
+    if not isinstance(value, (bool, int)):
+        raise ValueError(
+            f"invalid interp_extrapolate {value!r}; expected a bool or int"
+        )
+
+
 #: Per-option validators (options without one accept any value).
 _VALIDATORS = {
     "combine_axes": _validate_combine_axes,
     "unit_backend": _validate_unit_backend,
     "unit_policy": _validate_unit_policy,
+    "interp_bound": _validate_interp_bound,
+    "interp_extrapolate": _validate_interp_extrapolate,
 }
 
 
@@ -138,6 +181,14 @@ class set_options:
       time if pint is not installed).
     - **`unit_policy`** -- what a dimensionally invalid/ambiguous step does:
       `"drop"` *(default)* silently drops the unit, `"strict"` raises.
+    - **`interp_bound`** -- the default boundary condition for
+      [`interp`][fiery.xtensor.XTensor.interp] (Proposal 0004), i.e. how an
+      out-of-range query is resolved. `"replicate"` *(default)* clamps to the
+      edge value; other names (`"wrap"`, `"reflect"`, `"mirror"`, `"zero"`, …)
+      mirror `fiery.interpol`. A per-call `bound=` overrides it.
+    - **`interp_extrapolate`** -- whether `interp` extrapolates past the ends
+      (`True` *(default)*; with `interp_bound="replicate"` this is the clamp).
+      A per-call `extrapolate=` overrides it.
     """
 
     def __init__(self, **options: tx.Any) -> None:
