@@ -114,6 +114,48 @@ def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
     return names[:i] + tuple(fill[i : i + span]) + names[i + 1 :]
 
 
+def _parse_axes(value: tuple, ndim: int) -> tx.Tuple[tuple, dict, dict]:
+    """
+    Parse an `axes=` spec into `(names, axis_meta, coord_specs)`. Each item is
+    a bare name, `None`, or a **descriptor** dict with a required `name` plus
+    any of `type`/`unit`/`orientation` (→ `axis_meta`) and `coord`/`labels` (→
+    `coord_specs`, the per-dim coordinate to hand to the `coords` setter). A
+    single `...` fills the middle with unnamed axes.
+    """
+    value = _expand_name_ellipsis(value, ndim, (None,) * ndim)
+    if len(value) != ndim:
+        raise ValueError(f"Expected {ndim} axes, got {len(value)}: {value}")
+    names, meta, coord_specs = [], {}, {}
+    for item in value:
+        if item is None or isinstance(item, str):
+            names.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise TypeError(
+                "axes= items must be a name, None, or a descriptor dict; "
+                f"got {item!r}"
+            )
+        if "name" not in item:
+            raise ValueError(f"axis descriptor must have a 'name': {item!r}")
+        name = item["name"]
+        names.append(name)
+        extra = {
+            k: v
+            for k, v in item.items()
+            if k not in ("name", "coord", "labels")
+        }
+        if "orientation" in extra:
+            _validate_orientation(extra["orientation"])
+        if extra and name is not None:
+            meta[name] = extra
+        if name is not None:
+            if "coord" in item:
+                coord_specs[name] = item["coord"]
+            elif "labels" in item:
+                coord_specs[name] = item["labels"]
+    return tuple(names), meta, coord_specs
+
+
 def _match_axes(input: XTensor, query: tx.Mapping) -> list:
     """
     Positions whose axis **descriptor** matches every key/value in `query`
@@ -305,19 +347,25 @@ class XTensor(ExtendedTensor):
         # NOTE: Tensor does not implement `__init__` (only `__new__`), but we
         # add support for the `names` / `coords` arguments here.
         super().__init__()  # This actually calls `object.__init__`
-        # `axes=` is an alias for `names=` that reads better for descriptors;
-        # both accept bare names, `None`, or descriptor dicts.
-        names = kwargs.pop("axes", None)
-        if names is None:
-            names = kwargs.pop("names", None)
-        else:
-            kwargs.pop("names", None)
+        # `names=` takes bare strings; `axes=` is the general per-axis
+        # container (descriptor dicts: type/unit/orientation/coord/labels).
+        axes = kwargs.pop("axes", None)
+        names = kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
         unit = kwargs.pop("unit", None)
+        coord_specs = {}
+        if axes is not None:
+            axis_names, meta, coord_specs = _parse_axes(tuple(axes), self.ndim)
+            self._axis_names = axis_names
+            self._axis_meta = meta
         if names is not None:
             self.names = names
         if coords is not None:
-            self.coords = coords
+            # an explicit `coords=` merges onto (and overrides) any coordinates
+            # embedded in `axes=` descriptors.
+            coord_specs = {**coord_specs, **dict(coords)}
+        if coord_specs:
+            self.coords = coord_specs
         if unit is not None:
             self.unit = unit
 
@@ -352,32 +400,15 @@ class XTensor(ExtendedTensor):
             raise ValueError(
                 f"Expected {self.ndim} names, got {len(value)}: {value}"
             )
-        # Each item may be a bare name / `None`, or a descriptor dict carrying
-        # extra fields (`type`/`unit`/`orientation`) alongside its `name`.
-        names, meta = [], {}
-        has_descriptor = False
+        # `names=` takes bare strings (or `None`); richer axis descriptors --
+        # `type`/`unit`/`orientation`/`coord` -- go through `axes=` instead.
         for item in value:
-            if isinstance(item, dict):
-                has_descriptor = True
-                if "name" not in item:
-                    raise ValueError(
-                        f"axis descriptor must have a 'name': {item!r}"
-                    )
-                name = item["name"]
-                extra = {k: v for k, v in item.items() if k != "name"}
-                if "orientation" in extra:
-                    _validate_orientation(extra["orientation"])
-                names.append(name)
-                if extra and name is not None:
-                    meta[name] = extra
-            else:
-                names.append(item)
-        self._axis_names = tuple(names)
-        # Only touch `_axis_meta` when descriptors were actually supplied, so a
-        # plain `x.names = (...)` keeps any existing metadata (the getter hides
-        # entries whose dim is no longer present).
-        if has_descriptor:
-            self._axis_meta = meta
+            if not (item is None or isinstance(item, str)):
+                raise TypeError(
+                    "names= takes strings (or None); pass a descriptor dict "
+                    f"through axes= instead of {item!r}"
+                )
+        self._axis_names = value
 
     # -- axis descriptors --------------------------------------------------
 
@@ -393,6 +424,20 @@ class XTensor(ExtendedTensor):
             None if name is None else {"name": name, **meta.get(name, {})}
             for name in self.names
         )
+
+    @axes.setter
+    def axes(self, value: tx.Optional[tx.Sequence]) -> None:
+        if value is None:
+            for attr in ("_axis_names", "_axis_meta"):
+                self.__dict__.pop(attr, None)
+            return
+        names, meta, coord_specs = _parse_axes(tuple(value), self.ndim)
+        self._axis_names = names
+        self._axis_meta = meta
+        # A descriptor may embed its coordinate under `coord` (numeric) or
+        # `labels` (categorical); apply those, leaving other coords untouched.
+        if coord_specs:
+            self.coords = coord_specs
 
     def _valid_axis_meta(self) -> dict[str, dict]:
         """`_axis_meta` filtered to dimensions still named on this tensor."""
