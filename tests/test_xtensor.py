@@ -1524,6 +1524,39 @@ def test_masked_select_collapses_to_one_unnamed_axis():
     assert out.ndim == 1
 
 
+def test_masked_fill_keeps_names_and_coordinates():
+    x = XTensor(
+        torch.arange(6.0).reshape(2, 3),
+        names=("r", "c"),
+        coords={"c": ("a", "b", "d")},
+    )
+    # shape-preserving, so names and coordinates ride through (both forms)
+    out = x.masked_fill(x > 2, 0.0)
+    assert out.names == ("r", "c")
+    assert out.coords == {"c": ("a", "b", "d")}
+    assert torch.masked_fill(x, x > 2, 0.0).names == ("r", "c")
+    x.masked_fill_(x > 2, 0.0)  # in-place keeps them too
+    assert x.names == ("r", "c")
+
+
+def test_nonzero_drops_names_the_output_axes_are_not_the_inputs():
+    x = XTensor(
+        torch.tensor([[0, 5], [7, 0]]),
+        names=("r", "c"),
+        coords={"c": ("a", "b")},
+    )
+    # default: a (nnz, ndim) index tensor -- its axes are NOT r/c
+    idx = x.nonzero()
+    assert idx.shape == (2, 2)
+    assert idx.names == (None, None)
+    assert idx.coords == {}
+    assert torch.nonzero(x).names == (None, None)
+    # as_tuple: one 1-D index tensor per input dim, each unnamed
+    parts = x.nonzero(as_tuple=True)
+    assert len(parts) == 2
+    assert all(p.names == (None,) for p in parts)
+
+
 # ----------------------------------------------------------------------
 # index_add / index_copy / index_fill (name-as-dim, method-form only)
 # ----------------------------------------------------------------------
