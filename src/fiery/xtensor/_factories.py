@@ -1,13 +1,18 @@
 """Named factory helpers.
 
-Thin wrappers around the `torch.*` construction functions that return a
-[`XTensor`][fiery.xtensor.XTensor] directly, so callers can name
-the axes at creation time instead of wrapping every call by hand::
+`x*` wrappers around the `torch.*` construction functions that return an
+[`XTensor`][fiery.xtensor.XTensor] directly, so you can name (and describe,
+label, unit) the axes at creation time instead of wrapping every call by
+hand::
 
-    named_zeros(2, 3, names=("row", "col"))
+    xzeros(2, 3, names=("row", "col"))
+    xfull((2, 2), 7.0, axes=[{"name": "y", "type": "space"}, "x"])
+    xones_like(x)                        # inherits x's names / coords / unit
 
-Each wrapper forwards all positional and keyword arguments to the matching
-`torch.*` function and accepts an extra ``names=`` keyword.
+Each wrapper forwards its positional and unrecognised keyword arguments to the
+matching `torch.*` function, and understands the `XTensor` metadata keywords
+``names`` / ``axes`` / ``coords`` / ``unit`` -- so a factory result carries
+names the same way a hand-built `XTensor` does.
 """
 
 from __future__ import annotations
@@ -17,38 +22,95 @@ import typing_extensions as tx
 
 from fiery.xtensor._tensors import XTensor
 
+#: The `XTensor` metadata keywords a factory understands (everything else is
+#: forwarded to the underlying `torch.*` op).
+_META_KEYS = ("names", "axes", "coords", "unit")
+
+
+def _split_meta(kwargs: dict) -> dict:
+    """Pop the `XTensor` metadata keywords out of `kwargs` (in canonical
+    order), leaving the rest to forward to `torch.*`."""
+    return {key: kwargs.pop(key) for key in _META_KEYS if key in kwargs}
+
+
+def _apply_meta(x: XTensor, meta: dict) -> None:
+    """Set the metadata keywords on `x` via its property setters."""
+    for key in _META_KEYS:
+        if key in meta:
+            setattr(x, key, meta[key])
+
 
 def _make_factory(name: str) -> tx.Optional[tx.Callable]:
-    """Build a `named_<name>` wrapper around `torch.<name>` (or `None`)."""
+    """Build an `x<name>` wrapper around `torch.<name>` (or `None`)."""
     base = getattr(torch, name, None)
     if base is None:  # pragma: no cover - all wrapped ops are very old
         return None
 
-    def factory(
-        *args: tx.Any,
-        names: tx.Optional[tx.Sequence[str | None]] = None,
-        **kwargs: tx.Any,
-    ) -> XTensor:
-        return XTensor(base(*args, **kwargs), names=names)
+    def factory(*args: tx.Any, **kwargs: tx.Any) -> XTensor:
+        meta = _split_meta(kwargs)
+        return XTensor(base(*args, **kwargs), **meta)
 
-    factory.__name__ = "named_" + name
-    factory.__qualname__ = "named_" + name
+    factory.__name__ = "x" + name
+    factory.__qualname__ = "x" + name
     factory.__doc__ = (
-        f"Like `torch.{name}`, but returns a `XTensor`.\n\n"
-        f"All arguments are forwarded to `torch.{name}`; pass `names=(...)`\n"
-        f"to name the axes of the result."
+        f"Like `torch.{name}`, but returns an `XTensor`.\n\n"
+        f"Positional and extra keyword arguments are forwarded to "
+        f"`torch.{name}`; pass any of `names=` / `axes=` / `coords=` / "
+        f"`unit=` to name, describe, label, and unit the axes of the result."
     )
     return factory
 
 
-named_zeros = _make_factory("zeros")
-named_ones = _make_factory("ones")
-named_empty = _make_factory("empty")
-named_full = _make_factory("full")
-named_arange = _make_factory("arange")
-named_rand = _make_factory("rand")
-named_randn = _make_factory("randn")
-named_eye = _make_factory("eye")
+def _make_like_factory(name: str) -> tx.Optional[tx.Callable]:
+    """Build an `x<name>` wrapper around `torch.<name>` (the `*_like` ops).
+
+    A `torch.<name>(input, ...)` already carries an `XTensor` input's metadata
+    through the generic `__torch_function__` path, so `xones_like(x)` inherits
+    `x`'s names / coords / unit; any metadata keyword overrides what is
+    inherited.
+    """
+    base = getattr(torch, name, None)
+    if base is None:  # pragma: no cover - all wrapped ops are very old
+        return None
+
+    def factory(input: tx.Any, *args: tx.Any, **kwargs: tx.Any) -> XTensor:
+        meta = _split_meta(kwargs)
+        result = base(input, *args, **kwargs)
+        if not isinstance(result, XTensor):
+            result = XTensor(result)
+        _apply_meta(result, meta)
+        return result
+
+    factory.__name__ = "x" + name
+    factory.__qualname__ = "x" + name
+    factory.__doc__ = (
+        f"Like `torch.{name}`, but returns an `XTensor`.\n\n"
+        f"When `input` is an `XTensor`, the result **inherits** its names, "
+        f"coordinates, descriptors, and unit; pass `names=` / `axes=` / "
+        f"`coords=` / `unit=` to override any of them."
+    )
+    return factory
+
+
+# -- from-scratch constructors --------------------------------------------
+xzeros = _make_factory("zeros")
+xones = _make_factory("ones")
+xempty = _make_factory("empty")
+xfull = _make_factory("full")
+#: Alias of [`xfull`][fiery.xtensor.xfull] -- fill a new tensor with a value.
+xfill = xfull
+xarange = _make_factory("arange")
+xrand = _make_factory("rand")
+xrandn = _make_factory("randn")
+xeye = _make_factory("eye")
+
+# -- `*_like` constructors (inherit the input's metadata) -----------------
+xzeros_like = _make_like_factory("zeros_like")
+xones_like = _make_like_factory("ones_like")
+xempty_like = _make_like_factory("empty_like")
+xfull_like = _make_like_factory("full_like")
+xrand_like = _make_like_factory("rand_like")
+xrandn_like = _make_like_factory("randn_like")
 
 
 def xvector(
@@ -106,14 +168,21 @@ def xmatrix(
 
 
 __all__ = [
-    "named_zeros",
-    "named_ones",
-    "named_empty",
-    "named_full",
-    "named_arange",
-    "named_rand",
-    "named_randn",
-    "named_eye",
+    "xzeros",
+    "xones",
+    "xempty",
+    "xfull",
+    "xfill",
+    "xarange",
+    "xrand",
+    "xrandn",
+    "xeye",
+    "xzeros_like",
+    "xones_like",
+    "xempty_like",
+    "xfull_like",
+    "xrand_like",
+    "xrandn_like",
     "xvector",
     "xmatrix",
 ]
