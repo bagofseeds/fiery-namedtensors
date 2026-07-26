@@ -1885,7 +1885,7 @@ def test_set_options_rejects_unknown_option_or_value():
     with pytest.raises(ValueError, match="invalid combine_axes policy"):
         set_options(combine_axes="bogus")
     with pytest.raises(ValueError, match="invalid combine_axes policy"):
-        set_options(combine_axes={"unit": "bogus"})
+        set_options(combine_axes={"type": "bogus"})
     with pytest.raises(ValueError, match="must be a policy str or a"):
         set_options(combine_axes=5)
     with pytest.raises(ValueError, match="invalid unit_backend"):
@@ -2239,24 +2239,26 @@ def test_einsum_and_tensordot_multiply_operand_units():
 
 
 def test_combine_axes_accepts_a_per_field_policy():
+    # a custom, free-form descriptor field ("role") -- nothing is special
+    # about it; the per-field policy applies to any key.
     a = XTensor(
         torch.ones(3),
-        axes=[{"name": "x", "type": "space", "unit": "um"}],
+        axes=[{"name": "x", "type": "space", "role": "readout"}],
     )
     b = XTensor(
         torch.ones(3),
-        axes=[{"name": "x", "type": "time", "unit": "um"}],
+        axes=[{"name": "x", "type": "time", "role": "readout"}],
     )
-    # default drops every field, but an agreeing "unit" is kept
-    with set_options(combine_axes={"*": "drop", "unit": "raise"}):
-        assert (a + b).axes == ({"name": "x", "unit": "um"},)
+    # default drops every field, but an agreeing "role" is kept
+    with set_options(combine_axes={"*": "drop", "role": "raise"}):
+        assert (a + b).axes == ({"name": "x", "role": "readout"},)
 
 
 def test_per_field_raise_policy_fires_only_for_that_field():
-    a = XTensor(torch.ones(3), axes=[{"name": "x", "unit": "um"}])
-    b = XTensor(torch.ones(3), axes=[{"name": "x", "unit": "mm"}])
-    with set_options(combine_axes={"*": "drop", "unit": "raise"}):
-        with pytest.raises(ValueError, match="conflicting 'unit'"):
+    a = XTensor(torch.ones(3), axes=[{"name": "x", "role": "readout"}])
+    b = XTensor(torch.ones(3), axes=[{"name": "x", "role": "phase"}])
+    with set_options(combine_axes={"*": "drop", "role": "raise"}):
+        with pytest.raises(ValueError, match="conflicting 'role'"):
             _ = a + b
 
 
@@ -2278,9 +2280,27 @@ def test_per_field_override_keeps_the_left_value_for_one_field():
 def test_unlisted_fields_fall_back_to_drop_conflicts():
     a = XTensor(torch.ones(3), axes=[{"name": "x", "type": "space"}])
     b = XTensor(torch.ones(3), axes=[{"name": "x", "type": "time"}])
-    # only "unit" is customised; "type" uses the drop_conflicts default
-    with set_options(combine_axes={"unit": "strict"}):
+    # only "role" is customised; "type" uses the drop_conflicts default
+    with set_options(combine_axes={"role": "strict"}):
         assert (a + b).axes == ({"name": "x"},)
+
+
+def test_descriptor_keys_are_free_form_not_a_fixed_schema():
+    # `type` is only a convention; any custom key is stored, carried through
+    # ops, and queryable exactly the same way.
+    x = XTensor(
+        torch.zeros(2, 3),
+        axes=[
+            {"name": "c", "modality": "MRI", "role": "readout"},
+            {"name": "t", "modality": "MRI"},
+        ],
+    )
+    assert x.axes[0] == {"name": "c", "modality": "MRI", "role": "readout"}
+    # a custom key follows the dim through an op ...
+    assert x.T.axes[1]["role"] == "readout"
+    # ... and addresses axes just like `type` would
+    assert x.sum(dim={"modality": "MRI"}).ndim == 0
+    assert x.sum(dim={"role": "readout"}).names == ("t",)
 
 
 def test_movedim_by_type_moves_the_whole_block_to_the_back():

@@ -59,7 +59,8 @@ axis simply yields a normal `XTensor` (no "vector" that has lost its axis).
 - [Broadcasting & alignment](guide/broadcasting.md) — broadcasting by name and
   coordinate alignment.
 - [Axis descriptors](guide/descriptors.md) — OME-NGFF-style descriptors that
-  enrich a name with a type, unit, and orientation.
+  enrich a name with free-form fields (a `type`, an `orientation`, or any
+  custom key).
 - [Data units](guide/data-units.md) — physical units on a tensor's values, with
   dimensional algebra and per-axis units.
 - [Differences from xarray](guide/vs-xarray.md) — what `xtensor` adds, what it

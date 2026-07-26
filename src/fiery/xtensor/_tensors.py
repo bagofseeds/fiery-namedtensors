@@ -39,7 +39,8 @@ CoordsT = tx.Mapping[str, ArgLabelsT]
 """A mapping *dimension name -> its labels* (xarray-style coordinates)."""
 
 AxisMetaT = tx.Mapping[str, tx.Any]
-"""Extra axis-descriptor fields (OME-NGFF): `type`/`unit`/`orientation`."""
+"""Free-form axis-descriptor fields (e.g. `type`, `orientation`, or any custom
+key); only `orientation` carries built-in behaviour."""
 
 AxisT = tx.Union[str, None, tx.Mapping[str, tx.Any]]
 """One axis as given: a bare name, `None`, or a descriptor dict + `name`."""
@@ -117,10 +118,11 @@ def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
 def _parse_axes(value: tuple, ndim: int) -> tx.Tuple[tuple, dict, dict]:
     """
     Parse an `axes=` spec into `(names, axis_meta, coord_specs)`. Each item is
-    a bare name, `None`, or a **descriptor** dict with a required `name` plus
-    any of `type`/`unit`/`orientation` (→ `axis_meta`) and `coord`/`labels` (→
-    `coord_specs`, the per-dim coordinate to hand to the `coords` setter). A
-    single `...` fills the middle with unnamed axes.
+    a bare name, `None`, or a **descriptor** dict with a required `name`, the
+    coordinate keys `coord`/`labels` (→ `coord_specs`, handed to the `coords`
+    setter), and any number of free-form metadata keys (e.g. `type`,
+    `orientation`; → `axis_meta`). A single `...` fills the middle with unnamed
+    axes.
     """
     value = _expand_name_ellipsis(value, ndim, (None,) * ndim)
     if len(value) != ndim:
@@ -310,12 +312,13 @@ class XTensor(ExtendedTensor):
       in `coords` -- a mapping *dim name -> labels* -- keyed by dimension
       **name**, so they follow their dimension through reshaping/reordering
       with no positional bookkeeping. A labelled dimension must be named.
-    - **Axis descriptors** may enrich a name with extra (OME-NGFF-style)
-      fields -- `type`, `unit`, `orientation` -- passed as a dict in place of
-      a bare name (`{"name": "x", "type": "space"}`). `names` stays the
-      ergonomic view (bare names); `axes` returns the full descriptors. The
-      extra fields live in `_axis_meta`, keyed by dimension name, so they
-      follow the dimension like coordinates do.
+    - **Axis descriptors** may enrich a name with extra fields -- any custom
+      key you like (`type` is the OME-NGFF convention shown in examples;
+      `orientation` is the one field with built-in behaviour) -- passed as a
+      dict in place of a bare name (`{"name": "x", "type": "space"}`). `names`
+      stays the ergonomic view (bare names); `axes` returns the full
+      descriptors. The extra fields live in `_axis_meta`, keyed by dimension
+      name, so they follow the dimension like coordinates do.
 
     Select by label with `sel`, by integer position with `isel`, or reach a
     single label by attribute (`x.red`).
@@ -348,7 +351,7 @@ class XTensor(ExtendedTensor):
         # add support for the `names` / `coords` arguments here.
         super().__init__()  # This actually calls `object.__init__`
         # `names=` takes bare strings; `axes=` is the general per-axis
-        # container (descriptor dicts: type/unit/orientation/coord/labels).
+        # container (descriptor dicts: name + coord/labels + free-form fields).
         axes = kwargs.pop("axes", None)
         names = kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
@@ -401,7 +404,7 @@ class XTensor(ExtendedTensor):
                 f"Expected {self.ndim} names, got {len(value)}: {value}"
             )
         # `names=` takes bare strings (or `None`); richer axis descriptors --
-        # `type`/`unit`/`orientation`/`coord` -- go through `axes=` instead.
+        # `coord`/`labels` and free-form fields -- go through `axes=` instead.
         for item in value:
             if not (item is None or isinstance(item, str)):
                 raise TypeError(
@@ -416,8 +419,9 @@ class XTensor(ExtendedTensor):
     def axes(self) -> tuple[dict | None, ...]:
         """
         Each axis as a descriptor dict ``{"name": ..., **extra}`` (or `None`
-        for an unnamed axis). The extra OME-NGFF-style fields (`type`, `unit`,
-        `orientation`) come from `_axis_meta`, keyed by dimension name.
+        for an unnamed axis). The extra fields -- any custom key (`type` by
+        OME-NGFF convention, `orientation`, ...) -- come from `_axis_meta`,
+        keyed by dimension name.
         """
         meta = self._valid_axis_meta()
         return tuple(
