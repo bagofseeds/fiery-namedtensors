@@ -152,6 +152,67 @@ def xstack(
     return result
 
 
+def _single_name(t: tx.Any) -> tx.Optional[str]:
+    """The name of a 1-D `XTensor`'s only axis (else `None`)."""
+    if isinstance(t, XTensor) and t.ndim == 1:
+        return t.names[0]
+    return None
+
+
+def xmeshgrid(
+    *tensors: tx.Any,
+    indexing: str = "ij",
+    names: tx.Optional[tx.Sequence] = None,
+) -> tx.Tuple[XTensor, ...]:
+    """
+    Like `torch.meshgrid`, but each output grid is a named, coordinate-carrying
+    [`XTensor`][fiery.xtensor.XTensor].
+
+    Every output spans all the input axes; `xmeshgrid` names those axes after
+    the inputs (an `XTensor` input contributes its own axis name, or pass
+    `names=` to set them) and attaches **each input as the coordinate** along
+    its axis -- exactly the coordinate grid you usually build a meshgrid for::
+
+        y = xarange(3, names=("y",))
+        x = xarange(4, names=("x",))
+        gy, gx = xmeshgrid(y, x)          # each is ("y", "x") with y/x coords
+
+    `indexing` is `torch.meshgrid`'s (`"ij"` *(default)*, or `"xy"` which swaps
+    the first two output axes). Inputs must be 1-D. A `None` axis name gets no
+    coordinate.
+    """
+    raws = [
+        t.as_subclass(torch.Tensor) if isinstance(t, XTensor) else t
+        for t in tensors
+    ]
+    try:
+        grids = torch.meshgrid(*raws, indexing=indexing)
+    except TypeError:
+        # Old torch has no `indexing=` (its meshgrid is always "ij").
+        if indexing != "ij":
+            raise TypeError(
+                "this torch build's meshgrid has no 'indexing='; "
+                "only 'ij' is available"
+            ) from None
+        grids = torch.meshgrid(*raws)
+    base = (
+        tuple(names)
+        if names is not None
+        else tuple(_single_name(t) for t in tensors)
+    )
+    # `"xy"` swaps the first two output axes; the names follow.
+    order = list(range(len(tensors)))
+    if indexing == "xy" and len(order) >= 2:
+        order[0], order[1] = order[1], order[0]
+    grid_names = tuple(base[i] for i in order)
+    coords = {}
+    for name, source in zip(base, tensors):
+        if name is not None:
+            coords[name] = source  # an XTensor keeps its position unit
+    kwargs = {"coords": coords} if coords else {}
+    return tuple(XTensor(grid, names=grid_names, **kwargs) for grid in grids)
+
+
 def xvector(
     data: tx.Any,
     *,
@@ -225,6 +286,7 @@ __all__ = [
     "xrand_like",
     "xrandn_like",
     "xstack",
+    "xmeshgrid",
     "xvector",
     "xmatrix",
 ]

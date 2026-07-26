@@ -10,6 +10,7 @@ from fiery.xtensor import (
     xfill,
     xfull,
     xlinspace,
+    xmeshgrid,
     xones,
     xones_like,
     xstack,
@@ -123,6 +124,37 @@ def test_xstack_coords_needs_a_name():
 
     with pytest.raises(ValueError, match="needs a name"):
         xstack([xzeros(2), xzeros(2)], coords=("a", "b"))
+
+
+def test_xmeshgrid_names_axes_and_carries_coords():
+    y = xarange(3, names=("y",))
+    x = xarange(4, names=("x",))
+    gy, gx = xmeshgrid(y, x)
+    assert gy.names == ("y", "x") and gx.names == ("y", "x")
+    assert gy.shape == (3, 4)
+    # each input becomes the coordinate along its own axis
+    assert gy.coords["y"]["values"].as_subclass(torch.Tensor).tolist() == [
+        0,
+        1,
+        2,
+    ]
+    # gy varies along y, gx along x (indexing="ij")
+    assert gy.as_subclass(torch.Tensor)[:, 0].tolist() == [0, 1, 2]
+    assert gx.as_subclass(torch.Tensor)[0, :].tolist() == [0, 1, 2, 3]
+
+
+def test_xmeshgrid_xy_swaps_the_first_two_axes():
+    y = xarange(3, names=("y",))
+    x = xarange(4, names=("x",))
+    gy, gx = xmeshgrid(y, x, indexing="xy")
+    assert gy.names == ("x", "y")
+    assert gy.shape == (4, 3)
+
+
+def test_xmeshgrid_names_override_and_plain_inputs():
+    a, b = xmeshgrid(torch.arange(2), torch.arange(3), names=("a", "b"))
+    assert a.names == ("a", "b")
+    assert a.shape == (2, 3)
 
 
 def test_named_factories_are_gone():
