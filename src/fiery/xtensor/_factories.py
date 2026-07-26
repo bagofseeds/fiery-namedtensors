@@ -115,6 +115,43 @@ xrand_like = _make_like_factory("rand_like")
 xrandn_like = _make_like_factory("randn_like")
 
 
+def xstack(
+    tensors: tx.Sequence,
+    dim: tx.Any = 0,
+    *,
+    name: tx.Optional[str] = None,
+    coords: tx.Any = None,
+    **kwargs: tx.Any,
+) -> XTensor:
+    """
+    Like `torch.stack`, but lets you **name** (and label) the new axis.
+
+    `torch.stack` inserts a brand-new axis that its signature gives no way to
+    name, so it always comes out unnamed. `xstack` stacks the same way and then
+    names the inserted axis `name` (at position `dim`) and, if given, labels it
+    with `coords` -- handy for stacking a list of frames into a named,
+    coordinate-carrying axis::
+
+        xstack([r, g, b], name="channel", coords=("r", "g", "b"))
+
+    The existing axes keep whatever names and labels the operands agree on
+    (as with a plain `torch.stack`). `coords` needs a `name`.
+    """
+    result = torch.stack(list(tensors), dim, **kwargs)
+    if not isinstance(result, XTensor):
+        result = XTensor(result)
+    axis = dim % result.ndim
+    if name is not None:
+        names = list(result.names)
+        names[axis] = name
+        result.names = tuple(names)
+    if coords is not None:
+        if name is None:
+            raise ValueError("xstack: coords= needs a name= for the new axis")
+        result.coords = dict(result.coords, **{name: coords})
+    return result
+
+
 def xvector(
     data: tx.Any,
     *,
@@ -187,6 +224,7 @@ __all__ = [
     "xfull_like",
     "xrand_like",
     "xrandn_like",
+    "xstack",
     "xvector",
     "xmatrix",
 ]

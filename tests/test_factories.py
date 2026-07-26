@@ -12,6 +12,7 @@ from fiery.xtensor import (
     xlinspace,
     xones,
     xones_like,
+    xstack,
     xzeros,
     xzeros_like,
 )
@@ -98,6 +99,30 @@ def test_like_forwards_dtype():
     y = xzeros_like(x, dtype=torch.int32)
     assert y.dtype == torch.int32
     assert y.names == ("x",)
+
+
+def test_xstack_names_the_new_axis():
+    r = xzeros(3, names=("t",))
+    g = xones(3, names=("t",))
+    out = xstack([r, g], name="channel")
+    assert out.names == ("channel", "t")
+    assert out.shape == (2, 3)
+
+
+def test_xstack_labels_the_new_axis_and_keeps_existing_names():
+    a = xzeros(3, names=("t",))
+    b = xones(3, names=("t",))
+    out = xstack([a, b], dim=-1, name="channel", coords=("a", "b"))
+    assert out.names == ("t", "channel")
+    assert out.coords["channel"] == ("a", "b")
+    assert out.sel(channel="b").tolist() == [1.0, 1.0, 1.0]
+
+
+def test_xstack_coords_needs_a_name():
+    import pytest
+
+    with pytest.raises(ValueError, match="needs a name"):
+        xstack([xzeros(2), xzeros(2)], coords=("a", "b"))
 
 
 def test_named_factories_are_gone():
