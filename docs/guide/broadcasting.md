@@ -22,9 +22,28 @@ d = xtensor(torch.arange(3), names=("y",))
 
 The result's dimensions are the **union** of the operands' names; a shared name
 is broadcast together (its sizes must match, or one must be 1) and coordinates
-that agree are carried through. If **any** axis is unnamed — or an operand is a
-plain tensor or a scalar — the op falls back to ordinary positional
-broadcasting.
+that agree are carried through.
+
+### When name-alignment does *not* apply
+
+Name-alignment kicks in only when **both** operands are fully-named `XTensor`s.
+Otherwise the op uses ordinary **positional** broadcasting (the plain-torch
+rule):
+
+- an operand is a **plain tensor** or a **scalar** — it has no names to align
+  against, so it broadcasts positionally (this matches xarray, which also
+  broadcasts a bare array against the trailing axes);
+- **any** axis on **either** operand is **unnamed** (`None`).
+
+That second case is stricter than xarray, which has no unnamed dimensions and
+so *always* aligns by name. Here, a single unnamed axis on one operand drops
+the **whole** op to positional — even the axes that *are* named. This is a
+deliberately conservative first cut (positional broadcasting is unambiguous);
+whether a *partially* named operand should still align its named axes by name,
+and only treat the unnamed ones positionally, is an open design question
+([#75](https://github.com/bagofseeds/fiery-xtensor/issues/75)). If you rely on
+name-alignment, name **every** axis of both operands (`refine_names` fills the
+gaps).
 
 ## Coordinate alignment
 

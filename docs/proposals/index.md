@@ -1,0 +1,18 @@
+---
+icon: material/lightbulb-outline
+---
+
+# Proposals
+
+Design proposals for `fiery.xtensor` — the larger, cross-cutting decisions,
+written up for discussion before (and as) they land. Each one states the
+motivation, the API, how it relates to [xarray](vs-xarray.md), and the open
+questions.
+
+- [0001 — Coordinates (values, spacing, units)](0001-units.md) — numeric
+  coordinates: a physical position per element, compact `spacing`/`origin` or
+  an explicit tensor, with position units.
+- [0002 — Structured coordinates](0002-structured-coordinates.md) — richer
+  coordinate labels (a label as a dict of fields) and querying by field.
+- [0003 — Data units](0003-data-units.md) — physical units on a tensor's
+  *values*, with dimensional algebra and per-axis units.
