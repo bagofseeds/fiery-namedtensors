@@ -64,11 +64,20 @@ Repository = "https://github.com/bagofseeds/fiery-xtensor"
 units = [
     "pint>=0.18",
 ]
+# Higher-order `.interp` (Proposal 0004). Optional: without it `.interp` still
+# does built-in nearest-neighbour; orders >= 1 (linear/cubic/...) need the
+# `fiery.interpol` backend.
+interp = [
+    "fiery-interpol",
+]
 test = [
     "pytest>=7",
     "numpy",
     # exercise the unit backend where pint is installable (py >= 3.9)
     "pint>=0.18; python_version >= '3.9'",
+    # NOTE: fiery-interpol (the [interp] backend) is not on PyPI yet, so it is
+    # deliberately not pulled into the test env; the higher-order interp tests
+    # skip when it is absent (built-in nearest is always exercised).
 ]
 
 [build-system]

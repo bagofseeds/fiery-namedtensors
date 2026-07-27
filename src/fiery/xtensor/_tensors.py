@@ -848,9 +848,15 @@ class XTensor(ExtendedTensor):
             slicer[_resolve_axis(self.names, name)] = index
         return self[tuple(slicer)]
 
-    def sel(self, **indexers: tx.Any) -> tx.Self:
+    def sel(
+        self,
+        mode: tx.Optional[str] = None,
+        tolerance: tx.Any = None,
+        method: tx.Optional[str] = None,
+        **indexers: tx.Any,
+    ) -> tx.Self:
         """
-        Select by coordinate **label** along named dimensions.
+        Select by coordinate **label** (or numeric value) along named dims.
 
         `x.sel(channel="red")` selects the position whose label is `"red"`. A
         list of labels selects several positions; a single label drops the
@@ -858,13 +864,43 @@ class XTensor(ExtendedTensor):
         `str` matches a label's `"name"`, and a **dict** queries the labels'
         fields (`x.sel(channel={"type": "signal"})`), keeping the axis and
         selecting every match.
+
+        On a **numeric** coordinate (Proposal 0001), the selector is a value
+        (`x.sel(t="2s")`, Proposal 0004). `mode` chooses which tick an inexact
+        value snaps to:
+
+        - `"round"` *(default)* — the nearest tick by value;
+        - `"floor"` / `"ceil"` — the largest tick `<=` / smallest tick `>=`
+          the value (**value** space, robust to a descending coordinate);
+        - `"prev"` / `"next"` — the neighbouring tick at the lower / higher
+          **index** (tick order; needs a monotonic coordinate).
+
+        `tolerance` (a value in the position unit) caps the allowed gap. A
+        **bare** `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode`
+        implies an unbounded snap unless a `tolerance` is given. `method=` is
+        an xarray-compatible alias for `mode` (`nearest`→round, `pad`/`ffill`→
+        prev, `backfill`/`bfill`→next); pass one of `mode`/`method`, not both.
         """
+        if mode is not None and method is not None:
+            raise ValueError("sel: pass either 'mode' or 'method', not both")
+        raw = mode if mode is not None else method
+        sel_mode = _resolve_sel_mode(raw)
+        if tolerance is None:
+            # a bare sel is exact; asking for a mode implies an unbounded snap
+            tolerance = 0 if raw is None else None
+        elif isinstance(tolerance, float) and tolerance == float("inf"):
+            tolerance = None  # explicit unbounded
         coords = self.coords
         positional = {}
         for name, label in indexers.items():
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
             labels = coords[name]
+            if isinstance(labels, Coordinate):
+                positional[name] = _numeric_select(
+                    labels, label, sel_mode, tolerance, name
+                )
+                continue
             if isinstance(label, dict):
                 positional[name] = _positions_to_index(
                     _match_positions(labels, label)
@@ -883,6 +919,94 @@ class XTensor(ExtendedTensor):
                     ) from None
             positional[name] = positions if is_many else positions[0]
         return self.isel(**positional)
+
+    def interp(
+        self,
+        method: tx.Any = "linear",
+        bound: tx.Any = None,
+        extrapolate: tx.Any = None,
+        **indexers: tx.Any,
+    ) -> tx.Self:
+        """
+        Interpolate onto new coordinate values along named dims (Prop. 0004).
+
+        Where [`sel`][fiery.xtensor.XTensor.sel] *picks* existing positions,
+        `interp` *computes* values at arbitrary positions of a **numeric**
+        coordinate, the xarray way::
+
+            x.interp(t=2.5)                   # one point -> drops the axis
+            x.interp(t=[0.0, 0.5, 1.0])       # several  -> keeps the axis
+            x.interp(t="2.5s")                # unitful (backend converts)
+            x.interp(t=q, method="cubic")     # a query tensor (grads flow)
+
+        `method` is the interpolation order -- ``"nearest"`` (built in) or a
+        higher order (``"linear"`` *(default)*, ``"quadratic"``, ``"cubic"``,
+        or an int), which needs the optional `fiery.interpol` backend
+        (``pip install fiery-xtensor[interp]``). An out-of-range query follows
+        `bound` (default: the `interp_bound` option -- ``"replicate"`` clamps
+        to the edge) and `extrapolate` (default: the `interp_extrapolate`
+        option); both can be set with
+        [`set_options`][fiery.xtensor.set_options].
+
+        A **scalar** query drops the axis (like `sel`); a **list**/tensor keeps
+        it, its coordinate becoming the queried positions. Only **regular**
+        (compact `spacing`/`origin`) coordinates are supported for now.
+        """
+        out = self
+        for name, target in indexers.items():
+            out = out._interp_axis(name, target, method, bound, extrapolate)
+        return out
+
+    def _interp_axis(
+        self,
+        name: str,
+        target: tx.Any,
+        method: tx.Any,
+        bound: tx.Any,
+        extrapolate: tx.Any,
+    ) -> tx.Self:
+        """Interpolate a single named axis onto `target` (see `interp`)."""
+        axis = _resolve_axis(self.names, name)
+        axis_coord = self.__dict__.get("_axis_coord") or {}
+        coord = axis_coord.get(name)
+        if not isinstance(coord, Coordinate):
+            raise ValueError(f"interp: dim {name!r} has no numeric coordinate")
+        if not coord._compact():
+            raise NotImplementedError(
+                f"interp on the irregular coordinate {name!r} is not "
+                "supported yet (regular spacing/origin only for now; see #73)"
+            )
+        spacing = dict.__getitem__(coord, "spacing")
+        origin = dict.get(coord, "origin")
+        unit = spacing["unit"]
+        step = spacing["value"]
+        base = origin["value"] if origin is not None else 0
+        query, is_many = _query_values(target, unit)
+        frac = (query - base) / step
+        order = _interp_order(method)
+        eff_bound = _get_option("interp_bound") if bound is None else bound
+        eff_extrap = (
+            _get_option("interp_extrapolate")
+            if extrapolate is None
+            else extrapolate
+        )
+        raw = _interp_pull(
+            self.as_subclass(Tensor), axis, frac, order, eff_bound, eff_extrap
+        )
+        out = _carry(self, raw)
+        # the interpolated axis now sits at the queried positions: give it an
+        # explicit coordinate and drop any categorical labels keyed to the old
+        # positions.
+        new_axis_coord = dict(axis_coord)
+        new_axis_coord[name] = Coordinate(values=XTensor(query, unit=unit))
+        out._axis_coord = new_axis_coord
+        coords = self.__dict__.get("_coords") or {}
+        if name in coords:
+            out._coords = {k: v for k, v in coords.items() if k != name}
+        if not is_many:
+            # a scalar query drops the axis (like integer indexing / sel)
+            out = out.isel(**{name: 0})
+        return out
 
     def _dims_with_label(self, label: str) -> list:
         """Named dims a label **identity** appears on (usually 0 or 1)."""
@@ -1213,6 +1337,262 @@ def _positions_to_index(positions: list) -> tx.Any:
     if positions and positions == list(range(positions[0], positions[-1] + 1)):
         return slice(positions[0], positions[-1] + 1)
     return positions
+
+
+#: Relative tolerance for an "exact" numeric-coordinate match (floats).
+_EXACT_MATCH_REL = 1e-6
+
+
+def _selector_value(selector: tx.Any, unit: tx.Optional[str]) -> float:
+    """
+    A numeric selector as a plain float in the coordinate's position `unit`. A
+    bare number is taken as already in that unit; a unitful selector (`"2mm"`,
+    `(2, "mm")`, a pint quantity, ...) is converted under an active backend.
+    """
+    if isinstance(selector, (int, float)):
+        return float(selector)
+    quantity = _as_unitful(selector)
+    value, sel_unit = quantity["value"], quantity["unit"]
+    if (
+        unit
+        and sel_unit
+        and _units.active()
+        and not _units.equal(sel_unit, unit)
+    ):
+        value = value * _units.factor(sel_unit, unit)
+    return float(value)
+
+
+#: `sel` modes -> canonical name. `round`/`floor`/`ceil` act on **values**;
+#: `prev`/`next` on **tick order**. xarray's fill methods are positional, so
+#: they alias onto `prev`/`next`.
+_SEL_MODE_ALIASES = {
+    "round": "round",
+    "nearest": "round",
+    "floor": "floor",
+    "ceil": "ceil",
+    "prev": "prev",
+    "pad": "prev",
+    "ffill": "prev",
+    "next": "next",
+    "backfill": "next",
+    "bfill": "next",
+}
+
+
+def _resolve_sel_mode(mode: tx.Optional[str]) -> str:
+    """The canonical `sel` mode for `mode`/`method` (`None` -> `"round"`)."""
+    if mode is None:
+        return "round"
+    try:
+        return _SEL_MODE_ALIASES[mode]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"sel: unknown mode {mode!r}; use one of "
+            "round/floor/ceil/prev/next (or the xarray aliases "
+            "nearest/pad/ffill/backfill/bfill)"
+        ) from None
+
+
+def _pick_sel_index(
+    values: Tensor, target: float, mode: str, ascending: bool
+) -> tx.Optional[int]:
+    """
+    The index of the tick `mode` selects for `target`, or `None` if there is
+    none on the required side. `round` is nearest by value; `floor`/`ceil` are
+    value-space; `prev`/`next` are tick-order (they resolve to `floor`/`ceil`
+    per the coordinate's direction).
+    """
+    if mode == "round":
+        return int((values - target).abs().argmin())
+    if mode == "prev":
+        mode = "floor" if ascending else "ceil"
+    elif mode == "next":
+        mode = "ceil" if ascending else "floor"
+    if mode == "floor":  # largest value <= target
+        mask = values <= target
+        if not bool(mask.any()):
+            return None
+        cand = torch.where(
+            mask, values, torch.full_like(values, float("-inf"))
+        )
+        return int(cand.argmax())
+    # ceil: smallest value >= target
+    mask = values >= target
+    if not bool(mask.any()):
+        return None
+    cand = torch.where(mask, values, torch.full_like(values, float("inf")))
+    return int(cand.argmin())
+
+
+def _numeric_select(
+    coord: "Coordinate",
+    selector: tx.Any,
+    mode: str,
+    tolerance: tx.Any,
+    name: str,
+) -> tx.Any:
+    """
+    Resolve a value-based selector against a numeric `Coordinate` to integer
+    position(s) (Proposal 0004), snapping per `mode` (see `sel`). `tolerance`
+    (a delta in the position unit) caps the gap; `None` is unbounded, `0` is
+    exact (up to float epsilon).
+    """
+    materialised = coord["values"]
+    values = materialised.as_subclass(Tensor)
+    unit = materialised.unit
+    # a `list` selects several positions; a `tuple` is a unitful (value, unit)
+    is_many = isinstance(selector, list)
+    wanted = list(selector) if is_many else [selector]
+    tol = None if tolerance is None else _selector_value(tolerance, unit)
+    ascending = True
+    if mode in ("prev", "next") and values.numel() > 1:
+        diffs = values[1:] - values[:-1]
+        if bool((diffs >= 0).all()):
+            ascending = True
+        elif bool((diffs <= 0).all()):
+            ascending = False
+        else:
+            raise ValueError(
+                f"sel: mode={mode!r} needs a monotonic coordinate on {name!r}"
+            )
+    positions = []
+    for one in wanted:
+        target = _selector_value(one, unit)
+        j = _pick_sel_index(values, target, mode, ascending)
+        if j is None:
+            raise ValueError(f"sel: no {mode} tick for {one!r} on {name!r}")
+        gap = float((values[j] - target).abs())
+        if tol is not None:
+            cap = tol if tol > 0 else _EXACT_MATCH_REL * max(1.0, abs(target))
+            if gap > cap:
+                raise ValueError(
+                    f"sel: {mode} tick for {one!r} on {name!r} is {gap} away, "
+                    f"over tolerance {tol}"
+                )
+        positions.append(j)
+    return positions if is_many else positions[0]
+
+
+#: `interp` method names -> integer spline order (mirrors `fiery.interpol`).
+_INTERP_ORDERS = {
+    "nearest": 0,
+    "zeroth": 0,
+    "linear": 1,
+    "first": 1,
+    "quadratic": 2,
+    "second": 2,
+    "cubic": 3,
+    "third": 3,
+}
+
+
+def _interp_order(method: tx.Any) -> int:
+    """The integer spline order for an `interp` `method` (a name or an int)."""
+    if isinstance(method, int) and not isinstance(method, bool):
+        return method
+    try:
+        return _INTERP_ORDERS[method]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"interp: unknown method {method!r}; use an int order or one of "
+            f"{sorted(_INTERP_ORDERS)}"
+        ) from None
+
+
+def _query_values(target: tx.Any, unit: tx.Optional[str]) -> tx.Any:
+    """
+    A numeric `interp` query as a 1-D float tensor in the position `unit`, plus
+    whether it **keeps** the axis (a list / 1-D tensor) or **drops** it (a
+    scalar). A bare tensor is taken as already in the position unit (and its
+    gradient rides through); everything else goes through `_selector_value`, so
+    a unitful query (`"2s"`, `(2, "s")`, ...) is converted first.
+    """
+    if isinstance(target, Tensor):
+        flat = target.reshape(-1)
+        if not flat.is_floating_point():
+            flat = flat.to(torch.get_default_dtype())
+        return flat, target.ndim > 0
+    is_many = isinstance(target, list)
+    items = target if is_many else [target]
+    values = [_selector_value(one, unit) for one in items]
+    query = torch.tensor(values, dtype=torch.get_default_dtype())
+    return query, is_many
+
+
+def _interpol() -> tx.Any:
+    """The optional `fiery.interpol` backend, or `None` if not installed."""
+    try:
+        from fiery import interpol
+    except ImportError:
+        return None
+    return interpol
+
+
+def _nearest_gather(
+    moved: Tensor, frac: Tensor, length: int, bound: tx.Any
+) -> Tensor:
+    """
+    Built-in nearest-neighbour pull along the **last** axis of `moved` (no
+    backend). The fractional indices `frac` round to the closest tick; an
+    out-of-range index is resolved by `bound` -- clamp for
+    ``"replicate"``/``"nearest"``, wrap for ``"dft"``/``"wrap"``. Any other
+    boundary needs the `fiery.interpol` backend.
+    """
+    idx = frac.round().long()
+    if bound in ("replicate", "nearest", 1):
+        idx = idx.clamp(0, length - 1)
+    elif bound in ("dft", "wrap", 6):
+        idx = idx.remainder(length)
+    else:
+        raise ImportError(
+            f"interp method='nearest' with bound {bound!r} needs the "
+            "fiery.interpol backend; install fiery-xtensor[interp]"
+        )
+    return moved.index_select(-1, idx)
+
+
+def _interp_pull(
+    raw: Tensor,
+    axis: int,
+    frac: Tensor,
+    order: int,
+    bound: tx.Any,
+    extrapolate: tx.Any,
+) -> Tensor:
+    """
+    Interpolate `raw` along `axis` at fractional indices `frac` (see `interp`).
+
+    Order 0 (nearest) is done in-package -- a gather -- so it needs no backend;
+    order >= 1 delegates to `fiery.interpol.grid_pull`, the optional
+    `fiery-xtensor[interp]` dependency.
+    """
+    n = int(frac.shape[0])
+    moved = torch.movedim(raw, axis, -1)  # (*rest, length)
+    rest = moved.shape[:-1]
+    length = int(moved.shape[-1])
+    interpol = _interpol()
+    if order == 0 and interpol is None:
+        out = _nearest_gather(moved, frac, length, bound)
+    else:
+        if interpol is None:
+            raise ImportError(
+                "interp with order >= 1 needs the fiery.interpol backend; "
+                "install fiery-xtensor[interp]"
+            )
+        flat = moved.reshape(-1, 1, length)
+        if not flat.is_floating_point():
+            flat = flat.to(torch.get_default_dtype())
+        grid = frac.reshape(1, n, 1).to(flat).expand(flat.shape[0], n, 1)
+        pulled = interpol.grid_pull(
+            flat,
+            grid,
+            interpolation=order,
+            bound=bound,
+            extrapolate=extrapolate,
+        )  # (batch, 1, n)
+        out = pulled.reshape(*rest, n)
+    return torch.movedim(out, -1, axis)
 
 
 def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:
