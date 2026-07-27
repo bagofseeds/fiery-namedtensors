@@ -663,6 +663,12 @@ class XTensor(ExtendedTensor):
                 new_key = old_key
             if any(dim not in rename_of for dim in dims):
                 continue
+            if new_key in remapped:
+                raise ValueError(
+                    f"rename: coordinate name collision on {new_key!r} "
+                    "(a renamed axis now matches an existing coordinate's "
+                    "name); choose a name that doesn't collide"
+                )
             new_dims = tuple(rename_of[dim] for dim in dims)
             remapped[new_key] = (new_dims, coord)
         return remapped
@@ -1256,7 +1262,15 @@ def _nondim_coord_len(coord: tx.Any) -> int:
 def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
     """
     Parse a `(dim, values)` non-dimension coordinate spec into `(dim, coord)`,
-    where `coord` is a `Coordinate` (explicit numeric) or a tuple of labels.
+    where `coord` is an **explicit** numeric `Coordinate` or a tuple of
+    labels. A **compact** (`spacing`/`origin`) spec isn't supported here yet:
+    unlike a dimension coordinate, a non-dimension one isn't re-sliced when
+    its dim is (Proposal 0005's "no slice-tracking yet") -- for an explicit
+    or label coordinate that's caught by the length check on resize, but a
+    compact coordinate binds to *any* size, so it would silently rebind to
+    the wrong affine after a non-trivial slice instead of raising or
+    dropping. Rejecting it here avoids that silent-wrong-values trap; lift
+    the restriction once non-dimension coordinates are re-sliced properly.
     """
     if not (
         isinstance(spec, tuple) and len(spec) == 2 and isinstance(spec[0], str)
@@ -1268,6 +1282,12 @@ def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
     dim, raw = spec
     if dim not in names:
         raise ValueError(f"coords: no axis named {dim!r} in {tuple(names)}")
+    if _is_compact_coord(raw):
+        raise NotImplementedError(
+            f"coords: {key!r} -- a compact (spacing/origin) non-dimension "
+            "coordinate isn't supported yet (it wouldn't survive slicing its "
+            "dim correctly); use an explicit tensor of values instead"
+        )
     coord = _make_coordinate(raw) if _is_explicit_coord(raw) else tuple(raw)
     return dim, coord
 

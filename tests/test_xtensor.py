@@ -156,6 +156,19 @@ def test_non_dimension_numeric_coordinate():
     assert x.coords["wl"]["values"].unit == "nm"
 
 
+def test_non_dimension_compact_coordinate_is_rejected():
+    # a compact (spacing/origin) non-dimension coordinate isn't re-sliced
+    # when its dim is (no slice-tracking yet) and would silently rebind to
+    # the wrong affine after a resize -- rejected rather than allowed to
+    # silently misbehave; an explicit tensor of values works (see above).
+    with pytest.raises(NotImplementedError, match="isn't supported yet"):
+        XTensor(
+            torch.arange(4.0),
+            names=("i",),
+            coords={"wl": ("i", {"spacing": 10.0, "origin": 400.0})},
+        )
+
+
 def test_non_dimension_coordinate_length_is_checked():
     with pytest.raises(ValueError, match="has 2 values for dim"):
         XTensor(
@@ -178,6 +191,22 @@ def test_non_dimension_coordinate_drops_when_its_dim_is_reordered():
     idx = torch.tensor([0, 1, 2, 3])
     assert "season" not in x.gather("t", idx).coords
     assert "season" not in x.index_select("t", idx[:2]).coords
+
+
+def test_rename_raises_on_a_coordinate_name_collision():
+    # renaming an axis onto an existing non-dimension coordinate's name would
+    # otherwise silently drop one of the two entries (dict key collision)
+    x = XTensor(
+        torch.arange(6.0).reshape(2, 3),
+        names=("t", "u"),
+        coords={"season": ("t", ["w", "sp"]), "u": ["x", "y", "z"]},
+    )
+    with pytest.raises(ValueError, match="coordinate name collision"):
+        x.rename(u="season")
+    # a non-colliding rename is unaffected
+    renamed = x.rename(u="month")
+    assert renamed.coords["season"] == ("w", "sp")
+    assert renamed.coords["month"] == ("x", "y", "z")
 
 
 def test_coords_constructor_checks_label_count():

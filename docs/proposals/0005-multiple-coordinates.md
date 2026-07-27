@@ -177,9 +177,18 @@ affine feature.
   named axis (`sort`/`flip`/`roll`/`gather`/`index_select`/`take_along_dim`)
   drop any non-dimension coordinate riding on the touched axis, alongside that
   axis' own dimension coordinate — both are conservatively invalidated the
-  same way.
+  same way. `rename` also raises on a coordinate-name collision (renaming an
+  axis onto an existing coordinate's name) rather than silently dropping one.
 - Binary ops (broadcasting) don't carry non-dimension coordinates through yet
   (dropped) — see the reconciliation section above.
+- Only **labels** or an **explicit** numeric tensor are accepted as `values`
+  — a **compact** (`spacing`/`origin`) non-dimension coordinate raises
+  `NotImplementedError`. Unlike a dimension coordinate, a non-dimension one
+  isn't re-sliced when its dim is (no slice-tracking yet, step 6); a label or
+  explicit coordinate is at least caught by the length check on resize, but a
+  compact one binds to *any* size, so it would silently rebind to the wrong
+  affine after a non-trivial slice instead of raising or dropping. Lifting
+  this restriction is part of step 6.
 
 ## Open questions (remaining)
 
