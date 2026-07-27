@@ -59,13 +59,13 @@ This page lists where the two diverge, in both directions.
 
 - **`names`, not `dims`.** The dimension names live on `.names` (xarray:
   `.dims`); the values are a `torch.Tensor`, not a NumPy array.
-- **Unnamed axes fall back to positional.** Because a dim may be unnamed, a
-  pointwise op aligns **by name only when both operands are fully named**; if
-  any axis is unnamed (or an operand is a plain tensor / scalar) it uses
-  ordinary positional broadcasting. xarray has no unnamed dims, so it always
-  aligns by name. (Whether a *partially* named operand should still align its
-  named axes is an open question — see [broadcasting](broadcasting.md) and
-  [#75](https://github.com/bagofseeds/fiery-xtensor/issues/75).)
+- **Unnamed axes are allowed.** xarray has no unnamed dims; xtensor does (a
+  plain tensor's anonymous batch axis). A pointwise op still aligns **by name**
+  when the unnamed axes are all **leading** — the named suffix aligns by name,
+  the anonymous prefix broadcasts positionally — and when both operands share
+  the same `names`. An all-unnamed operand, a plain tensor, or a scalar
+  broadcasts positionally; a `None` *after* a named axis on differently-named
+  operands raises (ambiguous). See [broadcasting](broadcasting.md).
 - **Selection vs interpolation are separate verbs.** Like xarray, `.sel` picks
   an existing position (exact or `method="nearest"`) and `.interp` computes
   values off the grid; numeric `.sel`/`.interp` are covered by

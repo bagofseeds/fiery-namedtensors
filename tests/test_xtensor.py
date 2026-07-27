@@ -1665,9 +1665,55 @@ def test_scalar_and_plain_operands_keep_the_tensor_names():
     assert (a == a).names == ("x", "y")  # comparisons too
 
 
-def test_unnamed_axis_falls_back_to_positional():
+def test_identical_names_align_positionally_even_with_nonleading_none():
+    # same names tuple -> axes correspond 1:1, so a non-leading None is fine
     g = XTensor(torch.zeros(2, 3), names=("x", None))
     assert (g + g).names == ("x", None)
+    h = XTensor(torch.zeros(2, 3, 4), names=("b", None, "c"))
+    assert (h + h).names == ("b", None, "c")
+
+
+def test_all_unnamed_operand_behaves_like_a_plain_tensor():
+    # an all-None XTensor has nothing to align on -> positional, no raise
+    a = XTensor(torch.zeros(2, 3), names=("x", "y"))
+    u = XTensor(torch.zeros(2, 3))
+    assert u.names == (None, None)
+    assert (a + u).names == ("x", "y")
+
+
+def test_partial_names_align_named_suffix_broadcast_leading_anon():
+    # issue #75: unnamed axes all leading -> named suffix aligns by name,
+    # anonymous prefix broadcasts positionally. The shared name is used, so
+    # the old silent mis-pair (square shapes) is gone.
+    a = XTensor(torch.arange(9.0).reshape(3, 3), names=("x", "y"))
+    b = XTensor(torch.zeros(3, 3), names=(None, "x"))
+    out = a + b
+    assert out.names == (None, "x", "y")  # not the old ('x', None)
+    assert out.shape == (3, 3, 3)
+    # a missing named axis broadcasts; differing anon counts right-align
+    c = XTensor(torch.zeros(2, 4, 3, 5), names=(None, None, "x", "y"))
+    d = XTensor(torch.zeros(4, 5, 3), names=(None, "y", "x"))
+    assert (c + d).names == (None, None, "x", "y")
+    assert (c + d).shape == (2, 4, 3, 5)
+
+
+def test_partial_names_reconcile_coordinates_on_the_named_suffix():
+    a = XTensor(torch.zeros(3), names=("y",), coords={"y": ("A", "B", "C")})
+    b = XTensor(
+        torch.zeros(4, 3), names=(None, "y"), coords={"y": ("C", "B", "A")}
+    )
+    out = a + b
+    # aligned by label (inner-join), anon axis broadcast in front
+    assert out.names == (None, "y")
+    assert out.coords == {"y": ("A", "B", "C")}
+
+
+def test_partial_names_not_all_leading_raises():
+    # a None after a named axis, with *different* names -> ambiguous -> raise
+    a = XTensor(torch.zeros(2, 3), names=("x", None))
+    b = XTensor(torch.zeros(2, 3), names=("y", None))
+    with pytest.raises(ValueError, match="not all leading"):
+        _ = a + b
 
 
 def test_pointwise_aligns_coordinates_by_name():
