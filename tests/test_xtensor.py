@@ -331,6 +331,217 @@ def test_coordinate_converts_its_position_unit():
         assert got == [1000.0, 2000.0, 3000.0]
 
 
+def test_sel_by_numeric_coordinate_value():
+    # values 0, 0.5, 1.0, ... 3.5 along t
+    x = XTensor(
+        torch.arange(8.0),
+        names=("t",),
+        coords={"t": {"spacing": (0.5, "s"), "origin": (0.0, "s")}},
+    )
+    assert x.sel(t=1.5).item() == 3.0  # exact value -> index 3
+    assert x.sel(t=[0.5, 2.0]).tolist() == [1.0, 4.0]  # a list keeps the axis
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(t=1.7)  # bare sel is exact (tolerance 0)
+    # a mode implies an unbounded snap -> nearest tick is 1.5 (index 3)
+    assert x.sel(t=1.7, mode="round").item() == 3.0
+    assert x.sel(t=1.7, method="nearest").item() == 3.0  # xarray alias
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(t=1.7, mode="round", tolerance=0.1)
+
+
+def test_sel_modes_round_floor_ceil_prev_next():
+    # ascending ticks 0,2,4,6,8 ; data 0,10,20,30,40
+    x = XTensor(
+        torch.arange(5.0) * 10,
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    assert x.sel(t=5.0, mode="floor").item() == 20.0  # value 4
+    assert x.sel(t=5.0, mode="ceil").item() == 30.0  # value 6
+    # ascending: prev == floor, next == ceil
+    assert x.sel(t=5.0, mode="prev").item() == 20.0
+    assert x.sel(t=5.0, mode="next").item() == 30.0
+
+
+def test_sel_modes_split_value_vs_tickorder_on_descending():
+    # descending ticks 8,6,4,2,0 ; data 0,10,20,30,40
+    d = XTensor(
+        torch.arange(5.0) * 10,
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([8.0, 6.0, 4.0, 2.0, 0.0]))},
+    )
+    # value-space floor/ceil are orientation-robust
+    assert d.sel(t=5.0, mode="floor").item() == 20.0  # value 4
+    assert d.sel(t=5.0, mode="ceil").item() == 10.0  # value 6
+    # tick-order prev/next SWAP vs floor/ceil on a descending coordinate
+    assert d.sel(t=5.0, mode="prev").item() == 10.0  # == ceil here
+    assert d.sel(t=5.0, mode="next").item() == 20.0  # == floor here
+
+
+def test_sel_mode_and_method_are_exclusive_and_validated():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    with pytest.raises(ValueError, match="either 'mode' or 'method'"):
+        x.sel(t=1.0, mode="round", method="nearest")
+    with pytest.raises(ValueError, match="unknown mode"):
+        x.sel(t=1.0, mode="bogus")
+
+
+def test_sel_numeric_is_unit_aware():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.arange(4.0),  # positions 0,1,2,3 mm
+            names=("x",),
+            coords={"x": {"spacing": (1.0, "mm")}},
+        )
+        assert x.sel(x="2000um", method="nearest").item() == 2.0  # converted
+        assert x.sel(x=(2, "mm")).item() == 2.0  # a (value, unit) tuple
+
+
+def test_sel_explicit_numeric_coordinate():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")},
+    )
+    assert x.sel(t=2.0).item() == 2.0
+    assert x.sel(t=1.0, method="nearest").item() == 1.0  # nearest tick is 0.5
+
+
+def test_interp_nearest_is_builtin_without_the_backend(monkeypatch):
+    # order-0 (nearest) needs no fiery.interpol; force the backend absent.
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = XTensor(  # ticks 0,2,4,6,8
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    got = x.interp(t=[3.0, 5.0], method="nearest")
+    assert got.tolist() == [2.0, 2.0]  # round(1.5)=2, round(2.5)=2 (half-even)
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        3.0,
+        5.0,
+    ]
+    # out-of-range clamps (replicate, the default) ...
+    assert x.interp(t=[-4.0, 20.0], method="nearest").tolist() == [0.0, 4.0]
+    # ... or wraps with bound="wrap"
+    assert x.interp(t=10.0, method="nearest", bound="wrap").item() == 0.0
+
+
+def test_interp_higher_order_needs_the_backend(monkeypatch):
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    with pytest.raises(ImportError, match="fiery-xtensor\\[interp\\]"):
+        x.interp(t=[1.0], method="linear")
+
+
+def test_interp_linear_computes_new_values():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(  # value == index (ticks 0,2,4,6,8)
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    got = x.interp(t=[1.0, 3.0, 5.0])  # halfway ticks -> half-index values
+    assert got.tolist() == [0.5, 1.5, 2.5]
+    assert got.names == ("t",)
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        1.0,
+        3.0,
+        5.0,
+    ]
+
+
+def test_interp_scalar_drops_the_axis():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    got = x.interp(t=3.0)  # a scalar query drops the axis, like sel
+    assert got.ndim == 0
+    assert got.item() == 1.5
+
+
+def test_interp_keeps_other_axes_and_names():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.arange(10.0).reshape(2, 5),
+        names=("b", "t"),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    got = x.interp(t=[1.0, 3.0])
+    assert got.shape == (2, 2)
+    assert got.names == ("b", "t")
+    assert got.tolist() == [[0.5, 1.5], [5.5, 6.5]]
+
+
+def test_interp_is_unit_aware():
+    pytest.importorskip("fiery.interpol")
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.arange(5.0),
+            names=("t",),
+            coords={"t": {"spacing": (2.0, "s"), "origin": (0.0, "s")}},
+        )
+        assert x.interp(t="3000ms").item() == 1.5  # 3000 ms -> 3 s -> 1.5
+
+
+def test_interp_query_gradients_flow():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    q = torch.tensor([3.0], requires_grad=True)
+    x.interp(t=q).sum().backward()
+    assert q.grad.tolist() == [0.5]  # d(value)/d(query) = 1 / spacing
+
+
+def test_interp_bound_option_and_override():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    with set_options(interp_bound="wrap"):
+        assert x.interp(t=10.0, method="nearest").item() == 0.0  # wraps
+        # a per-call bound overrides the global option
+        got = x.interp(t=10.0, method="nearest", bound="replicate")
+        assert got.item() == 4.0  # clamps
+
+
+def test_interp_irregular_coordinate_not_supported():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), unit="s")},
+    )
+    with pytest.raises(NotImplementedError, match="irregular"):
+        x.interp(t=[2.0])
+
+
+def test_interp_needs_a_numeric_coordinate():
+    x = _labelled()
+    with pytest.raises(ValueError, match="no numeric coordinate"):
+        x.interp(col=1.0)
+
+
 def test_sel_selects_a_labelled_position_and_drops_the_axis():
     x = _labelled()
     y = x.sel(col="y")
