@@ -2585,6 +2585,113 @@ def _align_by_name(a: XTensor, b: XTensor) -> tuple:
     )
 
 
+def _leading_none(names: tuple) -> int:
+    """The length of the leading run of `None` axes (the anonymous prefix)."""
+    count = 0
+    for name in names:
+        if name is not None:
+            break
+        count += 1
+    return count
+
+
+def _anon_leading(names: tuple) -> bool:
+    """
+    Whether every unnamed axis is in the **leading** run -- no `None` after a
+    named axis. This is the layout partial-name alignment can handle (issue
+    #75); an interleaved/trailing `None` is ambiguous and rejected.
+    """
+    seen_named = False
+    for name in names:
+        if name is None and seen_named:
+            return False
+        if name is not None:
+            seen_named = True
+    return True
+
+
+def _reconcile_coords(a: XTensor, b: XTensor, names: tx.Iterable) -> tuple:
+    """
+    Reconcile the coordinates of the shared axes in `names`, returning
+    `(a', b', coords)`. Two differing **categorical** label sets are
+    inner-joined (both operands reindexed to the intersection, in `a`'s order);
+    an agreeing coordinate is kept; a coordinate present on only one side rides
+    along; a differing **numeric** coordinate or a **kind mismatch** is a
+    conflict and is dropped (issue #72).
+    """
+    coords: dict = {}
+    for name in names:
+        ca, cb = a.coords.get(name), b.coords.get(name)
+        if ca is None and cb is None:
+            continue
+        if ca is None:
+            coords[name] = cb
+        elif cb is None:
+            coords[name] = ca
+        elif isinstance(ca, tuple) and isinstance(cb, tuple) and ca != cb:
+            common = tuple(label for label in ca if label in cb)
+            a = _reindex_axis(a, name, ca, common)
+            b = _reindex_axis(b, name, cb, common)
+            coords[name] = common
+        elif ca == cb:  # agree (identical labels or numeric coordinate)
+            coords[name] = ca
+        # else: differing numeric / kind mismatch -> conflict, drop
+    return a, b, coords
+
+
+def _reshape_partitioned(
+    x: XTensor, anon: int, named: list, max_anon: int, order: list
+) -> XTensor:
+    """
+    Reshape `x` -- a leading anonymous run of length `anon` then the all-named
+    suffix `named` -- onto `[None]*max_anon + order`: permute the named suffix
+    into `order`, insert a size-1 axis for each name it lacks, and left-pad the
+    anonymous run to `max_anon` (so anonymous axes broadcast positionally,
+    right-aligned).
+    """
+    present = [n for n in order if n in named]
+    perm = list(range(anon)) + [anon + named.index(n) for n in present]
+    out = x.permute(*perm)
+    for pos, name in enumerate(order):
+        if name not in named:
+            out = out.unsqueeze(anon + pos)
+    for _ in range(max_anon - anon):
+        out = out.unsqueeze(0)
+    return out
+
+
+def _align_partitioned(a: XTensor, b: XTensor) -> tuple:
+    """
+    Align two operands whose unnamed axes are all **leading** (issue #75): the
+    trailing **named** suffixes align by name (union, transpose-to-match,
+    broadcast a missing axis, inner-join differing categorical labels), while
+    the leading **anonymous** runs broadcast **positionally** (right-aligned,
+    like torch batch dims). Returns `(a', b', names, coords)`.
+    """
+    ka, kb = _leading_none(a.names), _leading_none(b.names)
+    an = list(a.names[ka:])  # named suffix of a (no None)
+    bn = list(b.names[kb:])  # named suffix of b
+    order = an + [n for n in bn if n not in an]  # named union, a first
+    max_anon = max(ka, kb)
+    a, b, coords = _reconcile_coords(a, b, order)
+    a2 = _reshape_partitioned(a, ka, an, max_anon, order)
+    b2 = _reshape_partitioned(b, kb, bn, max_anon, order)
+    names = (None,) * max_anon + tuple(order)
+    return a2, b2, names, coords
+
+
+def _align_identical(a: XTensor, b: XTensor) -> tuple:
+    """
+    Align two operands with the **same** `names` tuple. Their axes already
+    correspond 1:1 by name-and-position, so no reshape is needed (positional is
+    name-aligned) -- this stays unambiguous even when a `None` is not leading.
+    Only the coordinates of the named axes are reconciled. Returns
+    `(a', b', coords)`.
+    """
+    named = dict.fromkeys(n for n in a.names if n is not None)
+    return _reconcile_coords(a, b, named)
+
+
 def _distinct(values: list) -> list:
     """The distinct `values`, order-preserving and tolerant of unhashables."""
     seen = []
@@ -2874,21 +2981,42 @@ def _binary(
     # this may rescale `b` (implicit V->mV-style conversion) -- then run the op
     # on the reconciled operands.
     a, b, unit_kw = _reconcile_units(a, b, rule)
-    a_named = isinstance(a, XTensor) and None not in a.names
-    b_named = isinstance(b, XTensor) and None not in b.names
-    if a_named and b_named:
-        a2, b2, names, coords = _align_by_name(a, b)
-        result = base(a2, b2, *args, **kwargs)
-        meta = _merge_axis_meta((a, b), names)
-        return _carry(
-            a,
-            result,
-            _axis_names=names,
-            _coords=coords,
-            _axis_meta=meta,
-            **unit_kw,
-        )
-    # positional fallback (unnamed axis, plain tensor, or scalar operand)
+    if isinstance(a, XTensor) and isinstance(b, XTensor):
+        a_names, b_names = a.names, b.names
+        a_has = any(n is not None for n in a_names)
+        b_has = any(n is not None for n in b_names)
+        # Both carry names -> align by name. An all-unnamed operand has nothing
+        # to align on and behaves like a plain tensor (positional, below).
+        if a_has and b_has:
+            if a_names == b_names:
+                # identical layout -> axes already correspond 1:1; positional
+                # is name-aligned, unambiguous even with a non-leading `None`.
+                a2, b2, coords = _align_identical(a, b)
+                names = a_names
+            elif not (_anon_leading(a_names) and _anon_leading(b_names)):
+                # a `None` sits after a named axis: aligning by name is
+                # ambiguous and silent positional would mis-pair (issue #75).
+                raise ValueError(
+                    "pointwise op on partially-named tensors whose unnamed "
+                    "axes are not all leading is ambiguous; name every axis "
+                    "(refine_names) or move the unnamed axes to the front"
+                )
+            elif None in a_names or None in b_names:
+                a2, b2, names, coords = _align_partitioned(a, b)
+            else:
+                a2, b2, names, coords = _align_by_name(a, b)
+            result = base(a2, b2, *args, **kwargs)
+            meta = _merge_axis_meta((a, b), names)
+            return _carry(
+                a,
+                result,
+                _axis_names=names,
+                _coords=coords,
+                _axis_meta=meta,
+                **unit_kw,
+            )
+    # positional fallback (a plain tensor / scalar operand, or an all-unnamed
+    # XTensor -- which behaves like a plain tensor)
     result = base(a, b, *args, **kwargs)
     if not isinstance(result, Tensor):
         return result

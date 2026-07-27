@@ -24,26 +24,36 @@ The result's dimensions are the **union** of the operands' names; a shared name
 is broadcast together (its sizes must match, or one must be 1) and coordinates
 that agree are carried through.
 
-### When name-alignment does *not* apply
+### Partially-named operands
 
-Name-alignment kicks in only when **both** operands are fully-named `XTensor`s.
-Otherwise the op uses ordinary **positional** broadcasting (the plain-torch
-rule):
+An `XTensor` may have **unnamed** (`None`) axes — a plain torch tensor usually
+has an anonymous batch axis. Name-alignment still applies as long as the
+unnamed axes are all **leading** (the common "a few batch dims, then named
+axes" layout): the **named suffix aligns by name** (union, transpose-to-match,
+broadcast a missing axis) while the **leading anonymous run broadcasts
+positionally**, right-aligned like ordinary torch batch dims.
 
-- an operand is a **plain tensor** or a **scalar** — it has no names to align
-  against, so it broadcasts positionally (this matches xarray, which also
-  broadcasts a bare array against the trailing axes);
-- **any** axis on **either** operand is **unnamed** (`None`).
+```python
+a = xtensor(torch.zeros(3, 3), names=("x", "y"))
+b = xtensor(torch.zeros(4, 3, 3), names=(None, "x", "y"))  # a batch of them
+(a + b).names            # (None, 'x', 'y')  — 'x'/'y' aligned, batch broadcast
+```
 
-That second case is stricter than xarray, which has no unnamed dimensions and
-so *always* aligns by name. Here, a single unnamed axis on one operand drops
-the **whole** op to positional — even the axes that *are* named. This is a
-deliberately conservative first cut (positional broadcasting is unambiguous);
-whether a *partially* named operand should still align its named axes by name,
-and only treat the unnamed ones positionally, is an open design question
-([#75](https://github.com/bagofseeds/fiery-xtensor/issues/75)). If you rely on
-name-alignment, name **every** axis of both operands (`refine_names` fills the
-gaps).
+Two more cases:
+
+- **Identical names** align 1:1 by position, so a non-leading `None` is fine
+  when both operands share the exact same `names` (`x(a, None) + y(a, None)`).
+- An operand that is **all-unnamed** (every axis `None`), a **plain tensor**,
+  or a **scalar** has nothing to align on and broadcasts **positionally** — the
+  plain-torch rule (this matches xarray, which broadcasts a bare array against
+  the trailing axes).
+
+What is **not** allowed is a `None` sitting *after* a named axis on operands
+whose names differ — e.g. `x(a, None) + y(b, None)`. There, aligning by name is
+ambiguous and silent positional broadcasting could pair the wrong axes, so the
+op **raises**. Name every axis (`refine_names`) or move the unnamed axes to the
+front. (This is the resolution of
+[#75](https://github.com/bagofseeds/fiery-xtensor/issues/75).)
 
 ## Coordinate alignment
 
