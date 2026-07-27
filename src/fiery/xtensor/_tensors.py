@@ -463,9 +463,12 @@ class XTensor(ExtendedTensor):
         count) -- so stale metadata propagated onto a shape-changing op is
         hidden.
 
-        Stored internally as `{name: (dims, coord)}` (Proposal 0005): every
-        coordinate here is a **dimension** coordinate, so `dims == (name,)`; a
-        wider `dims` (non-dimension / multi-dim coordinates) is a later slice.
+        Stored internally as `{name: (dims, coord)}` (Proposal 0005): a
+        **dimension** coordinate has `dims == (name,)` (it *is* the dim's
+        index, so `.sel(name=...)` works); a **non-dimension** coordinate
+        (disambiguated by key: `name` is not itself a dim) rides along some
+        other dim, `dims == (dim,)`, and is not an index. A wider `dims`
+        (multi-dim / affine coordinates) is a later slice.
         """
         names = self.names
         valid = {}
@@ -490,25 +493,30 @@ class XTensor(ExtendedTensor):
             return
         names = self.names
         unified = {}
-        for dim, spec in dict(value).items():
-            if dim not in names:
-                raise ValueError(
-                    f"coords: no axis named {dim!r} in {tuple(names)}"
-                )
-            if _is_compact_coord(spec) or _is_explicit_coord(spec):
-                unified[dim] = _pack_coord(dim, _make_coordinate(spec))
+        for key, spec in dict(value).items():
+            if key not in names:
+                # a coord keyed by a non-axis name is a **non-dimension**
+                # coordinate (Proposal 0005): given as `(dim, values)`, it
+                # rides along `dim` rather than indexing it.
+                dim, coord = _parse_nondim_coord(key, spec, names)
+                size = self.shape[names.index(dim)]
+                _check_nondim_len(key, dim, coord, size)
+                unified[key] = (dim,), coord
                 continue
-            size = self.shape[names.index(dim)]
+            if _is_compact_coord(spec) or _is_explicit_coord(spec):
+                unified[key] = _pack_coord(key, _make_coordinate(spec))
+                continue
+            size = self.shape[names.index(key)]
             labels = tuple(spec)
             # `...` fills the middle with unlabelled positions.
             if Ellipsis in labels:
                 labels = tuple(arrayutils._unroll(labels, size))
             if len(labels) != size:
                 raise ValueError(
-                    f"coords: dim {dim!r} has {len(labels)} labels "
+                    f"coords: dim {key!r} has {len(labels)} labels "
                     f"for size {size}"
                 )
-            unified[dim] = _pack_coord(dim, labels)
+            unified[key] = _pack_coord(key, labels)
         self._coords = unified
 
     # -- data unit ---------------------------------------------------------
@@ -630,24 +638,33 @@ class XTensor(ExtendedTensor):
 
     def _remap_coords(self, new_names: tuple) -> dict:
         """
-        Coordinates re-keyed -- both the storage key **and** the embedded
-        `dims` -- from the current names to `new_names`.
+        Coordinates re-keyed from the current names to `new_names`. A
+        **dimension** coordinate (its key is one of `self.names`) is re-keyed
+        like the axis, and dropped if that axis is unnamed; a
+        **non-dimension** coordinate (Proposal 0005 -- its key is its own
+        name, not a dim) keeps its key. Either way, every dim in its `dims`
+        is remapped the same way, and the coordinate drops if any of them is
+        unnamed.
         """
         stored = self.__dict__.get("_coords") or {}
         if not stored:
             return {}
+        current = self.names
         rename_of = {
-            old: new
-            for old, new in zip(self.names, new_names)
-            if new is not None
+            old: new for old, new in zip(current, new_names) if new is not None
         }
         remapped = {}
-        for old_name, (dims, coord) in stored.items():
-            new_name = rename_of.get(old_name)
-            if new_name is None:
+        for old_key, (dims, coord) in stored.items():
+            if old_key in current:
+                new_key = rename_of.get(old_key)
+                if new_key is None:
+                    continue
+            else:
+                new_key = old_key
+            if any(dim not in rename_of for dim in dims):
                 continue
-            new_dims = tuple(rename_of.get(dim, dim) for dim in dims)
-            remapped[new_name] = (new_dims, coord)
+            new_dims = tuple(rename_of[dim] for dim in dims)
+            remapped[new_key] = (new_dims, coord)
         return remapped
 
     def rename(self, *names: str | None, **rename_map: str) -> tx.Self:
@@ -772,46 +789,40 @@ class XTensor(ExtendedTensor):
             in_names[src] if src is not None else None for src in sources
         )
         out._axis_names = out_names
-        # Slice the coordinate of every kept axis that carries one -- labels
-        # or numeric, unified `{name: (dims, coord)}` storage (Proposal 0005).
+        # Carry every coordinate through by default (dimension or
+        # non-dimension, unified `{name: (dims, coord)}` storage, Proposal
+        # 0005): the loop below overwrites each *surviving* axis' own
+        # **dimension** coordinate with its properly sliced value (or drops
+        # it if the slicer can't be applied). A **non-dimension** coordinate
+        # is never explicitly re-sliced here -- it rides through unchanged,
+        # and the `coords` property's own dim/size validation drops it once
+        # the dim it rides on is removed or resized.
         stored = self.__dict__.get("_coords") or {}
-        coords = {
-            name: coord
-            for name, (_, coord) in stored.items()
-            if not isinstance(coord, Coordinate)
-        }
-        axis_coord = {
-            name: coord
-            for name, (_, coord) in stored.items()
-            if isinstance(coord, Coordinate)
-        }
-        if coords or axis_coord:
+        if stored:
             unrolled = arrayutils._unroll_slicer(slicer, self.ndim)
-        new_stored = {}
-        if axis_coord:
+            new_stored = dict(stored)
             for out_axis, src in enumerate(sources):
                 name = out_names[out_axis]
                 if src is None or name is None:
                     continue
-                coord = axis_coord.get(in_names[src])
-                if coord is None:
+                in_name = in_names[src]
+                entry = stored.get(in_name)
+                if entry is None:
                     continue
+                _, coord = entry
                 piece = arrayutils._get_slicer_by_index(unrolled, src)
-                adjusted = _slice_coordinate(coord, piece, self.shape[src])
-                if adjusted is not None:
-                    new_stored[name] = adjusted
-        if coords:
-            new_coords = {}
-            for out_axis, src in enumerate(sources):
-                name = out_names[out_axis]
-                if src is not None and name is not None:
-                    labels = coords.get(in_names[src])
-                    if labels is not None:
-                        piece = arrayutils._get_slicer_by_index(unrolled, src)
-                        sliced = _slice_labels(labels, piece)
-                        if sliced is not None:
-                            new_coords[name] = tuple(sliced)
-            new_stored.update(new_coords)
+                if isinstance(coord, Coordinate):
+                    adjusted = _slice_coordinate(coord, piece, self.shape[src])
+                    if adjusted is not None:
+                        new_stored[name] = (name,), adjusted
+                    else:
+                        new_stored.pop(in_name, None)
+                else:
+                    sliced = _slice_labels(coord, piece)
+                    if sliced is not None:
+                        new_stored[name] = (name,), tuple(sliced)
+                    else:
+                        new_stored.pop(in_name, None)
             # Selecting a single position on a unit-carrying axis collapses
             # that axis away; its per-position data unit folds into the base
             # data unit (effective unit = base * product of coord units).
@@ -825,15 +836,20 @@ class XTensor(ExtendedTensor):
                     piece = arrayutils._get_slicer_by_index(unrolled, ax)
                     if not isinstance(piece, int):
                         continue
-                    labels = coords.get(in_name)
+                    entry = stored.get(in_name)
+                    labels = (
+                        entry[1]
+                        if entry is not None
+                        and not isinstance(entry[1], Coordinate)
+                        else None
+                    )
                     unit = _label_unit(labels[piece]) if labels else None
                     if unit is not None:
                         folded = _units.mul(folded, unit)
                         changed = True
                 if changed:
                     out._data_unit = folded
-        if coords or axis_coord:
-            out._coords = _pack_coords(new_stored)
+            out._coords = new_stored
         return out
 
     def isel(self, **indexers: tx.Any) -> tx.Self:
@@ -864,6 +880,12 @@ class XTensor(ExtendedTensor):
         for name, label in indexers.items():
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
+            if name not in self.names:
+                # a non-dimension coordinate (Proposal 0005) is not an index
+                raise ValueError(
+                    f"sel: {name!r} is not an index coordinate; "
+                    "promote it with swap_dims first"
+                )
             labels = coords[name]
             if isinstance(label, dict):
                 positional[name] = _positions_to_index(
@@ -1099,6 +1121,45 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
     return coord
 
 
+# ---- non-dimension coordinates (Proposal 0005) -----------------------------
+
+
+def _nondim_coord_len(coord: tx.Any) -> int:
+    """The number of positions in a non-dimension coordinate's values."""
+    if isinstance(coord, Coordinate):
+        return len(dict.__getitem__(coord, "values"))
+    return len(coord)
+
+
+def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
+    """
+    Parse a `(dim, values)` non-dimension coordinate spec into `(dim, coord)`,
+    where `coord` is a `Coordinate` (explicit numeric) or a tuple of labels.
+    """
+    if not (
+        isinstance(spec, tuple) and len(spec) == 2 and isinstance(spec[0], str)
+    ):
+        raise ValueError(
+            f"coords: {key!r} is not an axis; a non-dimension coordinate must "
+            "be given as (dim, values)"
+        )
+    dim, raw = spec
+    if dim not in names:
+        raise ValueError(f"coords: no axis named {dim!r} in {tuple(names)}")
+    coord = _make_coordinate(raw) if _is_explicit_coord(raw) else tuple(raw)
+    return dim, coord
+
+
+def _check_nondim_len(key: str, dim: str, coord: tx.Any, size: int) -> None:
+    """Validate a non-dimension coordinate's length against its dim's size."""
+    length = _nondim_coord_len(coord)
+    if length != size:
+        raise ValueError(
+            f"coords: non-dimension coordinate {key!r} has {length} values "
+            f"for dim {dim!r} of size {size}"
+        )
+
+
 # ---- coordinate helpers ---------------------------------------------------
 
 
@@ -1126,15 +1187,43 @@ def _pack_coords(flat: tx.Mapping) -> dict:
 
 def _coords_for(input: XTensor, result_names: tuple) -> dict:
     """
-    Keep the coordinates (labels or numeric) whose dimension survives (by
-    name) into `result_names`, packed into the unified `_coords` storage
-    shape. Merged / split / removed axes lose their name and so drop their
-    coordinate automatically.
+    Keep the coordinates (dimension or non-dimension, labels or numeric) all
+    of whose `dims` survive (by name) into `result_names`. A merged / split /
+    removed axis loses its name, so any coordinate keyed on it -- or merely
+    *riding* on it (Proposal 0005) -- drops automatically. `key in valid`
+    first restricts to `input`'s own currently-valid coordinates (already
+    filtered by size/name on `input`); the raw (unbound) coordinate is kept
+    rather than `valid`'s bound copy, since a survivor's dim size is by
+    construction unchanged, so the result rebinds it identically on read.
     """
     kept = {name for name in result_names if name is not None}
-    return _pack_coords(
-        {k: v for k, v in _coords_of(input).items() if k in kept}
-    )
+    valid = _coords_of(input)
+    stored = input.__dict__.get("_coords") or {}
+    return {
+        key: (dims, coord)
+        for key, (dims, coord) in stored.items()
+        if key in valid and all(dim in kept for dim in dims)
+    }
+
+
+def _coords_dropping(input: XTensor, *dims: tx.Optional[str]) -> dict:
+    """
+    `input`'s coordinates, packed into unified storage, minus every
+    coordinate that touches any of `dims` -- its own dimension coordinate, or
+    a non-dimension coordinate (Proposal 0005) *riding* on it. For ops whose
+    positions along `dims` no longer correspond to the stored ones (sort,
+    flip, roll, gather, index_select, ...): the caller re-adds a transformed
+    dimension coordinate for a touched dim itself when it can track one (e.g.
+    flip reverses, roll rotates); a rider is conservatively dropped outright.
+    """
+    touched = set(dims)
+    valid = _coords_of(input)
+    stored = input.__dict__.get("_coords") or {}
+    return {
+        key: (entry_dims, coord)
+        for key, (entry_dims, coord) in stored.items()
+        if key in valid and not touched & set(entry_dims)
+    }
 
 
 def _is_label_index(value: tx.Any) -> bool:
@@ -1839,11 +1928,8 @@ def _make_sorting(name: str, k_arg: bool) -> None:
         else:
             dim = -1
         result = base(input, *args, **kwargs)
-        coords = dict(input.coords)
-        coords.pop(names[dim % input.ndim], None)
-        return _rebuild(
-            result, lambda m: _carry(input, m, _coords=_pack_coords(coords))
-        )
+        coords = _coords_dropping(input, names[dim % input.ndim])
+        return _rebuild(result, lambda m: _carry(input, m, _coords=coords))
 
     XTensor.overrides(base)(_op)
 
@@ -1995,11 +2081,12 @@ def _(input: XTensor, dims: int | str | tx.Sequence) -> XTensor:
     # reversed, and a flipped axis' `orientation` descriptor reverses too
     # ("left-to-right" -> "right-to-left").
     flipped = {input.names[d % input.ndim] for d in dlist}
-    coords = dict(input.coords)
+    coords = _coords_dropping(input, *flipped)
     for name in flipped:
-        if name in coords:
-            coords[name] = tuple(reversed(coords[name]))
-    overrides = {"_coords": _pack_coords(coords)}
+        labels = input.coords.get(name)
+        if labels is not None:
+            coords[name] = (name,), tuple(reversed(labels))
+    overrides = {"_coords": coords}
     meta = input._valid_axis_meta()
     if any("orientation" in meta.get(name, {}) for name in flipped):
         meta = {name: dict(extra) for name, extra in meta.items()}
@@ -2033,14 +2120,17 @@ def _(
         name = input.names[dim % input.ndim]
         if name is not None:
             shift_by_name[name] = shift_by_name.get(name, 0) + shift
-    coords = dict(input.coords)
+    coords = _coords_dropping(input, *shift_by_name)
     for name, shift in shift_by_name.items():
-        if name in coords:
-            labels = coords[name]
+        labels = input.coords.get(name)
+        if labels is not None:
             n = len(labels)
             shift %= n or 1
-            coords[name] = tuple(labels[(i - shift) % n] for i in range(n))
-    return _carry(input, result, _coords=_pack_coords(coords))
+            coords[name] = (
+                (name,),
+                tuple(labels[(i - shift) % n] for i in range(n)),
+            )
+    return _carry(input, result, _coords=coords)
 
 
 # ======================================================================
@@ -2418,11 +2508,12 @@ def _(input: XTensor, dim: int | str, index: Tensor) -> tx.Any:
     dim = _resolve_axis(input.names, dim) % input.ndim
     result = Tensor.index_select(input, dim, index)
     # Rank is unchanged; only the selected axis' labels are re-sliced.
-    coords = dict(input.coords)
     name = input.names[dim]
-    if name in coords:
-        coords[name] = tuple(_slice_labels(coords[name], index))
-    return _carry(input, result, _coords=_pack_coords(coords))
+    coords = _coords_dropping(input, name)
+    labels = input.coords.get(name)
+    if labels is not None:
+        coords[name] = (name,), tuple(_slice_labels(labels, index))
+    return _carry(input, result, _coords=coords)
 
 
 @XTensor.overrides(_torch_func("gather"))
@@ -2431,9 +2522,8 @@ def _(input: XTensor, dim: int | str, index: Tensor, **kwargs) -> tx.Any:
     result = torch.gather(input, dim, index, **kwargs)
     # Rank (and each axis' name) is preserved; the gathered positions change
     # per-slice, so the gathered axis' labels are dropped.
-    coords = dict(input.coords)
-    coords.pop(input.names[dim], None)
-    return _carry(input, result, _coords=_pack_coords(coords))
+    coords = _coords_dropping(input, input.names[dim])
+    return _carry(input, result, _coords=coords)
 
 
 @XTensor.overrides(_torch_func("take_along_dim"))
@@ -2443,14 +2533,12 @@ def _(
     result = torch.take_along_dim(
         input, indices, _resolve_axis(input.names, dim), **kwargs
     )
-    coords = dict(input.coords)
     if dim is not None:
-        coords.pop(
-            input.names[_resolve_axis(input.names, dim) % input.ndim], None
-        )
+        touched = input.names[_resolve_axis(input.names, dim) % input.ndim]
+        coords = _coords_dropping(input, touched)
     else:
         coords = {}
-    return _carry(input, result, _coords=_pack_coords(coords))
+    return _carry(input, result, _coords=coords)
 
 
 @XTensor.overrides(_torch_func("scatter"))
@@ -3068,13 +3156,17 @@ def _binary(
         return result
     ref = a if isinstance(a, XTensor) else b
     names = _broadcast_batch_names(_names_of(a), _names_of(b))
-    coords = _coords_of(ref) if result.ndim == getattr(ref, "ndim", -1) else {}
+    coords = (
+        _coords_for(ref, names)
+        if result.ndim == getattr(ref, "ndim", -1)
+        else {}
+    )
     meta = _merge_axis_meta((a, b), names)
     return _carry(
         ref,
         result,
         _axis_names=names,
-        _coords=_pack_coords(coords),
+        _coords=coords,
         _axis_meta=meta,
         **unit_kw,
     )

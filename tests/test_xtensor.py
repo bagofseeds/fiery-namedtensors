@@ -93,8 +93,91 @@ def test_coords_are_keyed_by_dim_name():
 
 
 def test_coords_constructor_requires_a_named_axis():
-    with pytest.raises(ValueError, match="no axis named"):
+    # a coord keyed by a non-axis name is read as a non-dimension coordinate
+    # (Proposal 0005), which must be a (dim, values) tuple -- `()` is not one
+    with pytest.raises(ValueError, match="not an axis"):
         XTensor(torch.zeros(2, 3), names=("row", None), coords={"col": ()})
+
+
+# -- non-dimension coordinates (Proposal 0005, first slice) -------------------
+
+
+def test_non_dimension_coordinate_rides_along_a_dim():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": ["a", "b", "c", "d"],  # dimension coord (the index)
+            "season": ("t", ["w", "w", "sp", "sp"]),  # non-dim coord along t
+        },
+    )
+    assert sorted(x.coords) == ["season", "t"]
+    assert x.coords["season"] == ("w", "w", "sp", "sp")
+    assert x.sel(t="b").item() == 1.0  # the index is selectable
+    with pytest.raises(ValueError, match="not an index coordinate"):
+        x.sel(season="sp")  # a non-dimension coordinate is not an index
+
+
+def test_non_dimension_coordinate_propagates_and_drops():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"season": ("t", ["w", "w", "sp", "sp"])},
+    )
+    assert x.rename(t="time").coords["season"] == ("w", "w", "sp", "sp")
+    assert "season" not in x.sum(dim="t").coords  # dim removed -> dropped
+    assert (
+        "season" not in x[:2].coords
+    )  # dim resized -> dropped (conservative)
+
+
+def test_non_dimension_coordinate_survives_slicing_an_unrelated_axis():
+    x = XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("t", "u"),
+        coords={"season": ("t", ["w", "w", "sp"])},
+    )
+    out = x[:, :2]  # "u" is resized, "t" (and its rider) is untouched
+    assert out.coords["season"] == ("w", "w", "sp")
+
+
+def test_non_dimension_numeric_coordinate():
+    x = XTensor(
+        torch.arange(3.0),
+        names=("i",),
+        coords={
+            "wl": (
+                "i",
+                XTensor(torch.tensor([400.0, 500.0, 600.0]), unit="nm"),
+            )
+        },
+    )
+    assert x.coords["wl"]["values"].tolist() == [400.0, 500.0, 600.0]
+    assert x.coords["wl"]["values"].unit == "nm"
+
+
+def test_non_dimension_coordinate_length_is_checked():
+    with pytest.raises(ValueError, match="has 2 values for dim"):
+        XTensor(
+            torch.arange(4.0), names=("t",), coords={"s": ("t", ["a", "b"])}
+        )
+
+
+def test_non_dimension_coordinate_drops_when_its_dim_is_reordered():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"season": ("t", ["w", "w", "sp", "sp"])},
+    )
+    # a rider's positions no longer correspond once its dim is
+    # sorted/flipped/rolled/gathered/index_selected -- conservatively dropped,
+    # same as the dimension coordinate itself would be
+    assert "season" not in x.flip("t").coords
+    assert "season" not in x.roll(1, "t").coords
+    assert "season" not in x.sort("t").values.coords
+    idx = torch.tensor([0, 1, 2, 3])
+    assert "season" not in x.gather("t", idx).coords
+    assert "season" not in x.index_select("t", idx[:2]).coords
 
 
 def test_coords_constructor_checks_label_count():
