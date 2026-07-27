@@ -38,37 +38,54 @@ overloading `.sel`.
 
 ## `.sel` — selection (built in)
 
-xarray's `.sel(x=value, method=None, tolerance=None)`:
+Selection snaps a value onto an existing tick. Two orthogonal controls, chosen
+so that a *descending* coordinate stays unambiguous (where xarray's single
+`method` gets confusing):
 
-- **`method=None`** (default) — exact match; raise if the value is not present.
-- **`method="nearest"`** — snap to the closest coordinate value.
-- **`tolerance`** — cap the allowed gap for `"nearest"`; raise if exceeded.
+- **`mode`** — which tick to snap to:
+  - `"round"` *(default)* — the **nearest** tick by value;
+  - `"floor"` / `"ceil"` — the largest tick **≤** / smallest tick **≥** the
+    value (**value** space — orientation-robust);
+  - `"prev"` / `"next"` — the neighbouring tick at the **lower** / **higher**
+    index (**tick order**; needs a monotonic coordinate).
+- **`tolerance`** — a cap on the gap (in the position unit). A **bare**
+  `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode` implies an
+  **unbounded** snap unless a `tolerance` is given (matching xarray, where
+  supplying a `method` defaults `tolerance` to `None`).
 
-We mirror this surface. We *add* one thing xarray core lacks: the selector is
-**unit-aware** — `x.sel(t="2000ms")` converts into the coordinate's position
-unit before matching (Proposal 0001's `Unitful`/backend).
+`floor`/`ceil` and `prev`/`next` coincide on an **ascending** coordinate and
+**swap** on a **descending** one; `round` is direction-agnostic. We *add* one
+thing xarray core lacks: the selector is **unit-aware** — `x.sel(t="2000ms")`
+converts into the coordinate's position unit before matching.
 
 ```python
-x.sel(t=2.0)                                  # exact tick -> drops the axis
-x.sel(t="2s")                                 # unitful value (backend converts)
-x.sel(t=(2, "s"))                             # a (value, unit) tuple
-x.sel(t=[0.5, 2.0])                           # a list keeps the axis (advanced)
-x.sel(t=1.7, method="nearest")                # snap to the closest tick
-x.sel(t=1.7, method="nearest", tolerance=0.1) # ... but fail if the gap > 0.1
+x.sel(t=2.0)                          # exact tick -> drops the axis
+x.sel(t="2s")                         # unitful value (backend converts)
+x.sel(t=(2, "s"))                     # a (value, unit) tuple
+x.sel(t=[0.5, 2.0])                   # a list keeps the axis (advanced)
+x.sel(t=1.7, mode="round")            # nearest tick (unbounded)
+x.sel(t=1.7, mode="floor")            # largest tick <= 1.7 (value space)
+x.sel(t=1.7, mode="round", tolerance="0.1s")  # ... but fail if the gap > 0.1 s
 ```
 
 - A **scalar** selector drops the axis (like integer indexing); a **list**
   keeps it (advanced index over the chosen positions).
 - A **tuple** is a unitful `(value, unit)`, *not* a list of selectors — use a
   list for several values.
-- **Exact** match uses a small relative tolerance (materialised positions are
-  floats); with no match and no `method`, it raises and suggests
-  `method="nearest"`.
+- **Exact** (`tolerance=0`) uses a small relative tolerance (materialised
+  positions are floats); with no tick within tolerance it raises.
 - Works on both coordinate forms: a **compact** coordinate materialises its
   positions on demand; an **explicit** one searches its array.
 
-`.sel` gains two reserved keyword arguments, `method` and `tolerance`; every
-other keyword is a `dim=selector`. (A dim literally named `method`/`tolerance`
+### xarray compatibility
+
+`method=` is accepted as an **alias** for `mode` (`nearest`→`round`,
+`pad`/`ffill`→`prev`, `backfill`/`bfill`→`next`) — pass one of `mode`/`method`,
+not both. xarray's fill methods are *positional*, so they map to the tick-order
+family; on the usual ascending coordinate they coincide with `floor`/`ceil`.
+
+`.sel` reserves the keyword arguments `mode`, `tolerance`, and `method`; every
+other keyword is a `dim=selector`. (A dim literally named one of those
 is unreachable through kwargs — the same limitation xarray has; a dict form can
 be added if needed.)
 
@@ -154,9 +171,10 @@ on one raises `NotImplementedError` for now.
 
 ## What the first slice implements
 
-- `.sel(method=None, tolerance=None, **indexers)` — value-based selection,
-  exact/nearest, unit-aware, on compact **and** explicit coordinates
-  (unchanged from the prior slice).
+- `.sel(mode="round", tolerance=None, method=None, **indexers)` — value-based
+  selection with the five modes (`round`/`floor`/`ceil`/`prev`/`next` + xarray
+  aliases), unit-aware, on compact **and** explicit coordinates; bare = exact,
+  a mode implies an unbounded snap.
 - `.interp(method="linear", bound=None, extrapolate=None, **indexers)` —
   nearest built in; orders ≥ 1 via `fiery.interpol.grid_pull`; `interp_bound`
   (default `"replicate"`) and `interp_extrapolate` (default `True`) options
@@ -173,8 +191,9 @@ on one raises `NotImplementedError` for now.
    O(log n) searchsorted inversion, or is regular-only enough in practice?
 2. **Range selection** on `.sel` — `x.sel(t=slice("1s", "5s"))` (a value range
    → a contiguous slice). Natural and useful; not in this slice.
-3. **`.sel(method="ffill"/"bfill")`** — pad-forward/back like xarray; worth it,
-   or does `.interp(method="nearest")` cover the intent?
+3. **`.sel` directional modes** — *resolved*: `floor`/`ceil` (value space) and
+   `prev`/`next` (tick order), with xarray's `ffill`/`bfill` aliased onto
+   `prev`/`next`.
 4. **`O(1)` compact fast path for `.sel`** (`round((v − origin) / spacing)`) vs
    the simple materialise-and-`argmin`.
 5. **True N-D interpolation** — separable axis-by-axis (this slice, == xarray)

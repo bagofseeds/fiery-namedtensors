@@ -251,11 +251,54 @@ def test_sel_by_numeric_coordinate_value():
     )
     assert x.sel(t=1.5).item() == 3.0  # exact value -> index 3
     assert x.sel(t=[0.5, 2.0]).tolist() == [1.0, 4.0]  # a list keeps the axis
-    with pytest.raises(ValueError, match="no position at"):
-        x.sel(t=1.7)  # no exact tick
-    assert x.sel(t=1.7, method="nearest").item() == 3.0  # nearest is 1.5
     with pytest.raises(ValueError, match="over tolerance"):
-        x.sel(t=1.7, method="nearest", tolerance=0.1)
+        x.sel(t=1.7)  # bare sel is exact (tolerance 0)
+    # a mode implies an unbounded snap -> nearest tick is 1.5 (index 3)
+    assert x.sel(t=1.7, mode="round").item() == 3.0
+    assert x.sel(t=1.7, method="nearest").item() == 3.0  # xarray alias
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(t=1.7, mode="round", tolerance=0.1)
+
+
+def test_sel_modes_round_floor_ceil_prev_next():
+    # ascending ticks 0,2,4,6,8 ; data 0,10,20,30,40
+    x = XTensor(
+        torch.arange(5.0) * 10,
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 0.0}},
+    )
+    assert x.sel(t=5.0, mode="floor").item() == 20.0  # value 4
+    assert x.sel(t=5.0, mode="ceil").item() == 30.0  # value 6
+    # ascending: prev == floor, next == ceil
+    assert x.sel(t=5.0, mode="prev").item() == 20.0
+    assert x.sel(t=5.0, mode="next").item() == 30.0
+
+
+def test_sel_modes_split_value_vs_tickorder_on_descending():
+    # descending ticks 8,6,4,2,0 ; data 0,10,20,30,40
+    d = XTensor(
+        torch.arange(5.0) * 10,
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([8.0, 6.0, 4.0, 2.0, 0.0]))},
+    )
+    # value-space floor/ceil are orientation-robust
+    assert d.sel(t=5.0, mode="floor").item() == 20.0  # value 4
+    assert d.sel(t=5.0, mode="ceil").item() == 10.0  # value 6
+    # tick-order prev/next SWAP vs floor/ceil on a descending coordinate
+    assert d.sel(t=5.0, mode="prev").item() == 10.0  # == ceil here
+    assert d.sel(t=5.0, mode="next").item() == 20.0  # == floor here
+
+
+def test_sel_mode_and_method_are_exclusive_and_validated():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    with pytest.raises(ValueError, match="either 'mode' or 'method'"):
+        x.sel(t=1.0, mode="round", method="nearest")
+    with pytest.raises(ValueError, match="unknown mode"):
+        x.sel(t=1.0, mode="bogus")
 
 
 def test_sel_numeric_is_unit_aware():

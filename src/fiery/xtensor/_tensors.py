@@ -823,8 +823,9 @@ class XTensor(ExtendedTensor):
 
     def sel(
         self,
-        method: tx.Optional[str] = None,
+        mode: tx.Optional[str] = None,
         tolerance: tx.Any = None,
+        method: tx.Optional[str] = None,
         **indexers: tx.Any,
     ) -> tx.Self:
         """
@@ -838,10 +839,30 @@ class XTensor(ExtendedTensor):
         selecting every match.
 
         On a **numeric** coordinate (Proposal 0001), the selector is a value
-        (`x.sel(t="2s")`): an (near-)exact match by default, or the nearest
-        tick with `method="nearest"` (optionally capped by `tolerance`), the
-        xarray way (Proposal 0004).
+        (`x.sel(t="2s")`, Proposal 0004). `mode` chooses which tick an inexact
+        value snaps to:
+
+        - `"round"` *(default)* — the nearest tick by value;
+        - `"floor"` / `"ceil"` — the largest tick `<=` / smallest tick `>=`
+          the value (**value** space, robust to a descending coordinate);
+        - `"prev"` / `"next"` — the neighbouring tick at the lower / higher
+          **index** (tick order; needs a monotonic coordinate).
+
+        `tolerance` (a value in the position unit) caps the allowed gap. A
+        **bare** `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode`
+        implies an unbounded snap unless a `tolerance` is given. `method=` is
+        an xarray-compatible alias for `mode` (`nearest`→round, `pad`/`ffill`→
+        prev, `backfill`/`bfill`→next); pass one of `mode`/`method`, not both.
         """
+        if mode is not None and method is not None:
+            raise ValueError("sel: pass either 'mode' or 'method', not both")
+        raw = mode if mode is not None else method
+        sel_mode = _resolve_sel_mode(raw)
+        if tolerance is None:
+            # a bare sel is exact; asking for a mode implies an unbounded snap
+            tolerance = 0 if raw is None else None
+        elif isinstance(tolerance, float) and tolerance == float("inf"):
+            tolerance = None  # explicit unbounded
         coords = self.coords
         positional = {}
         for name, label in indexers.items():
@@ -850,7 +871,7 @@ class XTensor(ExtendedTensor):
             labels = coords[name]
             if isinstance(labels, Coordinate):
                 positional[name] = _numeric_select(
-                    labels, label, method, tolerance, name
+                    labels, label, sel_mode, tolerance, name
                 )
                 continue
             if isinstance(label, dict):
@@ -1302,18 +1323,80 @@ def _selector_value(selector: tx.Any, unit: tx.Optional[str]) -> float:
     return float(value)
 
 
+#: `sel` modes -> canonical name. `round`/`floor`/`ceil` act on **values**;
+#: `prev`/`next` on **tick order**. xarray's fill methods are positional, so
+#: they alias onto `prev`/`next`.
+_SEL_MODE_ALIASES = {
+    "round": "round",
+    "nearest": "round",
+    "floor": "floor",
+    "ceil": "ceil",
+    "prev": "prev",
+    "pad": "prev",
+    "ffill": "prev",
+    "next": "next",
+    "backfill": "next",
+    "bfill": "next",
+}
+
+
+def _resolve_sel_mode(mode: tx.Optional[str]) -> str:
+    """The canonical `sel` mode for `mode`/`method` (`None` -> `"round"`)."""
+    if mode is None:
+        return "round"
+    try:
+        return _SEL_MODE_ALIASES[mode]
+    except (KeyError, TypeError):
+        raise ValueError(
+            f"sel: unknown mode {mode!r}; use one of "
+            "round/floor/ceil/prev/next (or the xarray aliases "
+            "nearest/pad/ffill/backfill/bfill)"
+        ) from None
+
+
+def _pick_sel_index(
+    values: Tensor, target: float, mode: str, ascending: bool
+) -> tx.Optional[int]:
+    """
+    The index of the tick `mode` selects for `target`, or `None` if there is
+    none on the required side. `round` is nearest by value; `floor`/`ceil` are
+    value-space; `prev`/`next` are tick-order (they resolve to `floor`/`ceil`
+    per the coordinate's direction).
+    """
+    if mode == "round":
+        return int((values - target).abs().argmin())
+    if mode == "prev":
+        mode = "floor" if ascending else "ceil"
+    elif mode == "next":
+        mode = "ceil" if ascending else "floor"
+    if mode == "floor":  # largest value <= target
+        mask = values <= target
+        if not bool(mask.any()):
+            return None
+        cand = torch.where(
+            mask, values, torch.full_like(values, float("-inf"))
+        )
+        return int(cand.argmax())
+    # ceil: smallest value >= target
+    mask = values >= target
+    if not bool(mask.any()):
+        return None
+    cand = torch.where(mask, values, torch.full_like(values, float("inf")))
+    return int(cand.argmin())
+
+
 def _numeric_select(
     coord: "Coordinate",
     selector: tx.Any,
-    method: tx.Optional[str],
+    mode: str,
     tolerance: tx.Any,
     name: str,
 ) -> tx.Any:
     """
     Resolve a value-based selector against a numeric `Coordinate` to integer
-    position(s) (Proposal 0004). `method=None` requires an (near-)exact match;
-    `method="nearest"` snaps to the closest tick; `tolerance` (a delta in the
-    position unit) caps the allowed gap.
+    position(s) (Proposal 0004), snapping per `mode` (see `sel`). `tolerance`
+    (a delta in the position unit) caps the gap; `None` is unbounded, `0` is
+    exact (up to float epsilon).
     """
     materialised = coord["values"]
     values = materialised.as_subclass(Tensor)
@@ -1322,24 +1405,31 @@ def _numeric_select(
     is_many = isinstance(selector, list)
     wanted = list(selector) if is_many else [selector]
     tol = None if tolerance is None else _selector_value(tolerance, unit)
+    ascending = True
+    if mode in ("prev", "next") and values.numel() > 1:
+        diffs = values[1:] - values[:-1]
+        if bool((diffs >= 0).all()):
+            ascending = True
+        elif bool((diffs <= 0).all()):
+            ascending = False
+        else:
+            raise ValueError(
+                f"sel: mode={mode!r} needs a monotonic coordinate on {name!r}"
+            )
     positions = []
     for one in wanted:
         target = _selector_value(one, unit)
-        gaps = (values - target).abs()
-        j = int(gaps.argmin())
-        gap = float(gaps[j])
-        if method != "nearest":
-            scale = _EXACT_MATCH_REL * max(1.0, abs(target))
-            if gap > scale:
+        j = _pick_sel_index(values, target, mode, ascending)
+        if j is None:
+            raise ValueError(f"sel: no {mode} tick for {one!r} on {name!r}")
+        gap = float((values[j] - target).abs())
+        if tol is not None:
+            cap = tol if tol > 0 else _EXACT_MATCH_REL * max(1.0, abs(target))
+            if gap > cap:
                 raise ValueError(
-                    f"sel: no position at {one!r} on {name!r} "
-                    f"(use method='nearest')"
+                    f"sel: {mode} tick for {one!r} on {name!r} is {gap} away, "
+                    f"over tolerance {tol}"
                 )
-        if tol is not None and gap > tol:
-            raise ValueError(
-                f"sel: nearest position to {one!r} on {name!r} is "
-                f"{gap} away, over tolerance {tol}"
-            )
         positions.append(j)
     return positions if is_many else positions[0]
 
