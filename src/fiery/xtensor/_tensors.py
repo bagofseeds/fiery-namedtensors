@@ -1438,21 +1438,9 @@ def _as_unitful_vector(obj: tx.Any, ndims: int) -> tx.Any:
     else:
         vec = torch.as_tensor(value, dtype=torch.get_default_dtype())
     if vec.ndim != 1 or vec.shape[0] != ndims:
-        hint = ""
-        if vec.ndim == 0 and isinstance(obj, tuple) and len(obj) == ndims:
-            # the classic ambiguity: a bare `(v0, v1)` is indistinguishable
-            # from the ordinary `(value, unit)` spelling, so it was parsed as
-            # one scalar value with a (nonsense) "unit" of `v1` -- point at
-            # the fix rather than leaving that silently wrong turn a mystery.
-            hint = (
-                " -- if you meant several separate components, wrap them "
-                "in a list/tensor, not a bare tuple: e.g. "
-                f"{{'spacing': ({list(obj)!r}, unit)}}, not "
-                f"{{'spacing': {obj!r}}}"
-            )
         raise ValueError(
             "coords: an affine coordinate's spacing must have one component "
-            f"per dim ({ndims} here), got shape {tuple(vec.shape)}{hint}"
+            f"per dim ({ndims} here), got shape {tuple(vec.shape)}"
         )
     return _units.Unitful(value=vec, unit=unitful["unit"])
 

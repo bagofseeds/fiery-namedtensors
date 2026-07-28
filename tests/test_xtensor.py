@@ -212,15 +212,29 @@ def test_affine_coordinate_spacing_must_match_dims():
         )
 
 
-def test_affine_coordinate_ambiguous_tuple_spacing_hints_at_a_list():
-    # a bare `(v0, v1)` is indistinguishable from the ordinary `(value,
-    # unit)` spelling, so it's parsed as one scalar value -- point at the fix
-    # (wrap in a list) rather than leaving the shape-mismatch a mystery.
-    with pytest.raises(ValueError, match="wrap them in a list"):
+def test_affine_coordinate_bare_tuple_spacing_is_a_vector_not_value_unit():
+    # a bare `(v0, v1)` is unambiguous (issue #93): its second element isn't
+    # unit-like (not a string/None/backend Unit), so it's a 2-component
+    # vector, not a `(value, unit)` pair.
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], {"spacing": (1.0, 0.5)})},
+    )
+    spacing = x.coords["lat"]["spacing"]
+    assert spacing["value"].tolist() == [1.0, 0.5]
+    assert spacing["unit"] == ""
+
+
+def test_affine_coordinate_tuple_spacing_with_a_unit_is_still_value_unit():
+    # a 2-tuple whose second element *is* unit-like still parses as
+    # `(value, unit)`, not a vector -- only a single component here, so it
+    # must be rejected the same as any other wrong-length spacing.
+    with pytest.raises(ValueError, match="one component per dim"):
         XTensor(
             torch.zeros(3, 4),
             names=["y", "x"],
-            coords={"lat": (["y", "x"], {"spacing": (1.0, 0.5)})},
+            coords={"lat": (["y", "x"], {"spacing": (1.0, "mm")})},
         )
 
 
