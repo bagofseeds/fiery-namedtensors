@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 # stdlib
+import copy
 from functools import wraps
 
 # dependencies
@@ -289,6 +290,39 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
             for attr in attrs:
                 if not hasattr(out, attr) and hasattr(source, attr):
                     setattr(out, attr, getattr(source, attr))
+        return out
+
+    def __deepcopy__(self, memo: dict) -> tx.Self:
+        # `Tensor.__deepcopy__`'s default implementation is itself a
+        # dispatched torch op (it starts with `has_torch_function_unary`),
+        # so calling it on a subclass with a custom `__torch_function__`
+        # re-enters that machinery under a disabled-dispatch context -- in
+        # which `self.new_empty([])` (what it uses internally) returns a
+        # plain `Tensor`, not this subclass, and it then raises rather than
+        # silently mismatching. Defined as a plain method here (not a
+        # registered override), so Python's normal attribute lookup finds
+        # this directly and the dispatch-based default body never runs.
+        if id(self) in memo:
+            return memo[id(self)]
+        # Unlike vanilla `Tensor.__deepcopy__`, this doesn't restrict itself
+        # to graph leaves: it never tries to preserve a backward graph
+        # either way (a leaf or not, the result below is always a fresh,
+        # detached copy, re-marked to require grad if the original did) --
+        # and simply constructing an `XTensor` from a leaf input tensor
+        # already leaves it non-leaf (a separate quirk), so requiring one
+        # here would make this unusable for the common case.
+        data = self.as_subclass(Tensor).detach().clone()
+        out = data.as_subclass(type(self))
+        # `as_subclass` on a tensor that already requires grad returns a
+        # tracked *view* (non-leaf) -- setting `requires_grad_()` only
+        # afterwards, on the already-retagged (and by now grad-free) `out`,
+        # is what keeps the result a genuine leaf.
+        if self.requires_grad:
+            out.requires_grad_()
+        memo[id(self)] = out
+        out.__dict__ = copy.deepcopy(self.__dict__, memo)
+        if self.is_leaf and self.grad is not None:
+            out.grad = copy.deepcopy(self.grad, memo)
         return out
 
 
@@ -819,6 +853,11 @@ class XTensor(ExtendedTensor):
         # A positional coordinate label (`x[..., "y"]`) resolves to an integer
         # index against the axis it indexes before ordinary indexing runs.
         slicer = self._resolve_label_slicer(slicer)
+        # A 0-D integer tensor index (`x[torch.tensor(1)]`) behaves exactly
+        # like the plain `int` it's equivalent to; normalising it up front
+        # means the slicer-classification helpers below never have to
+        # special-case a tensor with no `len()`.
+        slicer = arrayutils._normalize_scalar_tensor_index(slicer)
         # The underlying tensor carries no builtin names, so basic indexing
         # (including newaxis via `None`) works directly.
         out = Tensor.__getitem__(self, slicer)

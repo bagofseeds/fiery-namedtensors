@@ -3236,3 +3236,58 @@ def test_single_match_query_stays_prod_safe():
         ],
     )
     assert y.prod(dim={"type": "batch"}).names == ("c1", "c2")
+
+
+def test_deepcopy_produces_an_independent_copy_with_metadata():
+    import copy
+
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    y = copy.deepcopy(x)
+    assert type(y) is XTensor
+    assert y.names == x.names
+    assert y.coords["t"]["values"].tolist() == x.coords["t"]["values"].tolist()
+    y[0] = 99.0
+    assert x[0].item() == 0.0  # independent storage, original untouched
+
+
+def test_deepcopy_preserves_requires_grad_as_a_fresh_leaf():
+    import copy
+
+    g = torch.arange(4.0, requires_grad=True)
+    x = XTensor(g, names=("t",))
+    y = copy.deepcopy(x)
+    assert y.requires_grad
+    assert y.is_leaf
+    assert y.data_ptr() != x.data_ptr()
+
+    # a non-leaf source (an intermediate result) still deep-copies cleanly,
+    # to a fresh, independent, grad-requiring leaf -- this implementation
+    # doesn't try to preserve the backward graph across a deepcopy either
+    # way, so there's no reason to refuse a non-leaf input the way vanilla
+    # `Tensor.__deepcopy__` does.
+    non_leaf = XTensor(torch.arange(4.0, requires_grad=True), names=("t",)) * 2
+    copied = copy.deepcopy(non_leaf)
+    assert copied.requires_grad
+    assert copied.is_leaf
+
+
+def test_zero_dim_tensor_index_behaves_like_the_equivalent_int():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    r = x[torch.tensor(1)]
+    assert r.ndim == 0
+    assert r.item() == 1.0
+    assert r.item() == x[1].item()
+
+    # on a multi-axis tensor, only the indexed axis drops
+    y = XTensor(torch.arange(8.0).reshape(2, 4), names=("b", "t"))
+    r2 = y[torch.tensor(1), :]
+    assert r2.names == ("t",)
+    assert r2.tolist() == [4.0, 5.0, 6.0, 7.0]
+
+    # a genuine advanced (multi-element) index is unaffected
+    r3 = y[torch.tensor([0, 1]), :]
+    assert r3.shape == (2, 4)
