@@ -4680,10 +4680,13 @@ def test_deepcopy_preserves_requires_grad_as_a_fresh_leaf():
 def test_repr_of_an_int_dtype_tensor_does_not_recurse():
     # issue #118: torch.Tensor.__format__ checks `type(self) is Tensor` and
     # falls back to `object.__format__` (== str(self)) for any subclass --
-    # fatal specifically for an int-dtype tensor, whose repr formats each
-    # element via f"{value}" on a 0-dim slice of the same subclass, which
-    # then recurses back into the very same tensor-printing machinery
-    # forever (a float-dtype tensor's repr never hits that code path). The
+    # fatal specifically for a non-float (int/bool) dtype tensor, whose repr
+    # formats each element via f"{value}" on a 0-dim slice of the same
+    # subclass, which then recurses back into the very same tensor-printing
+    # machinery forever. A float-dtype tensor's repr instead computes its
+    # display width from `torch.masked_select(...)`'s output -- a *non-view*
+    # op, so the result is a plain `Tensor`, not this subclass, and torch's
+    # own `.item()` fast path is taken instead of recursing. The
     # `XTensor(...)` wrapper prefix itself is torch's own subclass-aware
     # repr, only present on torch versions that added it -- older torch
     # (this package's floor is 1.7) just prints `tensor(...)` for any
@@ -4692,6 +4695,17 @@ def test_repr_of_an_int_dtype_tensor_does_not_recurse():
     x = XTensor(torch.arange(3))
     assert "0, 1, 2" in repr(x)
     assert "0, 1, 2" in str(x)
+    b = XTensor(torch.tensor([True, False]))
+    assert "True" in repr(b)
+
+
+def test_repr_of_an_int_dtype_coordinate_does_not_recurse():
+    # the actual reported entry point (#118's title): a numeric coordinate
+    # promoted to int dtype (#107) is exactly the shape that made this easy
+    # to hit by accident.
+    x = XTensor(torch.arange(3), names=("t",), coords={"t": (10, 20, 30)})
+    assert "0, 1, 2" in repr(x)
+    assert "10, 20, 30" in repr(x.coords)
 
 
 def test_format_of_a_zero_dim_tensor_extracts_the_scalar():
