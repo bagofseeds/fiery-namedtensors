@@ -953,6 +953,37 @@ def test_sel_numeric_is_unit_aware():
         assert x.sel(x=(2, "mm")).item() == 2.0  # a (value, unit) tuple
 
 
+def test_sel_string_selector_splits_value_and_unit_without_a_backend():
+    # a unitful string like "0.5s" must not silently discard its magnitude
+    # when no unit backend is active -- it used to parse to (1, "0.5s").
+    x = XTensor(
+        torch.tensor([10.0, 20.0, 30.0, 40.0]),
+        names=("t",),
+        coords={"t": XTensor([0.0, 0.5, 1.0, 1.5], unit="s")},
+    )
+    assert x.sel(t="0s").item() == 10.0
+    assert x.sel(t="0.5s").item() == 20.0
+    assert x.sel(t="1s").item() == 30.0
+
+
+def test_compact_spacing_string_splits_value_and_unit_without_a_backend():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": "2mm"}}
+    )
+    spacing = x.coords["t"]["spacing"]
+    assert spacing["value"] == 2.0
+    assert spacing["unit"] == "mm"
+
+
+def test_bare_unit_string_without_a_leading_number_still_defaults_to_one():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": "mm"}}
+    )
+    spacing = x.coords["t"]["spacing"]
+    assert spacing["value"] == 1
+    assert spacing["unit"] == "mm"
+
+
 def test_sel_explicit_numeric_coordinate():
     x = XTensor(
         torch.arange(4.0),
