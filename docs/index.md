@@ -73,6 +73,8 @@ See the [proposals](proposals/index.md) for the larger design decisions:
 - [0001 — Coordinates (values, spacing, units)](proposals/0001-units.md)
 - [0002 — Structured coordinates](proposals/0002-structured-coordinates.md)
 - [0003 — Data units](proposals/0003-data-units.md)
+- [0004 — Numeric coordinate selection](proposals/0004-numeric-selection.md)
+- [0005 — Multiple coordinates per axis](proposals/0005-multiple-coordinates.md)
 
 ## API
 

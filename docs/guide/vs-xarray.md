@@ -46,10 +46,12 @@ This page lists where the two diverge, in both directions.
   and the rest of that suite are not implemented.
 - **No IO / plotting / pandas bridge.** No NetCDF/Zarr readers, no `.plot`, no
   `.to_pandas()` / `MultiIndex`.
-- **Coordinates are one-per-axis for now.** Non-dimension coordinates and
-  multi-dimensional (curvilinear) coordinates are proposed but not yet landed
-  ([Proposal 0005](https://github.com/bagofseeds/fiery-xtensor/issues/65) is in
-  draft).
+- **Curvilinear (arbitrary multi-dim) coordinates aren't implemented yet.** A
+  dim can already carry several coordinates — a **non-dimension** coordinate
+  rides along it, and a compact **affine** coordinate can span several dims at
+  once ([Proposal 0005](../proposals/0005-multiple-coordinates.md)) — but a
+  general `lat(y, x)`-style array of arbitrary values over multiple dims is
+  not yet landed.
 - **Alignment is inner-join only.** There is no `join="outer"/"left"/"right"`
   (which would need NaN fill); operands align to the **intersection** of their
   labels. (xarray's *default* `arithmetic_join` is also `"inner"`, so the
@@ -67,9 +69,10 @@ This page lists where the two diverge, in both directions.
   broadcasts positionally; a `None` *after* a named axis on differently-named
   operands raises (ambiguous). See [broadcasting](broadcasting.md).
 - **Selection vs interpolation are separate verbs.** Like xarray, `.sel` picks
-  an existing position (exact or `method="nearest"`) and `.interp` computes
-  values off the grid; numeric `.sel`/`.interp` are covered by
-  [Proposal 0004](https://github.com/bagofseeds/fiery-xtensor/issues/66).
+  an existing position (exact, or snapped by `mode`/`method` with a
+  `tolerance`) and `.interp` computes values off the grid, on both regular
+  and irregular numeric coordinates
+  ([Proposal 0004](../proposals/0004-numeric-selection.md)).
 - **Name-as-`dim` is method-only.** `x.sum(dim="height")` works; the functional
   form `torch.sum(x, dim="height")` does not — a **PyTorch limitation** (its
   C-level argument parser rejects a string `dim` before our hook runs), not a

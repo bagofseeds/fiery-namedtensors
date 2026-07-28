@@ -21,13 +21,35 @@ m = XTensor(
     names=("row", "channel"),
     coords={"channel": ("x", "y", "z")},
 )
-m.sel(channel="y")              # selects position 1 along "channel"
-m.y                             # ... same, by attribute
-m[:, "y"]                       # ... same, positional label on the 2nd axis
-m.isel(channel=1)               # ... same, by integer position
 m.coords                        # {'channel': ('x', 'y', 'z')}
 m.T.coords                      # {'channel': ('x', 'y', 'z')} — follows the dim
 ```
+
+Four equivalent ways to select the position labelled `"y"` along `channel`:
+
+=== "By label"
+
+    ```python
+    m.sel(channel="y")
+    ```
+
+=== "By attribute"
+
+    ```python
+    m.y
+    ```
+
+=== "Positional label"
+
+    ```python
+    m[:, "y"]   # label on the 2nd axis
+    ```
+
+=== "By integer position"
+
+    ```python
+    m.isel(channel=1)
+    ```
 
 A **positional** coordinate label works anywhere an integer index does, resolved
 against the axis it sits on — so it composes with ints, slices, `...` and
@@ -53,11 +75,24 @@ img = xtensor(data, names=("c", "y", "x"), coords={"c": [
 ]})
 
 img.sel(c="GFP")            # by name — drops the axis (as before)
-img[{"type": "signal"}]     # by query — every matching position, keeps the axis
-img.sel(c={"type": "signal"})   # ... the sel-keyword spelling
 ```
 
-A **query** (a dict where a coordinate label is expected) selects *positions* —
+A **query** (a dict where a coordinate label is expected) selects every
+*matching position* and keeps the axis — two equivalent spellings:
+
+=== "By `[]`"
+
+    ```python
+    img[{"type": "signal"}]
+    ```
+
+=== "By `.sel`"
+
+    ```python
+    img.sel(c={"type": "signal"})
+    ```
+
+The matches become a `slice` when contiguous, else an index list, and always
 the matches become a `slice` when contiguous, else an index list — and always
 keeps the axis. It mirrors the descriptor query for *axes*: a `{"type": ...}`
 dict picks **axes** in a `dim=`/`movedim` slot and **positions** in a `[]`/`sel`
