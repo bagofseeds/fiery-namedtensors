@@ -1141,15 +1141,27 @@ class XTensor(ExtendedTensor):
             frac = _irregular_frac(
                 stored_values.as_subclass(Tensor), query, name
             )
-        eff_bound = _get_option("interp_bound") if bound is None else bound
-        eff_extrap = (
-            _get_option("interp_extrapolate")
-            if extrapolate is None
-            else extrapolate
-        )
-        raw = _interp_pull(
-            self.as_subclass(Tensor), axis, frac, order, eff_bound, eff_extrap
-        )
+        if frac.numel() == 0:
+            # an empty query -> an empty axis, the same way an empty
+            # advanced index (`x[[]]`) already behaves, rather than the
+            # backend's internal reshape choking on a zero-sized grid (#96).
+            empty_index = torch.empty(0, dtype=torch.long, device=self.device)
+            raw = self.as_subclass(Tensor).index_select(axis, empty_index)
+        else:
+            eff_bound = _get_option("interp_bound") if bound is None else bound
+            eff_extrap = (
+                _get_option("interp_extrapolate")
+                if extrapolate is None
+                else extrapolate
+            )
+            raw = _interp_pull(
+                self.as_subclass(Tensor),
+                axis,
+                frac,
+                order,
+                eff_bound,
+                eff_extrap,
+            )
         out = _carry(self, raw)
         # the interpolated axis now sits at the queried positions: give it an
         # explicit coordinate (dropping whatever `name` held before -- labels

@@ -989,6 +989,41 @@ def test_interp_keeps_other_axes_and_names():
     assert got.tolist() == [[0.5, 1.5], [5.5, 6.5]]
 
 
+def test_interp_empty_query_returns_an_empty_axis():
+    # used to crash with an opaque internal reshape error (#96); should
+    # behave like any other empty selection (e.g. `x[[]]`).
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    got = x.interp(t=[])
+    assert got.shape == (0,)
+    assert got.names == ("t",)
+    assert got.coords["t"]["values"].tolist() == []
+
+    got_tensor_query = x.interp(t=torch.tensor([]))
+    assert got_tensor_query.shape == (0,)
+
+    # another axis is untouched
+    y = XTensor(
+        torch.arange(8.0).reshape(2, 4),
+        names=("b", "t"),
+        coords={"t": {"spacing": 1.0}},
+    )
+    got_multi = y.interp(t=[])
+    assert got_multi.shape == (2, 0)
+    assert got_multi.names == ("b", "t")
+
+    # an irregular coordinate too, both without and with the backend
+    z = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    assert z.interp(t=[], method="nearest").shape == (0,)
+    pytest.importorskip("fiery.interpol")
+    assert z.interp(t=[], method="linear").shape == (0,)
+
+
 def test_interp_is_unit_aware():
     pytest.importorskip("fiery.interpol")
     pytest.importorskip("pint")
