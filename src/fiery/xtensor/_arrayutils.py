@@ -56,6 +56,33 @@ def _is_valid_index(value: tx.Any) -> bool:
     )
 
 
+def _normalize_scalar_tensor_index(slicer: SmartSlicerT) -> SmartSlicerT:
+    """
+    Replace a 0-D **integer** (long) tensor index with the plain Python
+    `int` it's equivalent to. `t[torch.tensor(1)]` behaves exactly like
+    `t[1]` under plain PyTorch indexing -- it drops the axis, not an
+    "advanced index of shape `()`" -- unlike a 0-D *boolean* tensor, which
+    really is a mask over a new leading axis (left untouched here).
+    `_is_advanced_index` classifies any long tensor as advanced without
+    checking its rank, and the classification code assumes it can call
+    `len()` on one; a 0-D tensor has none, so leaving it as a tensor crashes
+    the classification itself before indexing semantics even come into it.
+    """
+
+    def _one(value: tx.Any) -> tx.Any:
+        if (
+            torch.is_tensor(value)
+            and value.ndim == 0
+            and value.dtype == torch.long
+        ):
+            return value.item()
+        return value
+
+    if isinstance(slicer, tuple):
+        return tuple(_one(value) for value in slicer)
+    return _one(slicer)
+
+
 def _count_input_axes(values: SmartSlicerT) -> int:
     """
     Predict the number of axes in the input of an array slicing operation.
