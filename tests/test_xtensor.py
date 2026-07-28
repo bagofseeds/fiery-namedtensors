@@ -1319,7 +1319,7 @@ def test_sel_compact_matches_the_search_path_exhaustively():
         assert got == expected, (size, step, base, mode, target, expected, got)
 
 
-def test_sel_compact_closed_form_miss_falls_back_correctly(monkeypatch):
+def test_sel_compact_closed_form_miss_falls_back_correctly():
     # a ratio extreme enough to actually exhaust the walk's step budget --
     # confirms _numeric_select_compact's _ClosedFormMiss fallback (not just
     # _closed_form_sel_index in isolation) produces the right answer, on a
@@ -1332,6 +1332,22 @@ def test_sel_compact_closed_form_miss_falls_back_correctly(monkeypatch):
     target = 1.7e9  # the very first tick -- deep inside the walk's territory
     for mode in ("round", "floor", "ceil", "prev", "next"):
         assert x.sel(t=target, mode=mode).item() == 0.0
+
+
+def test_sel_compact_closed_form_miss_fallback_is_not_precision_starved():
+    # the fallback must materialise at its OWN float64 precision, not go
+    # through Coordinate["values"] (which computes in the tensor's default,
+    # float32, dtype) and upcast afterwards -- upcasting after the fact
+    # cannot recover precision already lost, and in this exact regime that
+    # silently turned a real tick into "no tick exists".
+    x = XTensor(
+        torch.arange(300.0),
+        names=("t",),
+        coords={"t": {"spacing": 1e-9, "origin": 1.7e9}},
+    )
+    target = 1.7e9 + 120e-9  # the 120th tick, well inside the range
+    assert x.sel(t=target, mode="ceil").item() == 120.0
+    assert x.sel(t=target, mode="round").item() == 120.0
 
 
 def test_sel_compact_closed_form_miss_forced_matches_the_search_path(

@@ -2387,12 +2387,17 @@ def _numeric_select_compact(
                 )
             except _ClosedFormMiss:
                 if materialised_values is None:
-                    # float64, matching the closed-form walk's own
-                    # arithmetic -- materialising at the tensor's default
-                    # (float32) dtype would silently disagree with it right
-                    # in the extreme-ratio regime this fallback exists for.
+                    # built directly in float64 -- matching the closed-form
+                    # walk's own arithmetic -- rather than materialising
+                    # via `coord["values"]` (which computes in the tensor's
+                    # default, float32, dtype: `torch.arange(size)*step`
+                    # already loses precision there) and upcasting
+                    # afterwards, which cannot recover what's already lost.
+                    # This regime is exactly where that precision gap
+                    # matters (an astronomically large `|base/step|`, the
+                    # only way this fallback is ever reached).
                     materialised_values = (
-                        coord["values"].as_subclass(Tensor).double()
+                        base + torch.arange(size, dtype=torch.float64) * step
                     )
                 j = _pick_sel_index(
                     materialised_values, target, mode, ascending
