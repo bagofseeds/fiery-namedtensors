@@ -305,12 +305,20 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         if id(self) in memo:
             return memo[id(self)]
         # Unlike vanilla `Tensor.__deepcopy__`, this doesn't restrict itself
-        # to graph leaves: it never tries to preserve a backward graph
-        # either way (a leaf or not, the result below is always a fresh,
-        # detached copy, re-marked to require grad if the original did) --
-        # and simply constructing an `XTensor` from a leaf input tensor
-        # already leaves it non-leaf (a separate quirk), so requiring one
-        # here would make this unusable for the common case.
+        # to graph leaves, and doesn't preserve the autograd graph either way
+        # -- the result below is always a fresh, detached snapshot of the
+        # current values, re-marked to require grad if the original did (if
+        # you need the copy to stay attached to the original computation for
+        # a later `.backward()`, deepcopy is the wrong tool regardless --
+        # `.clone()` directly, without detaching, is). A strict leaf-only
+        # check would fail even the ordinary case of wrapping an existing
+        # `requires_grad=True` tensor: `as_subclass` (needed for the
+        # zero-copy retag `XTensor(t)` does) is itself a *view* op under
+        # PyTorch's own autograd rules, and any view of a grad-requiring leaf
+        # is non-leaf -- true of a plain `Tensor.as_subclass`/`.view()` too,
+        # not specific to this subclass -- so almost every `XTensor` wrapping
+        # a grad-requiring input would already fail that check before any
+        # arithmetic is even involved.
         data = self.as_subclass(Tensor).detach().clone()
         out = data.as_subclass(type(self))
         # `as_subclass` on a tensor that already requires grad returns a
