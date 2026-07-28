@@ -1905,6 +1905,40 @@ def test_sum_keepdim_preserves_reduced_axis_name():
     assert y.shape == (2, 1, 4)
 
 
+def test_sum_keepdim_drops_the_reduced_axis_compact_coordinate():
+    # the reduced axis's name survives `keepdim`, but the size-1 result no
+    # longer describes any single one of the original positions -- a compact
+    # coordinate has no length of its own to invalidate the way a label does,
+    # so it must be dropped explicitly rather than rebinding to "position 0
+    # of the original extent" (#90).
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    y = x.sum(dim="t", keepdim=True)
+    assert y.names == ("t",)
+    assert "t" not in y.coords
+
+
+def test_sum_keepdim_drops_the_reduced_axis_label():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": ("w", "x", "y", "z")}
+    )
+    y = x.sum(dim="t", keepdim=True)
+    assert "t" not in y.coords
+
+
+def test_sum_keepdim_keeps_an_unreduced_axis_coordinate():
+    x = XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("y", "x"),
+        coords={"y": {"spacing": 1.0, "origin": 0.0}},
+    )
+    y = x.sum(dim="x", keepdim=True)
+    assert "y" in y.coords
+
+
 def test_reduction_over_multiple_named_axes():
     x = XTensor(torch.arange(24.0).reshape(2, 3, 4), names=("a", "b", "c"))
     assert x.mean(dim=("a", "c")).names == ("b",)
@@ -2287,6 +2321,35 @@ def test_expand_keeps_coordinates_of_existing_axes():
     out = x.expand(2, 3, 4)
     assert out.names == (None, "b", "c")
     assert out.coords == {"c": ("w", "x", "y", "z")}
+
+
+def test_expand_drops_a_compact_coordinate_on_a_broadcast_axis():
+    # a size-1 axis expanded to N is still only ever one position's worth of
+    # underlying data -- a compact coordinate has no length of its own to
+    # invalidate the way a label does, so it must be dropped explicitly (#90).
+    x = XTensor(
+        torch.zeros(1, 4),
+        names=("y", "x"),
+        coords={"y": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert "y" not in x.expand(3, 4).coords
+    if _HAS_BROADCAST_TO:
+        assert "y" not in torch.broadcast_to(x, (3, 4)).coords
+
+
+def test_expand_drops_a_label_on_a_broadcast_axis():
+    x = XTensor(torch.zeros(1, 4), names=("y", "x"), coords={"y": ("only",)})
+    assert "y" not in x.expand(3, 4).coords
+
+
+def test_expand_of_an_unrelated_axis_keeps_a_compact_coordinate():
+    # sanity check: only the axis whose *size* actually changed is dropped.
+    x = XTensor(
+        torch.zeros(3, 1),
+        names=("y", "x"),
+        coords={"y": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert "y" in x.expand(3, 4).coords
 
 
 def test_diagonal_keeps_the_surviving_axis_coordinates():
