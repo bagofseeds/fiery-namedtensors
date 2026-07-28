@@ -73,6 +73,12 @@ This page lists where the two diverge, in both directions.
   `.interp` computes values off the grid, on both regular and irregular
   numeric coordinates
   ([Proposal 0004](../proposals/0004-numeric-selection.md)).
+- **A range `.sel` is half-open, not inclusive.** `x.sel(t=slice(lo, hi))`
+  selects `lo <= value < hi`, like ordinary Python/`__getitem__` slicing.
+  xarray's label-based `.sel(x=slice(a, b))` is **inclusive on both ends**
+  (`a <= value <= b`) — a deliberate divergence here, to keep one slicing
+  rule across the whole library rather than a special inclusive-both-ends
+  case for coordinate ranges (issue #109).
 - **Name-as-`dim` is method-only.** `x.sum(dim="height")` works; the functional
   form `torch.sum(x, dim="height")` does not — a **PyTorch limitation** (its
   C-level argument parser rejects a string `dim` before our hook runs), not a

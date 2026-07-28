@@ -1129,6 +1129,17 @@ class XTensor(ExtendedTensor):
         `tolerance` (a value in the position unit) caps the allowed gap. A
         **bare** `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode`
         implies an unbounded snap unless a `tolerance` is given.
+
+        A **`slice(lo, hi)`** on a numeric coordinate is a **value range**
+        (issue #109), unit-aware, resolving to a contiguous integer `slice` —
+        half-open like ordinary Python indexing (`lo <= value < hi`), **not**
+        xarray's inclusive-both-ends convention (see `vs-xarray.md`). Bounds
+        are compared numerically regardless of order or of the coordinate's
+        own direction: `t=slice(1, 5)` and `t=slice(5, 1)` select the same
+        range. A single bound is positional (`slice(1, None)` -> `value >=
+        1`; `slice(None, 5)` -> `value < 5`); an out-of-range or empty result
+        is a well-formed empty axis, not an error. `slice.step` is not
+        supported (`mode`/`tolerance` don't apply to a range either).
         """
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
@@ -1152,6 +1163,11 @@ class XTensor(ExtendedTensor):
                 )
             labels = coords[name]
             if isinstance(labels, Coordinate):
+                if isinstance(label, slice):
+                    positional[name] = _numeric_select_range(
+                        labels, label, name
+                    )
+                    continue
                 positional[name] = _numeric_select(
                     labels, label, sel_mode, tolerance, name
                 )
@@ -2322,6 +2338,88 @@ def _closed_form_sel_index(
     return j
 
 
+def _first_index_ge(
+    base: float, step: float, size: int, threshold: float
+) -> int:
+    """
+    The smallest `k` in `[0, size]` with `base + k*step >= threshold` --
+    `size` itself means "no tick satisfies" (issue #109's range `.sel`
+    shares this and `_first_index_lt` with #110's `_closed_form_sel_index`:
+    same exact, no-materialisation technique -- endpoints checked directly,
+    otherwise a division-seeded walk on real tick values).
+
+    For an **ascending** `value(k)` (`step > 0`) this predicate is false
+    then true (a suffix) -- the transition point needs an actual walk. For
+    a **descending** one (`step < 0`) it's true then false (a prefix), so
+    the smallest satisfying `k`, if any, is trivially `0`.
+    """
+    if size == 0:
+        return 0
+
+    def value(k: int) -> float:
+        return base + k * step
+
+    if step > 0:
+        if value(size - 1) < threshold:
+            return size
+        if value(0) >= threshold:
+            return 0
+        idx = (threshold - base) / step
+        j = min(size - 1, max(0, int(round(idx))))
+        steps = 0
+        while not value(j) >= threshold:
+            j += 1
+            steps += 1
+            if steps > _CLOSED_FORM_MAX_STEPS:
+                raise _ClosedFormMiss
+        steps = 0
+        while j > 0 and value(j - 1) >= threshold:
+            j -= 1
+            steps += 1
+            if steps > _CLOSED_FORM_MAX_STEPS:
+                raise _ClosedFormMiss
+        return j
+    return 0 if value(0) >= threshold else size
+
+
+def _first_index_lt(
+    base: float, step: float, size: int, threshold: float
+) -> int:
+    """
+    The smallest `k` in `[0, size]` with `base + k*step < threshold` --
+    `size` means "no tick satisfies". The mirror image of `_first_index_ge`
+    -- trivial (`0`/`size`) for an **ascending** `value(k)` (a prefix
+    predicate), a real walk for a **descending** one (a suffix).
+    """
+    if size == 0:
+        return 0
+
+    def value(k: int) -> float:
+        return base + k * step
+
+    if step < 0:
+        if value(size - 1) >= threshold:
+            return size
+        if value(0) < threshold:
+            return 0
+        idx = (threshold - base) / step
+        j = min(size - 1, max(0, int(round(idx))))
+        steps = 0
+        while not value(j) < threshold:
+            j += 1
+            steps += 1
+            if steps > _CLOSED_FORM_MAX_STEPS:
+                raise _ClosedFormMiss
+        steps = 0
+        while j > 0 and value(j - 1) < threshold:
+            j -= 1
+            steps += 1
+            if steps > _CLOSED_FORM_MAX_STEPS:
+                raise _ClosedFormMiss
+        return j
+    return 0 if value(0) < threshold else size
+
+
 def _numeric_select_compact(
     coord: "Coordinate",
     selector: tx.Any,
@@ -2455,6 +2553,153 @@ def _numeric_select(
         _check_sel_tolerance(gap, tol, target, mode, one, name)
         positions.append(j)
     return positions if is_many else positions[0]
+
+
+def _numeric_select_range(
+    coord: "Coordinate", selector: slice, name: str
+) -> slice:
+    """
+    Resolve a `slice(lo, hi)` value-range selector against a numeric
+    `Coordinate` to an integer position `slice` (#109) -- half-open
+    (`lo <= value < hi`), unit-aware, on both compact and explicit
+    coordinates. Bounds are compared **numerically**, independent of the
+    order they're given in or of the coordinate's own direction:
+    `slice(lo, hi)` and `slice(hi, lo)` are the same request. A single bound
+    is positional (`slice.start` alone -> `value >= start`; `slice.stop`
+    alone -> `value < stop`); an out-of-range (including `+/-inf`) bound
+    clamps to an empty or full range rather than raising (#96's empty-axis
+    precedent); a `nan` bound raises, since no comparison to it is
+    well-formed. `step` has no value-range meaning here and is rejected
+    outright, rather than repurposed to signal an open/closed bound -- that
+    would overload one field with two unrelated meanings, the trap #93
+    already fixed.
+    """
+    if selector.step is not None:
+        raise ValueError(
+            f"sel: a range selector on {name!r} does not take a step "
+            f"({selector.step!r}) -- slice(lo, hi) only"
+        )
+    if coord._compact():
+        spacing = dict.__getitem__(coord, "spacing")
+        unit = spacing["unit"]
+        size = coord._size
+    else:
+        materialised = coord["values"]
+        values = materialised.as_subclass(Tensor)
+        unit = materialised.unit
+        size = values.numel()
+    start = (
+        None
+        if selector.start is None
+        else _selector_value(selector.start, unit)
+    )
+    stop = (
+        None if selector.stop is None else _selector_value(selector.stop, unit)
+    )
+    for bound in (start, stop):
+        if bound is not None and math.isnan(bound):
+            raise ValueError(
+                f"sel: a range selector on {name!r} has a NaN bound"
+            )
+    if start is not None and stop is not None:
+        lo, hi = (start, stop) if start <= stop else (stop, start)
+    else:
+        lo, hi = start, stop
+    if coord._compact():
+        return _compact_range_slice(coord, lo, hi, size)
+    return _explicit_range_slice(values, lo, hi, name)
+
+
+def _compact_range_slice(
+    coord: "Coordinate",
+    lo: tx.Optional[float],
+    hi: tx.Optional[float],
+    size: int,
+) -> slice:
+    """
+    The compact-coordinate half of `_numeric_select_range` -- never
+    materialises `["values"]` (issue #110's O(1) property extends to range
+    selection too), sharing `_first_index_ge`/`_first_index_lt` with
+    point-selection's closed-form path (`_numeric_select_compact`) rather
+    than a second, independently-epsilon-tuned implementation.
+    """
+    spacing = dict.__getitem__(coord, "spacing")
+    step = float(spacing["value"])
+    origin = dict.get(coord, "origin")
+    base = float(origin["value"]) if origin is not None else 0.0
+
+    def resolve(fn, threshold, default):
+        if threshold is None:
+            return default
+        try:
+            return fn(base, step, size, threshold)
+        except _ClosedFormMiss:
+            full = base + torch.arange(size, dtype=torch.float64) * step
+            side = "ge" if fn is _first_index_ge else "lt"
+            mask = full >= threshold if side == "ge" else full < threshold
+            return int(mask.long().argmax()) if bool(mask.any()) else size
+
+    if step == 0:
+        # every tick sits at `base` -- a plain value comparison decides
+        # whether the whole axis is in range, or none of it is.
+        included = (lo is None or base >= lo) and (hi is None or base < hi)
+        return slice(0, size) if included else slice(0, 0)
+    if step > 0:
+        i_start = resolve(_first_index_ge, lo, 0)
+        i_stop = resolve(_first_index_ge, hi, size)
+    else:
+        i_start = resolve(_first_index_lt, hi, 0)
+        i_stop = resolve(_first_index_lt, lo, size)
+    return slice(i_start, i_stop)
+
+
+def _explicit_range_slice(
+    values: Tensor, lo: tx.Optional[float], hi: tx.Optional[float], name: str
+) -> slice:
+    """The explicit half of `_numeric_select_range` (searchsorted-based)."""
+    n = values.numel()
+    if n == 0:
+        return slice(0, 0)
+    if n == 1:
+        v = float(values[0])
+        included = (lo is None or v >= lo) and (hi is None or v < hi)
+        return slice(0, 1) if included else slice(0, 0)
+    ticks = values.detach()
+    diffs = ticks[1:] - ticks[:-1]
+    if bool((diffs >= 0).all()):
+        ascending, ordered = True, ticks
+    elif bool((diffs <= 0).all()):
+        ascending, ordered = False, ticks.flip(0)
+    else:
+        wanted = diffs >= 0 if bool(diffs[0] >= 0) else diffs <= 0
+        j = int(wanted.logical_not().long().argmax())
+        raise ValueError(
+            f"sel: a range selector on {name!r} needs a monotonic "
+            f"coordinate; ticks {j} and {j + 1} are {float(ticks[j])} and "
+            f"{float(ticks[j + 1])}"
+        )
+    ordered = ordered.contiguous()
+    if not ordered.is_floating_point():
+        # an integer-dtype coordinate must not truncate a fractional bound
+        # (10.5 silently becoming 10) when the needle is cast to match --
+        # and float64, not the tensor default (float32), since an int64
+        # coordinate can hold values (e.g. epoch timestamps) well past
+        # float32's 2**24 exact-integer limit, where float32 would collapse
+        # distinct ticks together just as badly as the truncation this
+        # guards against.
+        ordered = ordered.to(torch.float64)
+
+    def _bracket(value: float) -> int:
+        needle = torch.tensor(
+            value, dtype=ordered.dtype, device=ordered.device
+        )
+        return int(torch.searchsorted(ordered, needle))
+
+    k_start = 0 if lo is None else _bracket(lo)
+    k_stop = n if hi is None else _bracket(hi)
+    if ascending:
+        return slice(k_start, k_stop)
+    return slice(n - k_stop, n - k_start)
 
 
 #: `interp` method names -> integer spline order (mirrors `fiery.interpol`).
