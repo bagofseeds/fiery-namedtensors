@@ -227,8 +227,22 @@ supported on an irregular coordinate.
 3. **`.sel` directional modes** — *resolved*: `floor`/`ceil` (value space) and
    `prev`/`next` (tick order), with xarray's `ffill`/`bfill` aliased onto
    `prev`/`next`.
-4. **`O(1)` compact fast path for `.sel`** (`round((v − origin) / spacing)`) vs
-   the simple materialise-and-`argmin`.
+4. ~~**`O(1)` compact fast path for `.sel`**~~ — landed, see
+   [#110](https://github.com/bagofseeds/fiery-xtensor/issues/110): resolves
+   `round`/`floor`/`ceil`/`prev`/`next` directly from `origin`/`spacing`,
+   never materialising `["values"]` or searching it *for any realistic
+   input*. The endpoints (`k=0`, `k=size-1`) are checked directly against
+   the target so an out-of-range value clamps/raises exactly regardless of
+   scale; otherwise a division-based seed is corrected by walking to the
+   true boundary using the real tick value (`origin + k·spacing`, not
+   another division) — exact, not epsilon-tolerant, since the naive
+   `round((v − origin) / spacing)` loses precision as a *cancellation*
+   error that scales with `|origin/spacing|` (an epoch-seconds axis with
+   millisecond spacing, say), which a fixed epsilon guard can't absorb at
+   every scale. An astronomically large ratio (beyond the walk's bounded
+   step budget) falls back to materialising and searching for that one
+   target — still correct, just not O(1) — rather than risk a wrong
+   answer; ordinary use never reaches it.
 5. **True N-D interpolation** — separable axis-by-axis (this slice, == xarray)
    vs a single N-D `grid_pull` for a genuine multivariate spline.
 6. **Multi-coordinate interaction** — once an axis can carry several
