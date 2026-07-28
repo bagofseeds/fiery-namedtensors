@@ -1529,10 +1529,19 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
             values = spec
         else:
             values = XTensor(spec, unit=_units.normalise(""))
+        if values.ndim != 1:
+            raise ValueError(
+                "coords: a numeric coordinate must be 1-D, got shape "
+                f"{tuple(values.shape)}"
+            )
         return Coordinate(values=values)
     coord = Coordinate()
-    if "spacing" in spec:
-        coord["spacing"] = _as_unitful(spec["spacing"])
+    if "spacing" not in spec:
+        raise ValueError(
+            "coords: a compact coordinate requires 'spacing' (got only "
+            f"{sorted(spec.keys())!r})"
+        )
+    coord["spacing"] = _as_unitful(spec["spacing"])
     if "origin" in spec:
         coord["origin"] = _as_unitful_origin(spec["origin"])
     _reconcile_origin_unit(coord)
@@ -2027,13 +2036,10 @@ def _irregular_frac(values: Tensor, query: Tensor, name: str) -> Tensor:
     uniform in index space -- see #81). Differentiable w.r.t. both `query`
     and `values`: only the *search* (which bracket a query falls in) runs on
     detached copies, since an index has no useful gradient; the returned
-    fraction is computed from the original tensors.
+    fraction is computed from the original tensors. `values` is guaranteed
+    1-D here -- `_make_coordinate` rejects a non-1-D coordinate at
+    construction (#97), so there's no need to re-check it per consumer.
     """
-    if values.dim() != 1:
-        raise ValueError(
-            f"interp: irregular coordinate {name!r} must be 1-D, but its "
-            f"values have shape {tuple(values.shape)}"
-        )
     n = values.numel()
     if n < 2:
         raise ValueError(

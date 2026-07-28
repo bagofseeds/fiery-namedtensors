@@ -244,6 +244,25 @@ def test_coordinate_origin_must_be_a_scalar():
         )
 
 
+def test_compact_coordinate_requires_spacing():
+    # an origin-only spec used to crash downstream with a bare
+    # `KeyError: 'spacing'` (#95); rejected clearly at construction instead.
+    with pytest.raises(ValueError, match="requires 'spacing'"):
+        XTensor(torch.zeros(4), names=["t"], coords={"t": {"origin": 5.0}})
+
+
+def test_explicit_coordinate_must_be_1d():
+    # a 2-D (or higher) coordinate tensor used to be silently accepted, only
+    # for `.sel` to do a flattened `argmin` and return a bogus position
+    # (#97); rejected clearly at construction instead.
+    with pytest.raises(ValueError, match="must be 1-D"):
+        XTensor(
+            torch.arange(6.0).reshape(3, 2),
+            names=["t", "u"],
+            coords={"t": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])},
+        )
+
+
 def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
     # a bare `origin` number (no unit given) previously silently defaulted
     # to a *different*, conflicting unit than `spacing`'s -- it should
@@ -1270,16 +1289,16 @@ def test_interp_irregular_needs_at_least_two_ticks():
 
 
 def test_interp_irregular_needs_a_1d_coordinate():
-    # `coords={dim: <tensor>}` accepts any tensor whose *first* axis matches,
-    # so a 2-D one is storable; interp must say so rather than fall through
-    # to an opaque searchsorted shape error.
-    x = XTensor(
-        torch.arange(6.0).reshape(3, 2),
-        names=("t", "u"),
-        coords={"t": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])},
-    )
+    # a 2-D (or higher) coordinate tensor is rejected at construction (#97,
+    # see test_explicit_coordinate_must_be_1d) rather than being silently
+    # storable and only surfacing as an opaque searchsorted shape error
+    # inside `.interp` itself.
     with pytest.raises(ValueError, match="must be 1-D"):
-        x.interp(t=1.5)
+        XTensor(
+            torch.arange(6.0).reshape(3, 2),
+            names=("t", "u"),
+            coords={"t": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])},
+        )
 
 
 def test_interp_irregular_on_a_sliced_coordinate():
