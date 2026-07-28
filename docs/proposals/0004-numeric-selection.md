@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — **for discussion** (the first slice — regular coordinates — landed; irregular `.interp` (#73) landed too) |
+| **Status** | Draft — **for discussion** (the first slice — regular coordinates — landed; irregular `.interp` (#73) and range `.sel` (#109) landed too) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-28 — irregular (non-uniform) 1-D `.interp` landed ([#73](https://github.com/bagofseeds/fiery-xtensor/issues/73), nearest/linear via `searchsorted`) |
+| **Updated** | 2026-07-28 — range selection on `.sel` landed ([#109](https://github.com/bagofseeds/fiery-xtensor/issues/109), half-open `slice(lo, hi)`) |
 | **Tracking** | [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66); builds on Proposal 0001 (numeric coordinates) |
 
 ## Abstract
@@ -188,6 +188,9 @@ supported on an irregular coordinate.
   selection with the five modes (`round`/`floor`/`ceil`/`prev`/`next` + xarray
   aliases), unit-aware, on compact **and** explicit coordinates; bare = exact,
   a mode implies an unbounded snap.
+- `.sel(t=slice(lo, hi))` (#109) — half-open value-range selection to a
+  contiguous position `slice`, unit-aware, on compact and explicit
+  coordinates (ascending or descending).
 - `.interp(method="linear", bound=None, extrapolate=None, **indexers)` —
   nearest built in; orders ≥ 1 via `fiery.interpol.grid_pull`; `interp_bound`
   (default `"replicate"`) and `interp_extrapolate` (default `True`) options
@@ -222,8 +225,15 @@ supported on an irregular coordinate.
    planned**, see #81; the exactness of nearest/linear is structural (both
    the inversion and the pull are locally affine between the same two
    ticks), not a stopgap awaiting a future spline.
-2. **Range selection** on `.sel` — `x.sel(t=slice("1s", "5s"))` (a value range
-   → a contiguous slice). Natural and useful; not in this slice.
+2. ~~**Range selection**~~ — landed, see
+   [#109](https://github.com/bagofseeds/fiery-xtensor/issues/109): `.sel(t=
+   slice("1s", "5s"))` resolves to a contiguous position `slice`,
+   **half-open** (`lo <= value < hi`, not xarray's inclusive-both-ends),
+   unit-aware, on both compact and explicit coordinates. Bounds are ordered
+   numerically regardless of the order given or of the coordinate's own
+   direction; `slice.step` is rejected (not repurposed to signal an
+   open/closed bound, per the #93 lesson); an out-of-range or empty result
+   is a well-formed empty axis (#96).
 3. **`.sel` directional modes** — *resolved*: `floor`/`ceil` (value space) and
    `prev`/`next` (tick order), with xarray's `ffill`/`bfill` aliased onto
    `prev`/`next`.

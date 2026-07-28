@@ -145,6 +145,20 @@ Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
 The position unit is separate from the *data* unit of the tensor's values (see
 [Data units](data-units.md)).
 
+A `slice` selector on `.sel` picks a **value range** instead of a single tick
+— unit-aware, and half-open like ordinary Python slicing (`lo <= value <
+hi`, **not** xarray's inclusive-both-ends convention):
+
+```python
+sig.sel(t=slice("1s", "5s"))   # every tick with 1s <= value < 5s
+sig.sel(t=slice(None, "2s"))   # value < 2s
+```
+
+Bounds are compared numerically regardless of the order they're given in or
+of the coordinate's own direction — `slice(lo, hi)` and `slice(hi, lo)`
+select the same range. An out-of-range or empty result is a well-formed
+empty axis, not an error.
+
 ## Multiple coordinates per axis
 
 An axis can carry more than one coordinate at once — its own index, plus any

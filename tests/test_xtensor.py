@@ -1447,6 +1447,179 @@ def test_sel_explicit_numeric_coordinate():
     assert x.sel(t=1.0, method="nearest").item() == 1.0  # nearest tick is 0.5
 
 
+# ----------------------------------------------------------------------
+# .sel value-range selection (issue #109)
+# ----------------------------------------------------------------------
+
+
+def test_sel_range_on_a_compact_ascending_coordinate():
+    # ticks 0, 0.5, 1.0, 1.5, 2.0, 2.5 ; data 0..5
+    x = XTensor(
+        torch.arange(6.0),
+        names=("t",),
+        coords={"t": {"spacing": 0.5, "origin": 0.0}},
+    )
+    assert x.sel(t=slice(1.0, 2.5)).tolist() == [2.0, 3.0, 4.0]  # [1.0, 2.5)
+    assert x.sel(t=slice(None, 1.0)).tolist() == [0.0, 1.0]  # value < 1.0
+    assert x.sel(t=slice(1.5, None)).tolist() == [
+        3.0,
+        4.0,
+        5.0,
+    ]  # value >= 1.5
+    assert x.sel(t=slice(None, None)).tolist() == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+    ]
+
+
+def test_sel_range_on_a_compact_descending_coordinate():
+    # ticks 8, 6, 4, 2, 0 ; data 0..4
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": -2.0, "origin": 8.0}},
+    )
+    assert x.sel(t=slice(0, 8)).tolist() == [1.0, 2.0, 3.0, 4.0]  # value < 8
+    assert x.sel(t=slice(8, 0)).tolist() == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+    ]  # order-independent
+    assert x.sel(t=slice(4, None)).tolist() == [0.0, 1.0, 2.0]  # value >= 4
+    assert x.sel(t=slice(None, 4)).tolist() == [3.0, 4.0]  # value < 4
+
+
+def test_sel_range_on_an_explicit_ascending_coordinate():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 0.5, 2.0, 4.0, 10.0], unit="s")},
+    )
+    assert x.sel(t=slice("1s", "5s")).tolist() == [
+        2.0,
+        3.0,
+    ]  # [1, 5) -> 2., 4.
+    assert x.sel(t=slice(None, "2s")).tolist() == [0.0, 1.0]
+    assert x.sel(t=slice("4s", None)).tolist() == [3.0, 4.0]
+
+
+def test_sel_range_on_an_explicit_descending_coordinate():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": XTensor([10.0, 4.0, 2.0, 0.5, 0.0], unit="s")},
+    )
+    assert x.sel(t=slice("1s", "5s")).tolist() == [1.0, 2.0]  # values 4., 2.
+
+
+def test_sel_range_empty_result_is_a_well_formed_empty_axis():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert x.sel(t=slice(10, 20)).tolist() == []  # entirely out of range
+    assert x.sel(t=slice(2, 2)).tolist() == []  # a degenerate (empty) range
+
+    y = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 1.0, 2.0, 3.0])},
+    )
+    assert y.sel(t=slice(10, 20)).tolist() == []
+
+
+def test_sel_range_rejects_a_step():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    with pytest.raises(ValueError, match="does not take a step"):
+        x.sel(t=slice(0, 4, 2))
+
+
+def test_sel_range_needs_a_monotonic_explicit_coordinate():
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 2.0, 1.0, 4.0, 3.0])},
+    )
+    with pytest.raises(ValueError, match="monotonic"):
+        x.sel(t=slice(0, 3))
+
+
+def test_sel_range_is_half_open_at_exact_tick_boundaries():
+    # ticks 0,1,2,3,4 ; slice(1, 3) should include 1 but exclude 3
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert x.sel(t=slice(1, 3)).tolist() == [1.0, 2.0]
+
+
+def test_sel_range_matches_a_boolean_mask_reference_exhaustively():
+    # exhaustive-ish check across compact/explicit, ascending/descending,
+    # against an independent boolean-mask reference implementation.
+    import random
+
+    rng = random.Random(0)
+    for _ in range(500):
+        kind = rng.choice(
+            ["compact_asc", "compact_desc", "explicit_asc", "explicit_desc"]
+        )
+        n = rng.randint(2, 8)
+        if kind == "compact_asc":
+            step = round(rng.uniform(0.1, 3.0), 3)
+            origin = round(rng.uniform(-5, 5), 3)
+            values = torch.tensor([origin + i * step for i in range(n)])
+            coords = {"t": {"spacing": step, "origin": origin}}
+        elif kind == "compact_desc":
+            step = -round(rng.uniform(0.1, 3.0), 3)
+            origin = round(rng.uniform(-5, 5), 3)
+            values = torch.tensor([origin + i * step for i in range(n)])
+            coords = {"t": {"spacing": step, "origin": origin}}
+        elif kind == "explicit_asc":
+            vals = sorted({round(rng.uniform(-10, 10), 3) for _ in range(n)})
+            values = torch.tensor(vals)
+            coords = {"t": XTensor(values)}
+        else:
+            vals = sorted(
+                {round(rng.uniform(-10, 10), 3) for _ in range(n)},
+                reverse=True,
+            )
+            values = torch.tensor(vals)
+            coords = {"t": XTensor(values)}
+        size = values.numel()
+        data = torch.arange(size, dtype=torch.float32)
+        x = XTensor(data, names=("t",), coords=coords)
+
+        lo = rng.choice([None, round(rng.uniform(-12, 12), 3)])
+        hi = rng.choice([None, round(rng.uniform(-12, 12), 3)])
+        selector = rng.choice([slice(lo, hi), slice(hi, lo)])
+
+        got = x.sel(t=selector).tolist()
+
+        start, stop = selector.start, selector.stop
+        if start is not None and stop is not None:
+            elo, ehi = (start, stop) if start <= stop else (stop, start)
+        else:
+            elo, ehi = start, stop
+        mask = torch.ones(size, dtype=torch.bool)
+        if elo is not None:
+            mask &= values >= elo
+        if ehi is not None:
+            mask &= values < ehi
+        expected = data[mask].tolist()
+        assert got == expected, (kind, values.tolist(), lo, hi, selector)
+
+
 def test_interp_nearest_is_builtin_without_the_backend(monkeypatch):
     # order-0 (nearest) needs no fiery.interpol; force the backend absent.
     from fiery.xtensor import _tensors
