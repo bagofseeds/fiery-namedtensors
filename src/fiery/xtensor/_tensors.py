@@ -2212,8 +2212,15 @@ def _closed_form_sel_index(
     """
     The integer index `mode` selects for `target` on a compact coordinate
     (`value(k) = base + k*step`, `step != 0`) -- **exact**, matching
-    `_pick_sel_index` (the search-based path) bit-for-bit, in O(1) for any
-    realistic input (issue #110):
+    `_pick_sel_index` (the search-based path) for any coordinate whose ticks
+    are distinct in float64, in O(1) for any realistic input (issue #110).
+    (At an astronomical `|base/step|` -- beyond float64's practical
+    precision -- ticks can literally collide to the same float64 value;
+    this still picks a tick with the identical *value* as the search path
+    would, just not necessarily the identical *index* among duplicates --
+    a degenerate-input edge case, not a real divergence.) `target` must not
+    be `nan` -- checked by the caller, not here, so the check applies
+    uniformly including the `spacing == 0` case this function never sees.
 
     - The two array **endpoints** (`k=0`, `k=size-1`) are compared against
       `target` directly, so "target is beyond (or exactly at) the whole
@@ -2247,8 +2254,6 @@ def _closed_form_sel_index(
     """
     if size == 0:
         return None
-    if math.isnan(target):
-        raise ValueError(f"sel: target {target!r} is not a number")
     if mode == "prev":
         mode = "floor" if ascending else "ceil"
     elif mode == "next":
@@ -2353,6 +2358,8 @@ def _numeric_select_compact(
     positions = []
     for one in wanted:
         target = _selector_value(one, unit)
+        if math.isnan(target):
+            raise ValueError(f"sel: target {target!r} is not a number")
         if step == 0:
             # degenerate: every tick sits at `base` -- round always matches
             # it (index 0, the same tie-break `argmin` gives an all-equal
@@ -2380,7 +2387,13 @@ def _numeric_select_compact(
                 )
             except _ClosedFormMiss:
                 if materialised_values is None:
-                    materialised_values = coord["values"].as_subclass(Tensor)
+                    # float64, matching the closed-form walk's own
+                    # arithmetic -- materialising at the tensor's default
+                    # (float32) dtype would silently disagree with it right
+                    # in the extreme-ratio regime this fallback exists for.
+                    materialised_values = (
+                        coord["values"].as_subclass(Tensor).double()
+                    )
                 j = _pick_sel_index(
                     materialised_values, target, mode, ascending
                 )
@@ -2434,13 +2447,7 @@ def _numeric_select(
         if j is None:
             raise ValueError(f"sel: no {mode} tick for {one!r} on {name!r}")
         gap = float((values[j] - target).abs())
-        if tol is not None:
-            cap = tol if tol > 0 else _EXACT_MATCH_REL * max(1.0, abs(target))
-            if gap > cap:
-                raise ValueError(
-                    f"sel: {mode} tick for {one!r} on {name!r} is {gap} away, "
-                    f"over tolerance {tol}"
-                )
+        _check_sel_tolerance(gap, tol, target, mode, one, name)
         positions.append(j)
     return positions if is_many else positions[0]
 

@@ -1315,8 +1315,55 @@ def test_sel_compact_matches_the_search_path_exhaustively():
                 base, step, target, mode, ascending, size
             )
         except _ClosedFormMiss:
-            continue  # the rare fallback path; correctness covered elsewhere
+            continue  # the rare fallback path; see the tests below
         assert got == expected, (size, step, base, mode, target, expected, got)
+
+
+def test_sel_compact_closed_form_miss_falls_back_correctly(monkeypatch):
+    # a ratio extreme enough to actually exhaust the walk's step budget --
+    # confirms _numeric_select_compact's _ClosedFormMiss fallback (not just
+    # _closed_form_sel_index in isolation) produces the right answer, on a
+    # target inside the coordinate's range where every mode needs a walk.
+    x = XTensor(
+        torch.arange(300.0),
+        names=("t",),
+        coords={"t": {"spacing": 1e-9, "origin": 1.7e9}},
+    )
+    target = 1.7e9  # the very first tick -- deep inside the walk's territory
+    for mode in ("round", "floor", "ceil", "prev", "next"):
+        assert x.sel(t=target, mode=mode).item() == 0.0
+
+
+def test_sel_compact_closed_form_miss_forced_matches_the_search_path(
+    monkeypatch,
+):
+    # force the fallback on an *ordinary* coordinate (via a monkeypatched
+    # zero step budget) and confirm it still matches the search-based
+    # reference for every mode -- the fallback path itself is new code, not
+    # just a call-through to already-tested logic.
+    import fiery.xtensor._tensors as tensors_mod
+
+    monkeypatch.setattr(tensors_mod, "_CLOSED_FORM_MAX_STEPS", 0)
+    x = XTensor(
+        torch.arange(10.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    for mode in ("round", "floor", "ceil", "prev", "next"):
+        for target in (3.4, 3.5, 3.6, -1.0, 15.0):
+            try:
+                got = x.sel(t=target, mode=mode).item()
+            except ValueError:
+                got = None
+            values = torch.arange(10.0)
+            ascending = True
+            expected_idx = tensors_mod._pick_sel_index(
+                values, target, mode, ascending
+            )
+            expected = (
+                None if expected_idx is None else values[expected_idx].item()
+            )
+            assert got == expected, (mode, target, got, expected)
 
 
 def test_sel_mode_and_method_are_exclusive_and_validated():
