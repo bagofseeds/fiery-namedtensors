@@ -8,6 +8,7 @@ from __future__ import annotations
 
 # stdlib
 import copy
+import enum
 from functools import wraps
 
 # dependencies
@@ -579,6 +580,22 @@ class XTensor(ExtendedTensor):
                 continue
             size = self.shape[names.index(key)]
             labels = tuple(spec)
+            # a bare sequence of plain numbers is a numeric coordinate, not
+            # labels that happen to be numbers (issue #107) -- auto-promote
+            # it through the same explicit-coordinate path a tensor spec
+            # already takes, so it gets real `.sel` support (mode/tolerance/
+            # units) instead of becoming a silently uncomparable label.
+            if labels and all(_is_pure_number(label) for label in labels):
+                values = torch.as_tensor(labels)
+                unified[key] = _pack_coord(key, _make_coordinate(values))
+                continue
+            if any(_is_pure_number(label) for label in labels):
+                raise ValueError(
+                    f"coords: dim {key!r} mixes numeric and non-numeric "
+                    f"values in {labels!r} -- give a compact "
+                    "{'spacing': ...}/explicit tensor for a numeric "
+                    "coordinate, or make every value a label"
+                )
             # `...` fills the middle with unlabelled positions.
             if Ellipsis in labels:
                 labels = tuple(arrayutils._unroll(labels, size))
@@ -1148,8 +1165,17 @@ class XTensor(ExtendedTensor):
             wanted = list(label) if is_many else [label]
             positions = []
             for one in wanted:
+                # the selector needs the same identity extraction the
+                # stored labels already got, so `.sel(season=Season.WINTER)`
+                # and `.sel(season="WINTER")` resolve identically (#107) --
+                # falling back to the raw selector only when it doesn't
+                # resolve to an identity of its own (e.g. it's already a
+                # plain string, where extraction is a no-op).
+                target = _label_name(one)
+                if target is None:
+                    target = one
                 try:
-                    positions.append(identities.index(one))
+                    positions.append(identities.index(target))
                 except ValueError:
                     raise ValueError(
                         f"sel: no label {one!r} on dim {name!r}"
@@ -1651,6 +1677,21 @@ def _is_explicit_coord(spec: tx.Any) -> bool:
     return isinstance(spec, Tensor)
 
 
+def _is_pure_number(label: tx.Any) -> bool:
+    """
+    Whether a bare label is a **position**, not a category (issue #107) --
+    a plain `int`/`float`, never a `bool` or an `enum.Enum` member (an
+    `IntEnum`/`IntFlag` member *is* an actual `int` -- Python's own
+    `class IntEnum(int, Enum)` -- but being an Enum member at all is a
+    deliberate "this is a named category" signal, so it's checked first and
+    always wins over the numeric check, the same role pandas' explicit
+    `Categorical` dtype plays).
+    """
+    if isinstance(label, (bool, enum.Enum)):
+        return False
+    return isinstance(label, (int, float))
+
+
 def _make_coordinate(spec: tx.Any) -> Coordinate:
     """Build a `Coordinate` from a compact spec or an explicit tensor."""
     if _is_explicit_coord(spec):
@@ -1926,16 +1967,31 @@ def _single_source(src: tx.Any) -> tx.Optional[int]:
     return None
 
 
-def _label_name(label: tx.Any) -> tx.Optional[str]:
+def _label_name(label: tx.Any) -> tx.Any:
     """
     A label's **identity** for name-based selection: a `str` is itself, a
-    **structured** label (dict) is its `"name"` field, anything else `None`.
+    **structured** label (dict) is its `"name"` field, an `enum.Enum` member
+    (`Enum`/`IntEnum`/`IntFlag`/`StrEnum`) is its `.name` -- so
+    `.sel(season="WINTER")` and `.sel(season=Season.WINTER)` resolve to the
+    same identity (issue #107) -- `bool` is its own identity too (`True`/
+    `False` are a fixed two-value category, same reasoning as an `Enum`
+    member, even though `bool` is technically an `int` subclass); a bare
+    `int`/`float` is `None`: numbers are never labels, they're routed to a
+    numeric `Coordinate` instead (`_is_pure_number`), so treating one as its
+    own identity here would only paper over that split rather than respect
+    it. Any other hashable, non-numeric object is its own identity.
     """
     if isinstance(label, str):
         return label
     if isinstance(label, dict):
         return label.get("name")
-    return None
+    if isinstance(label, enum.Enum):
+        return label.name
+    if isinstance(label, bool):
+        return label
+    if isinstance(label, (int, float)):
+        return None
+    return label
 
 
 def _label_unit(label: tx.Any) -> tx.Optional[str]:

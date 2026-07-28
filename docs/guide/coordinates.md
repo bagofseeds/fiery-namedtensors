@@ -132,6 +132,14 @@ sig = xtensor(trace, names=("t",),
               coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
 ```
 
+A bare tuple/list of plain numbers is sugar for the same thing (dimensionless,
+unless you use one of the forms above) — it is a numeric coordinate, not a set
+of labels that happen to be numbers:
+
+```python
+xtensor(trace, names=("t",), coords={"t": (0., 0.5, 2., 4.)})
+```
+
 Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
 `img[..., ::2]` scales the spacing) and convert with `img.coords["x"].to("um")`.
 The position unit is separate from the *data* unit of the tensor's values (see
