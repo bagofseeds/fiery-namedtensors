@@ -1181,6 +1181,144 @@ def test_sel_compact_exact_tick_is_robust_to_division_rounding():
     assert x.sel(t=-0.7).item() == 1.0  # bare (exact, tolerance=0) sel too
 
 
+def test_sel_compact_exact_tick_survives_a_large_origin_spacing_ratio():
+    # `(target - origin) / spacing` is a *cancellation* error that scales
+    # with |origin/spacing|, not a fixed few ULPs -- an epsilon-tolerance
+    # guard sized for the latter (as a first version of this fix was) goes
+    # wrong at a realistic ratio like an epoch-seconds axis with
+    # millisecond spacing (~1.7e12). The target here IS exactly tick 5.
+    x = XTensor(
+        torch.arange(20.0),
+        names=("t",),
+        coords={"t": {"spacing": 0.001, "origin": 1.7e9}},
+    )
+    target = 1700000000.005
+    assert x.sel(t=target, mode="ceil").item() == 5.0
+    assert x.sel(t=target, mode="floor").item() == 5.0
+    assert x.sel(t=target).item() == 5.0
+
+
+def test_sel_compact_round_tie_break_is_not_biased_by_a_rounding_guard():
+    # a target a hair above an exact midpoint must round to the *farther*
+    # tick, not get pulled to the nearer-by-a-hair one by an overly
+    # aggressive epsilon guard on the tie-break itself.
+    x = XTensor(
+        torch.arange(10.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    assert x.sel(t=3.5 + 1e-10, mode="round").item() == 4.0
+    y = XTensor(
+        torch.arange(8.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.7}},
+    )
+    assert y.sel(t=2.2, mode="round").item() == 2.0
+
+
+def test_sel_compact_degenerate_spacing_next_and_prev_are_not_inverted():
+    # every tick sits at `origin` (spacing == 0); the search-based path
+    # treats this as ascending (`(diffs >= 0).all()`), so prev -> floor,
+    # next -> ceil -- both directions must agree with that, not swap.
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"spacing": 0.0, "origin": 5.0}},
+    )
+    assert x.sel(t=-1.0, mode="next").item() == 0.0  # ceil: 5 >= -1
+    with pytest.raises(ValueError, match="no next tick"):
+        x.sel(t=11.0, mode="next")  # ceil: 5 >= 11 is false
+    assert x.sel(t=11.0, mode="prev").item() == 0.0  # floor: 5 <= 11
+    with pytest.raises(ValueError, match="no prev tick"):
+        x.sel(t=-1.0, mode="prev")  # floor: 5 <= -1 is false
+
+
+def test_sel_compact_size_one_prev_next_matches_the_explicit_convention():
+    # a single-tick coordinate has no direction of its own -- match
+    # `_numeric_select`'s explicit-coordinate default (ascending) rather
+    # than trusting a declared negative spacing that has nothing to order.
+    x = XTensor(
+        torch.arange(1.0),
+        names=("t",),
+        coords={"t": {"spacing": -7.0, "origin": 0.0}},
+    )
+    assert x.sel(t=3.5, mode="prev").item() == 0.0  # ascending: floor(3.5)=0
+    with pytest.raises(ValueError, match="no prev tick"):
+        x.sel(t=-3.5, mode="prev")
+
+
+def test_sel_compact_infinite_target_resolves_like_the_search_path():
+    x = XTensor(
+        torch.arange(10.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    assert x.sel(t=float("inf"), mode="floor").item() == 9.0  # clamps to last
+    assert x.sel(t=float("-inf"), mode="ceil").item() == 0.0  # clamps to first
+    with pytest.raises(ValueError, match="no floor tick"):
+        x.sel(t=float("-inf"), mode="floor")
+    with pytest.raises(ValueError, match="no ceil tick"):
+        x.sel(t=float("inf"), mode="ceil")
+
+
+def test_sel_compact_nan_target_raises_a_clear_error():
+    x = XTensor(
+        torch.arange(10.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    with pytest.raises(ValueError, match="not a number"):
+        x.sel(t=float("nan"), mode="round")
+
+
+def test_sel_compact_empty_coordinate_raises_cleanly():
+    x = XTensor(
+        torch.zeros(0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    with pytest.raises(ValueError, match="no round tick"):
+        x.sel(t=1.0)
+
+
+def test_sel_compact_matches_the_search_path_exhaustively():
+    # independent randomized comparison against `_pick_sel_index` (the
+    # search-based reference) across many spacing/origin/target/mode
+    # combinations, both directions -- the closed-form path must be exact,
+    # not just "close" (this is the property that broke on PR #115's first
+    # version, see the two tests above for the specific counterexamples).
+    import random
+
+    from fiery.xtensor._tensors import (
+        _closed_form_sel_index,
+        _ClosedFormMiss,
+        _pick_sel_index,
+    )
+
+    rng = random.Random(0)
+    modes = ["round", "floor", "ceil", "prev", "next"]
+    for _ in range(3000):
+        size = rng.randint(1, 12)
+        step = rng.choice([1, -1]) * round(rng.uniform(0.01, 5.0), 4)
+        base = round(rng.uniform(-20, 20), 4)
+        mode = rng.choice(modes)
+        choice = rng.random()
+        if choice < 0.3:
+            k = rng.randint(0, size - 1)
+            target = base + k * step
+        elif choice < 0.7:
+            frac = rng.uniform(-0.5, size - 0.5)
+            target = base + frac * step
+        else:
+            target = base + step * rng.uniform(-5, size + 5)
+        ascending = True if size <= 1 else step > 0
+        values = torch.tensor(
+            [base + i * step for i in range(size)], dtype=torch.float64
+        )
+        expected = _pick_sel_index(values, target, mode, ascending)
+        try:
+            got = _closed_form_sel_index(
+                base, step, target, mode, ascending, size
+            )
+        except _ClosedFormMiss:
+            continue  # the rare fallback path; correctness covered elsewhere
+        assert got == expected, (size, step, base, mode, target, expected, got)
+
+
 def test_sel_mode_and_method_are_exclusive_and_validated():
     x = XTensor(
         torch.arange(5.0),
