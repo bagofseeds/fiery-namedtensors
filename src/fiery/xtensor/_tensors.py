@@ -1015,9 +1015,7 @@ class XTensor(ExtendedTensor):
 
         `tolerance` (a value in the position unit) caps the allowed gap. A
         **bare** `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode`
-        implies an unbounded snap unless a `tolerance` is given. `method=` is
-        an xarray-compatible alias for `mode` (`nearest`→round, `pad`/`ffill`→
-        prev, `backfill`/`bfill`→next); pass one of `mode`/`method`, not both.
+        implies an unbounded snap unless a `tolerance` is given.
         """
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
