@@ -171,12 +171,16 @@ value→index inversion instead of a closed-form affine one; that landed in
 `linear` (see "What #73 adds" below) — **exact**, via `torch.searchsorted` +
 a local linear inverse between the two bracketing ticks, the same
 piecewise-linear map those two methods already sample between. Higher orders
-(`"quadratic"`/`"cubic"`/…) on an irregular coordinate still raise
-`NotImplementedError`, pointing at
-[#81](https://github.com/bagofseeds/fiery-xtensor/issues/81) — a uniform-
-index-space spline basis (what `fiery.interpol.grid_pull` provides) isn't a
-true non-uniform spline in value space, so a real fix needs new capability in
-`fiery.interpol`, not just an xtensor-side inversion.
+(`"quadratic"`/`"cubic"`/…) on an irregular coordinate raise
+`NotImplementedError` **permanently**, not as a pending TODO — resolved as
+**not planned** in
+[#81](https://github.com/bagofseeds/fiery-xtensor/issues/81): the exactness
+of nearest/linear relies on both the inversion and the interpolation being
+locally affine between the same two bracketing ticks. A uniform-index-space
+spline basis (what `fiery.interpol.grid_pull` provides) is a different,
+incompatible thing from a true non-uniform spline in value space — there's no
+xtensor-side inversion that bridges the two, so only 0th/1st order are
+supported on an irregular coordinate.
 
 ## What the first slice implements
 
@@ -208,12 +212,16 @@ true non-uniform spline in value space, so a real fix needs new capability in
   useful gradient; the returned fraction is computed from the original,
   gradient-carrying tensors).
 - Higher orders (`method` resolving to order ≥ 2) raise `NotImplementedError`
-  pointing at #81, rather than silently doing the uniform-index-space
-  approximation.
+  rather than silently doing the uniform-index-space approximation — resolved
+  as **not planned**, see #81.
 
 ## Open questions (for discussion)
 
 1. ~~**Irregular-coordinate interpolation**~~ — landed, see #73 above.
+   Higher orders (≥ 2) on an irregular coordinate — *resolved*: **not
+   planned**, see #81; the exactness of nearest/linear is structural (both
+   the inversion and the pull are locally affine between the same two
+   ticks), not a stopgap awaiting a future spline.
 2. **Range selection** on `.sel` — `x.sel(t=slice("1s", "5s"))` (a value range
    → a contiguous slice). Natural and useful; not in this slice.
 3. **`.sel` directional modes** — *resolved*: `floor`/`ceil` (value space) and
