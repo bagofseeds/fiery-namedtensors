@@ -1580,6 +1580,19 @@ def test_sel_range_on_an_int_coordinate_keeps_fractional_bounds():
     assert x.sel(t=slice(9.9, 30.1)).tolist() == [1.0, 2.0, 3.0]
 
 
+def test_sel_range_on_a_large_int_coordinate_does_not_lose_precision():
+    # promoting an integer coordinate for the search must use float64, not
+    # the tensor default (float32) -- an int64 epoch-timestamp coordinate
+    # holds values well past float32's 2**24 exact-integer limit, where
+    # float32 would collapse distinct ticks together.
+    epoch = torch.tensor(
+        [1700000000, 1700000001, 1700000002, 1700000003], dtype=torch.int64
+    )
+    x = XTensor(torch.arange(4.0), names=("t",), coords={"t": XTensor(epoch)})
+    assert x.sel(t=slice(1700000001, 1700000003)).tolist() == [1.0, 2.0]
+    assert x.sel(t=slice(1700000002, None)).tolist() == [2.0, 3.0]
+
+
 def test_sel_range_handles_infinite_bounds_on_both_coordinate_kinds():
     # slice(-inf, inf) is an idiomatic slice(None, None); a compact
     # coordinate must resolve it exactly like an explicit one, not crash.

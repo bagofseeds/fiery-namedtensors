@@ -2681,8 +2681,13 @@ def _explicit_range_slice(
     ordered = ordered.contiguous()
     if not ordered.is_floating_point():
         # an integer-dtype coordinate must not truncate a fractional bound
-        # (10.5 silently becoming 10) when the needle is cast to match.
-        ordered = ordered.to(torch.get_default_dtype())
+        # (10.5 silently becoming 10) when the needle is cast to match --
+        # and float64, not the tensor default (float32), since an int64
+        # coordinate can hold values (e.g. epoch timestamps) well past
+        # float32's 2**24 exact-integer limit, where float32 would collapse
+        # distinct ticks together just as badly as the truncation this
+        # guards against.
+        ordered = ordered.to(torch.float64)
 
     def _bracket(value: float) -> int:
         needle = torch.tensor(
