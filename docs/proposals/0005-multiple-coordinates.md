@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — **for discussion** (steps 1–3 below are implemented; step 3 not yet merged) |
+| **Status** | Draft — **for discussion** (steps 1–4 below are implemented) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-28 — compact affine / multi-dim coordinates (step 3) implemented, per-component exact slicing |
+| **Updated** | 2026-07-28 — `swap_dims` (step 4) implemented |
 | **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
 
 ## Abstract
@@ -153,8 +153,7 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
 3. ✅ **Compact affine / multi-dim coordinates** — vector `spacing` over a
    `dims` tuple: materialisation, exact per-component affine slicing,
    learnable. *(No `.sel` yet — that's step 5.)*
-4. **`swap_dims` / `set_index`** — promote a non-dimension coordinate to the
-   index.
+4. ✅ **`swap_dims`** — promote a non-dimension coordinate to the index.
 5. **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
    N-D `grid_pull`, joint query over the coupled dims (ties off
    [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82) phase 1).
@@ -173,7 +172,7 @@ affine feature.
 - `.coords` exposes it by name, validated the same way a dimension coordinate
   is (its dim must still be named, at the same size).
 - `.sel(name=...)` raises "not an index coordinate" for one, pointing at
-  `swap_dims` (not yet implemented — step 4).
+  `swap_dims` (step 4, below).
 - `rename` remaps the dim it rides on (not its own key); ops that reslice a
   named axis (`sort`/`flip`/`roll`/`gather`/`index_select`/`take_along_dim`)
   drop any non-dimension coordinate riding on the touched axis, alongside that
@@ -231,18 +230,50 @@ affine feature.
   rescales `spacing["value"]` elementwise, which works the same whether that
   value is a scalar or a vector.
 
+## What step 4 implements
+
+- `swap_dims({old_dim: new_name})` (positional dict, or `swap_dims(old_dim=
+  new_name)` as keywords): `new_name` must already be a **non-dimension**
+  coordinate riding `old_dim` **alone** (`dims == (old_dim,)`) — the same
+  restriction xarray's `swap_dims` has (it needs a coordinate that is a
+  function of exactly that one dim). Renames the axis `old_dim -> new_name`
+  (so `.names` and any axis descriptor follow, exactly like `rename`), and
+  demotes `old_dim`'s previous dimension coordinate to a non-dimension
+  coordinate riding the renamed axis, **under its old key** — matching
+  xarray's own behaviour (`da.swap_dims({"time": "label"})` keeps a `"time"`
+  coordinate around, now riding the `"label"` axis).
+- Not a thin wrapper over `rename`: renaming `old_dim` onto `new_name` would
+  re-key `old_dim`'s own dimension coordinate onto `new_name` too, colliding
+  with the very coordinate being promoted — the same collision `rename`
+  itself already raises on (step 3). `swap_dims` never re-keys a coordinate;
+  it only remaps `dims` tuples through the axis substitution (exactly what
+  `rename` already does to a coordinate's `dims`), so which entry counts as
+  *the* dimension coordinate falls out structurally afterwards (`dims ==
+  (key,)`), rather than needing to be assigned explicitly.
+- A demoted **compact** dimension coordinate (e.g. `spacing`/`origin`)
+  becomes, structurally, a single-dim compact *non-dimension* coordinate —
+  a state the `coords=` constructor input itself refuses to create directly
+  (see step 2's restriction above), but one the existing per-component affine
+  slicing (`_slice_affine_coordinate`, already generic over `dims` length)
+  handles correctly regardless of how it arose, so it keeps re-slicing
+  exactly after `swap_dims`.
+- `swap_dims_` is the in-place variant, matching `rename`/`rename_`.
+- `set_index` (xarray's more general sibling, supporting a `MultiIndex`) is
+  **not** implemented — there's no `MultiIndex` analogue planned here, and
+  `swap_dims` already covers every case this model can express (promoting a
+  single existing non-dimension coordinate to be the index).
+
 ## Open questions (remaining)
 
-1. **`swap_dims` vs `set_index` surface** — which verbs; do we rename the dim to
-   the promoted coordinate's name (xarray does)?
-2. **`.sel` on a non-index coordinate** — once promotable, is one-shot `.sel` by
-   a non-index coordinate (implicit swap) worth sugar?
-3. **Affine query ergonomics** — spelling for the joint query
+1. **`.sel` on a non-index coordinate** — once promotable via `swap_dims`, is
+   one-shot `.sel` by a non-index coordinate (implicit swap) worth sugar?
+2. **Affine query ergonomics** — spelling for the joint query
    (`.sel(lat=…, lon=…)`), and behaviour for an under/over-determined
    (non-square) affine (least-squares?).
 
-*(Resolved since the first draft: storage unification — done (Q2); alignment /
-reconciliation policy — above (Q3).)*
+*(Resolved since the first draft: storage unification — done; alignment /
+reconciliation policy — above; `swap_dims` does rename the dim to the
+promoted coordinate's name, matching xarray — above.)*
 
 ## References
 

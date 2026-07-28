@@ -136,3 +136,32 @@ Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
 `img[..., ::2]` scales the spacing) and convert with `img.coords["x"].to("um")`.
 The position unit is separate from the *data* unit of the tensor's values (see
 [Data units](data-units.md)).
+
+## Multiple coordinates per axis
+
+An axis can carry more than one coordinate at once — its own index, plus any
+number of **non-dimension coordinates** riding alongside it. Key a coordinate
+by any name that isn't a dim, paired with the dim(s) it rides:
+
+```python
+sig = xtensor(
+    trace, names=("t",),
+    coords={
+        "t": {"spacing": 0.5, "origin": 0.0},                  # the index
+        "season": ("t", ("w", "w", "sp", "sp", "su", "su")),   # rides along "t"
+    },
+)
+sig.sel(t=1.0)        # selects by the index
+sig.sel(season="su")  # ValueError: not an index coordinate
+```
+
+`.sel`/`.isel` only ever resolve against a dim's own index — a non-dimension
+coordinate isn't selectable directly. Promote one to be the index with
+`swap_dims`, which renames the axis to the promoted coordinate's name and
+keeps the old index around, now riding alongside under its own key:
+
+```python
+sig.swap_dims({"t": "season"}).sel(season="su")
+```
+
+`swap_dims_` is the in-place variant.
