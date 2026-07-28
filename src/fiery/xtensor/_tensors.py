@@ -584,18 +584,18 @@ class XTensor(ExtendedTensor):
             # labels that happen to be numbers (issue #107) -- auto-promote
             # it through the same explicit-coordinate path a tensor spec
             # already takes, so it gets real `.sel` support (mode/tolerance/
-            # units) instead of becoming a silently uncomparable label.
-            if labels and all(_is_pure_number(label) for label in labels):
-                values = torch.as_tensor(labels)
-                unified[key] = _pack_coord(key, _make_coordinate(values))
+            # units) instead of becoming a silently uncomparable label. The
+            # length check applies here too -- promotion must not bypass the
+            # #95/#97 validation a plain label sequence already gets below.
+            promoted = _promote_numeric_labels(key, labels)
+            if isinstance(promoted, Coordinate):
+                if len(labels) != size:
+                    raise ValueError(
+                        f"coords: dim {key!r} has {len(labels)} values "
+                        f"for size {size}"
+                    )
+                unified[key] = _pack_coord(key, promoted)
                 continue
-            if any(_is_pure_number(label) for label in labels):
-                raise ValueError(
-                    f"coords: dim {key!r} mixes numeric and non-numeric "
-                    f"values in {labels!r} -- give a compact "
-                    "{'spacing': ...}/explicit tensor for a numeric "
-                    "coordinate, or make every value a label"
-                )
             # `...` fills the middle with unlabelled positions.
             if Ellipsis in labels:
                 labels = tuple(arrayutils._unroll(labels, size))
@@ -1692,6 +1692,37 @@ def _is_pure_number(label: tx.Any) -> bool:
     return isinstance(label, (int, float))
 
 
+def _promote_numeric_labels(key: str, labels: tuple) -> tx.Any:
+    """
+    Auto-promote an all-numeric label sequence to a numeric `Coordinate`
+    (issue #107) -- shared by dimension and non-dimension coordinate
+    parsing, so a bare tuple/list of plain numbers is a numeric coordinate
+    everywhere it can appear, not just on a dim's own index. Raise if
+    numbers are mixed with categorical values (`bool`/`Enum`/`str`/dict/
+    `None`/`...` are always categorical, never a position) -- otherwise
+    return `labels` unchanged, for the caller's own label handling
+    (Ellipsis-unroll, length check, ...).
+    """
+    if labels and all(_is_pure_number(label) for label in labels):
+        try:
+            values = torch.as_tensor(labels)
+        except RuntimeError as exc:
+            raise ValueError(
+                f"coords: {key!r} -- {labels!r} isn't representable as a "
+                f"numeric coordinate: {exc}"
+            ) from None
+        return _make_coordinate(values)
+    if any(_is_pure_number(label) for label in labels):
+        raise ValueError(
+            f"coords: {key!r} mixes numeric values with categorical ones "
+            f"in {labels!r} -- bool/Enum/str/dict/None/Ellipsis are "
+            "always categorical (never a position); give a compact "
+            "{'spacing': ...}/explicit tensor for a numeric coordinate, "
+            "or make every value a label"
+        )
+    return labels
+
+
 def _make_coordinate(spec: tx.Any) -> Coordinate:
     """Build a `Coordinate` from a compact spec or an explicit tensor."""
     if _is_explicit_coord(spec):
@@ -1815,7 +1846,10 @@ def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
             "now; explicit per-position values over several dims "
             "(curvilinear) isn't implemented yet"
         )
-    coord = _make_coordinate(raw) if _is_explicit_coord(raw) else tuple(raw)
+    if _is_explicit_coord(raw):
+        coord = _make_coordinate(raw)
+    else:
+        coord = _promote_numeric_labels(key, tuple(raw))
     return dims, coord
 
 
@@ -1969,24 +2003,32 @@ def _single_source(src: tx.Any) -> tx.Optional[int]:
 
 def _label_name(label: tx.Any) -> tx.Any:
     """
-    A label's **identity** for name-based selection: a `str` is itself, a
-    **structured** label (dict) is its `"name"` field, an `enum.Enum` member
-    (`Enum`/`IntEnum`/`IntFlag`/`StrEnum`) is its `.name` -- so
-    `.sel(season="WINTER")` and `.sel(season=Season.WINTER)` resolve to the
-    same identity (issue #107) -- `bool` is its own identity too (`True`/
-    `False` are a fixed two-value category, same reasoning as an `Enum`
-    member, even though `bool` is technically an `int` subclass); a bare
-    `int`/`float` is `None`: numbers are never labels, they're routed to a
-    numeric `Coordinate` instead (`_is_pure_number`), so treating one as its
-    own identity here would only paper over that split rather than respect
-    it. Any other hashable, non-numeric object is its own identity.
+    A label's **identity** for name-based selection: an `enum.Enum` member
+    (`Enum`/`IntEnum`/`IntFlag`/`StrEnum`) is its `.name` -- checked
+    **before** the `str` case, so a `str`-mixin enum (`class X(str, Enum)`,
+    or `StrEnum`) resolves by name too, not by falling through to the `str`
+    branch and matching on its *value* instead -- so `.sel(season="WINTER")`
+    and `.sel(season=Season.WINTER)` resolve to the same identity (issue
+    #107). A composite `Flag`/`IntFlag` value can have no single matching
+    member name (`.name` is `None` -- observed on Python <= 3.10; 3.11+
+    synthesises a `"A|B"` spelling), in which case the member itself is the
+    identity instead -- still comparable by equality, just not selectable
+    by a string name. A plain `str` is itself; a **structured** label (dict)
+    is its `"name"` field; `bool` is its own identity too (`True`/`False`
+    are a fixed two-value category, same reasoning as an `Enum` member,
+    even though `bool` is technically an `int` subclass); a bare `int`/
+    `float` is `None`: numbers are never labels, they're routed to a
+    numeric `Coordinate` instead (`_is_pure_number`), so treating one as
+    its own identity here would only paper over that split rather than
+    respect it. Any other non-numeric object is its own identity.
     """
+    if isinstance(label, enum.Enum):
+        name = label.name
+        return name if isinstance(name, str) else label
     if isinstance(label, str):
         return label
     if isinstance(label, dict):
         return label.get("name")
-    if isinstance(label, enum.Enum):
-        return label.name
     if isinstance(label, bool):
         return label
     if isinstance(label, (int, float)):

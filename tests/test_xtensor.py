@@ -323,7 +323,7 @@ def test_bare_numeric_tuple_coordinate_is_auto_promoted():
 
 
 def test_mixed_numeric_and_non_numeric_coordinate_raises():
-    with pytest.raises(ValueError, match="mixes numeric and non-numeric"):
+    with pytest.raises(ValueError, match="mixes numeric values"):
         XTensor(torch.arange(3.0), names=["t"], coords={"t": (0, "a", 2)})
 
 
@@ -365,6 +365,67 @@ def test_bool_coordinate_is_selectable_by_value():
     assert not isinstance(x.coords["t"], Coordinate)
     assert x.sel(t=True).item() == 0.0
     assert x.sel(t=False).item() == 1.0
+
+
+def test_auto_promoted_numeric_coordinate_still_gets_the_length_check():
+    # the #95/#97 "N labels for size M" validation must not be bypassed
+    # just because the sequence happens to be all-numeric.
+    with pytest.raises(ValueError, match="3 values.*size 6|6.*3 values"):
+        XTensor(torch.arange(6.0), names=("t",), coords={"t": (0.0, 0.5, 1.0)})
+
+
+def test_str_mixin_enum_coordinate_resolves_by_name_not_value():
+    # a `class X(str, Enum)` member IS a str instance -- `_label_name` must
+    # check `enum.Enum` before `str`, or this silently matches on the
+    # member's *value* instead of its name (the same bug #107 fixed for
+    # IntEnum, but on the str side).
+    class Color(str, enum.Enum):
+        RED = "r"
+        BLUE = "b"
+
+    x = XTensor(
+        torch.arange(2.0), names=("c",), coords={"c": (Color.RED, Color.BLUE)}
+    )
+    assert x.sel(c="RED").item() == 0.0
+    assert x.sel(c=Color.BLUE).item() == 1.0
+    with pytest.raises(ValueError, match="no label"):
+        x.sel(c="r")  # the *value*, not the name -- must not match
+
+
+def test_composite_intflag_coordinate_is_selectable_by_member():
+    # a composite Flag/IntFlag value (e.g. RED | BLUE) can have no single
+    # matching member name (`.name` is `None` on Python <= 3.10) -- it must
+    # still be selectable by passing the member back, even without a string
+    # spelling for it.
+    class Color(enum.IntFlag):
+        RED = 1
+        BLUE = 2
+
+    composite = Color.RED | Color.BLUE
+    x = XTensor(
+        torch.arange(2.0),
+        names=("c",),
+        coords={"c": (Color.RED, composite)},
+    )
+    assert x.sel(c=composite).item() == 1.0
+    assert x.sel(c=Color.RED).item() == 0.0
+
+
+def test_non_dimension_numeric_coordinate_also_auto_promotes():
+    # #107's bug was reachable through a non-dimension coordinate too (via
+    # swap_dims promoting it to be the index) -- the auto-promotion must
+    # apply there as well, not just to a dim's own coordinate.
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": {"spacing": 1.0, "origin": 0.0},
+            "sec": ("t", (0.0, 0.5, 1.0, 1.5)),
+        },
+    )
+    assert isinstance(x.coords["sec"], Coordinate)
+    y = x.swap_dims({"t": "sec"})
+    assert y.sel(sec=1.0).item() == 2.0
 
 
 def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
