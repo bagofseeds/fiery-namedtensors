@@ -169,6 +169,206 @@ def test_non_dimension_compact_coordinate_is_rejected():
         )
 
 
+def test_affine_coordinate_materialises_an_nd_grid():
+    # Proposal 0005 step 3: a non-dimension coordinate spanning several dims,
+    # compact spacing/origin generalised to a vector -- one component per dim.
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            ),
+            "lon": (["y", "x"], {"spacing": ([0.0, 2.0], "deg")}),
+        },
+    )
+    lat = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    lon = x.coords["lon"]["values"].as_subclass(torch.Tensor)
+    expected_lat = (
+        10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(4.0)
+    )
+    expected_lon = 2.0 * torch.arange(4.0).expand(3, 4)
+    assert torch.allclose(lat, expected_lat)
+    assert torch.allclose(lon, expected_lon)
+
+
+def test_affine_coordinate_is_not_an_index():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], {"spacing": ([1.0, 0.5], "deg")})},
+    )
+    with pytest.raises(ValueError, match="not an index coordinate"):
+        x.sel(lat=1.0)
+
+
+def test_affine_coordinate_spacing_must_match_dims():
+    with pytest.raises(ValueError, match="one component per dim"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "x"], {"spacing": ([1.0], "deg")})},
+        )
+
+
+def test_multi_dim_explicit_coordinate_is_not_implemented():
+    # only the compact affine form is implemented (step 3); a general
+    # curvilinear array of explicit values is future work (#82).
+    with pytest.raises(NotImplementedError, match="curvilinear"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "x"], torch.zeros(3, 4))},
+        )
+
+
+def test_affine_coordinate_repeated_dim_is_rejected():
+    with pytest.raises(ValueError, match="repeats a dim"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "y"], {"spacing": ([1.0, 1.0], "deg")})},
+        )
+
+
+def test_affine_coordinate_basic_slice_reslices_exactly():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    cropped = x[1:3, 1:4]
+    assert torch.allclose(
+        cropped.coords["lat"]["values"].as_subclass(torch.Tensor),
+        full[1:3, 1:4],
+    )
+    strided = x[::2, ::2]
+    assert torch.allclose(
+        strided.coords["lat"]["values"].as_subclass(torch.Tensor),
+        full[::2, ::2],
+    )
+
+
+def test_affine_coordinate_integer_index_folds_a_dim_out():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    row = x[1, :]
+    assert row.names == ("x",)
+    assert torch.allclose(
+        row.coords["lat"]["values"].as_subclass(torch.Tensor), full[1, :]
+    )
+    # folding every spanned dim away leaves no axis for it to ride on
+    assert "lat" not in x[1, 2].coords
+
+
+def test_affine_coordinate_collapsed_to_one_dim_can_be_resliced_further():
+    # a coordinate collapsed by folding out every dim but one stores a bare
+    # scalar `spacing` (the ordinary 1-D compact form), not a length-1
+    # vector -- reslicing it again must not try to index into that scalar.
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    row = x[1, :]
+    resliced = row[1:3]
+    assert torch.allclose(
+        resliced.coords["lat"]["values"].as_subclass(torch.Tensor),
+        full[1, 1:3],
+    )
+
+
+def test_affine_coordinate_partial_fold_and_slice_over_three_dims():
+    x = XTensor(
+        torch.zeros(2, 3, 4),
+        names=["z", "y", "x"],
+        coords={
+            "vol": (
+                ["z", "y", "x"],
+                {"spacing": ([10.0, 1.0, 0.5], "mm"), "origin": 0.0},
+            )
+        },
+    )
+    full = x.coords["vol"]["values"].as_subclass(torch.Tensor)
+    sliced = x[1, 1:3, ::2]
+    assert sliced.names == ("y", "x")
+    assert torch.allclose(
+        sliced.coords["vol"]["values"].as_subclass(torch.Tensor),
+        full[1, 1:3, ::2],
+    )
+
+
+def test_affine_coordinate_advanced_indexing_drops_it():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], {"spacing": ([1.0, 0.5], "deg")})},
+    )
+    assert "lat" not in x[[0, 2], :].coords
+    assert "lat" not in x[:, torch.tensor([0, 1])].coords
+
+
+def test_affine_coordinate_survives_rename():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    renamed = x.rename(y="row", x="col")
+    assert torch.allclose(
+        renamed.coords["lat"]["values"].as_subclass(torch.Tensor), full
+    )
+
+
+def test_affine_coordinate_gradients_flow_through_spacing_and_origin():
+    sy = torch.tensor(1.0, requires_grad=True)
+    sx = torch.tensor(0.5, requires_grad=True)
+    origin = torch.tensor(10.0, requires_grad=True)
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([sy, sx], "deg"), "origin": origin},
+            )
+        },
+    )
+    values = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    values.sum().backward()
+    assert sy.grad is not None
+    assert sx.grad is not None
+    assert origin.grad is not None
+
+
 def test_non_dimension_coordinate_length_is_checked():
     with pytest.raises(ValueError, match="has 2 values for dim"):
         XTensor(

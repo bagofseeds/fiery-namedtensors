@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — **for discussion** (steps 1 and 2 below are implemented; not merged) |
+| **Status** | Draft — **for discussion** (steps 1–3 below are implemented; step 3 not yet merged) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-27 — storage unification landed ([#84](https://github.com/bagofseeds/fiery-xtensor/pull/84)); non-dimension coordinates rebased on it |
+| **Updated** | 2026-07-28 — compact affine / multi-dim coordinates (step 3) implemented, per-component exact slicing |
 | **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
 
 ## Abstract
@@ -91,7 +91,7 @@ its `dims` survives at its original size; it drops the moment one of them is
 renamed away, removed, or resized (conservative — no slice-tracking yet, see
 the delivery plan's step 6).
 
-## Compact **affine** coordinates (not yet implemented)
+## Compact **affine** coordinates (step 3, implemented)
 
 Generalise 0001's 1-D compact form `value[i] = origin + i·spacing` by letting
 **spacing be a per-source-dim vector** and the coordinate **span several dims**:
@@ -146,12 +146,13 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
    migrated the internals to `{name: (dims, coord)}` with a dimension
    coordinate = `dims == (name,)`; behaviour-preserving refactor, no new user
    surface.
-2. **Non-dimension (1-D) coordinates** — this PR, rebased on (1): `(dim,
-   values)` input, `.coords` exposure, `.sel` "not an index" guard,
+2. ✅ **Non-dimension (1-D) coordinates** ([#72](https://github.com/bagofseeds/fiery-xtensor/pull/72)) —
+   `(dim, values)` input, `.coords` exposure, `.sel` "not an index" guard,
    conservative propagation (implemented directly against the unified storage
    — no separate `_extra_coords` attr).
-3. **Compact affine / multi-dim coordinates** — vector `spacing` over a `dims`
-   tuple: materialisation, exact affine slicing, learnable. *(No `.sel` yet.)*
+3. ✅ **Compact affine / multi-dim coordinates** — vector `spacing` over a
+   `dims` tuple: materialisation, exact per-component affine slicing,
+   learnable. *(No `.sel` yet — that's step 5.)*
 4. **`swap_dims` / `set_index`** — promote a non-dimension coordinate to the
    index.
 5. **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
@@ -182,13 +183,47 @@ affine feature.
 - Binary ops (broadcasting) don't carry non-dimension coordinates through yet
   (dropped) — see the reconciliation section above.
 - Only **labels** or an **explicit** numeric tensor are accepted as `values`
-  — a **compact** (`spacing`/`origin`) non-dimension coordinate raises
-  `NotImplementedError`. Unlike a dimension coordinate, a non-dimension one
-  isn't re-sliced when its dim is (no slice-tracking yet, step 6); a label or
-  explicit coordinate is at least caught by the length check on resize, but a
-  compact one binds to *any* size, so it would silently rebind to the wrong
-  affine after a non-trivial slice instead of raising or dropping. Lifting
-  this restriction is part of step 6.
+  for a **single-dim** non-dimension coordinate — a compact
+  (`spacing`/`origin`) spec over one dim raises `NotImplementedError`. Unlike
+  a dimension coordinate, a single-dim non-dimension one isn't re-sliced when
+  its dim is (no slice-tracking yet, step 6); a label or explicit coordinate
+  is at least caught by the length check on resize, but a compact one binds
+  to *any* size, so it would silently rebind to the wrong affine after a
+  non-trivial slice instead of raising or dropping. Lifting this restriction
+  is part of step 6.
+
+## What step 3 implements
+
+- A `coords` value keyed by a non-axis name, given as `(dims, {spacing,
+  [origin]})` where `dims` is a **sequence of two or more** dim names, is a
+  compact **affine** coordinate: `spacing` is a vector with one component per
+  dim (`_as_unitful_vector`, preserving a tensor component's autograd graph
+  via `torch.stack` rather than flattening it through `torch.as_tensor`);
+  `origin` stays a single scalar shared across all of them.
+- `["values"]` materialises the N-D grid lazily (`Coordinate._materialise_axes`,
+  bound to per-dim sizes by `_bound_axes`): `origin + Σ_d spacing[d]·index_d`
+  via a broadcast `arange` per dim — no dense grid cached, so it stays
+  differentiable exactly like the 1-D case.
+- `__getitem__` re-slices it **exactly**, per spanned dim
+  (`_slice_affine_coordinate`): a basic slice updates that dim's component
+  (`origin += start·component; component *= step`); an **integer** index
+  folds the dim out of `dims`/`spacing` entirely (`origin += index·component`)
+  — the coordinate survives with one fewer dim, and collapsing all the way to
+  one remaining dim yields an ordinary 1-D compact non-dimension coordinate
+  (a plain scalar `spacing`, not a length-1 vector — reslicing code has to
+  branch on this, it isn't just a vector of length 1); anything else
+  (boolean/advanced indexing) can't stay affine, so the *whole* coordinate
+  drops. `rename` remaps every dim in `dims` the same way a 1-D non-dimension
+  coordinate's single dim already does (no change needed there — already
+  generic over `dims` length).
+- A general multi-dim **explicit** coordinate (arbitrary curvilinear
+  `lat(y,x)` values, not a compact affine map) is **not** implemented —
+  raises `NotImplementedError`, pointing at the compact form. That's separate,
+  harder work (nonlinear inverse for `.sel`/`.interp`, [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)),
+  not a natural extension of this slice.
+- `.to(unit)` (position-unit conversion) needed no changes — it already
+  rescales `spacing["value"]` elementwise, which works the same whether that
+  value is a scalar or a vector.
 
 ## Open questions (remaining)
 
@@ -211,3 +246,4 @@ reconciliation policy — above (Q3).)*
 - [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82) — curvilinear / N-D `.interp` (affine = closed-form inverse)
 - [#83](https://github.com/bagofseeds/fiery-xtensor/pull/83) — `_reconcile_coords` (dimension-coordinate reconciliation)
 - [#84](https://github.com/bagofseeds/fiery-xtensor/pull/84) — storage unification
+- [#72](https://github.com/bagofseeds/fiery-xtensor/pull/72) — non-dimension coordinates (step 2)
