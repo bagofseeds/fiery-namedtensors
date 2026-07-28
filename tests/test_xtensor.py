@@ -244,6 +244,109 @@ def test_coordinate_origin_must_be_a_scalar():
         )
 
 
+def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
+    # a bare `origin` number (no unit given) previously silently defaulted
+    # to a *different*, conflicting unit than `spacing`'s -- it should
+    # simply inherit spacing's unit instead.
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.zeros(4),
+            names=("t",),
+            coords={"t": {"spacing": (1.0, "mm"), "origin": 5.0}},
+        )
+        values = x.coords["t"]["values"]
+        assert values.unit == "millimeter"
+        assert values.as_subclass(torch.Tensor).tolist() == [
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+        ]
+
+
+def test_coordinate_origin_converts_into_spacings_unit_when_compatible():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.zeros(4),
+            names=("t",),
+            coords={"t": {"spacing": (0.5, "mm"), "origin": (1.0, "cm")}},
+        )
+        values = x.coords["t"]["values"]
+        assert values.unit == "millimeter"
+        assert values.as_subclass(torch.Tensor).tolist() == [
+            10.0,
+            10.5,
+            11.0,
+            11.5,
+        ]
+        # the same reconciliation applies to a multi-dim affine coordinate
+        y = XTensor(
+            torch.zeros(3, 4),
+            names=("y", "x"),
+            coords={
+                "lat": (
+                    ("y", "x"),
+                    {"spacing": ([1.0, 0.5], "mm"), "origin": (1.0, "cm")},
+                )
+            },
+        )
+        expected = (
+            10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(4.0)
+        )
+        assert torch.allclose(
+            y.coords["lat"]["values"].as_subclass(torch.Tensor), expected
+        )
+
+
+def test_coordinate_origin_incompatible_unit_raises():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        with pytest.raises(ValueError, match="not compatible"):
+            XTensor(
+                torch.zeros(4),
+                names=("t",),
+                coords={"t": {"spacing": (0.5, "mm"), "origin": (1.0, "s")}},
+            )
+
+
+def test_coordinate_to_unit_carries_over_the_axis_size_binding():
+    # `.to(unit)` on an already-bound coordinate (as returned by `.coords`)
+    # must still materialise -- it previously dropped the binding and
+    # raised `AttributeError` on the next `["values"]` access.
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.zeros(4),
+            names=("t",),
+            coords={"t": {"spacing": (0.5, "mm")}},
+        )
+        converted = x.coords["t"].to("cm")
+        assert converted["values"].unit == "centimeter"
+        assert converted["values"].as_subclass(
+            torch.Tensor
+        ).tolist() == pytest.approx([0.0, 0.05, 0.1, 0.15])
+        # same for the multi-dim affine `_bound_axes` binding
+        y = XTensor(
+            torch.zeros(3, 4),
+            names=("y", "x"),
+            coords={"lat": (("y", "x"), {"spacing": ([10.0, 5.0], "mm")})},
+        )
+        converted_lat = y.coords["lat"].to("cm")
+        assert converted_lat["values"].unit == "centimeter"
+        assert torch.allclose(
+            converted_lat["values"].as_subclass(torch.Tensor),
+            torch.tensor(
+                [
+                    [0.0, 0.5, 1.0, 1.5],
+                    [1.0, 1.5, 2.0, 2.5],
+                    [2.0, 2.5, 3.0, 3.5],
+                ]
+            ),
+        )
+
+
 def test_multi_dim_explicit_coordinate_is_not_implemented():
     # only the compact affine form is implemented (step 3); a general
     # curvilinear array of explicit values is future work (#82).
