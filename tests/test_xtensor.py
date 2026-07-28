@@ -244,11 +244,29 @@ def test_coordinate_origin_must_be_a_scalar():
         )
 
 
-def test_compact_coordinate_requires_spacing():
+def test_compact_coordinate_origin_only_defaults_spacing_to_one():
     # an origin-only spec used to crash downstream with a bare
-    # `KeyError: 'spacing'` (#95); rejected clearly at construction instead.
-    with pytest.raises(ValueError, match="requires 'spacing'"):
-        XTensor(torch.zeros(4), names=["t"], coords={"t": {"origin": 5.0}})
+    # `KeyError: 'spacing'` (#95) -- symmetric to how an omitted `origin`
+    # already defaults to 0 in `spacing`'s unit, an omitted `spacing`
+    # defaults to 1 in `origin`'s unit.
+    x = XTensor(torch.zeros(4), names=["t"], coords={"t": {"origin": 5.0}})
+    assert x.coords["t"]["values"].tolist() == [5.0, 6.0, 7.0, 8.0]
+
+
+def test_compact_coordinate_origin_only_default_spacing_shares_its_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.zeros(4), names=["t"], coords={"t": {"origin": (5.0, "mm")}}
+        )
+        values = x.coords["t"]["values"]
+        assert values.unit == "millimeter"
+        assert values.as_subclass(torch.Tensor).tolist() == [
+            5.0,
+            6.0,
+            7.0,
+            8.0,
+        ]
 
 
 def test_explicit_coordinate_must_be_1d():
