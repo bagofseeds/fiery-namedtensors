@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — **for discussion** (steps 1–4 below are implemented) |
+| **Status** | Draft — steps 1–4 implemented; step 5 (affine `.sel`/`.interp`) design-approved, tracked at [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82), not yet started |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-28 — `swap_dims` (step 4) implemented |
+| **Updated** | 2026-07-28 — `swap_dims` (step 4) implemented; remaining open questions resolved |
 | **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
 
 ## Abstract
@@ -263,17 +263,27 @@ affine feature.
   `swap_dims` already covers every case this model can express (promoting a
   single existing non-dimension coordinate to be the index).
 
-## Open questions (remaining)
+## Open questions — resolved
 
-1. **`.sel` on a non-index coordinate** — once promotable via `swap_dims`, is
-   one-shot `.sel` by a non-index coordinate (implicit swap) worth sugar?
-2. **Affine query ergonomics** — spelling for the joint query
-   (`.sel(lat=…, lon=…)`), and behaviour for an under/over-determined
-   (non-square) affine (least-squares?).
+1. **`.sel` on a non-index coordinate** — *resolved: no sugar.* Same as
+   xarray: `.sel` only ever resolves against the index; selecting by a
+   non-index coordinate always needs an explicit `swap_dims` first, with no
+   implicit one-shot shortcut. Matches xarray exactly, and avoids the
+   implicit-magic risk of silently redefining "the index" for one call.
+2. **Affine query ergonomics** — *resolved.* No dedicated syntax for the
+   joint query: `x.sel(lat=…, lon=…)` is just ordinary kwargs, and the
+   implementation (step 5, #82 phase 1) recognises that `lat`/`lon` share
+   `dims` and solves `A⁻¹` once for the pair. **Posedness**: `.sel` only
+   supports a **square, invertible** affine (one world coordinate per
+   spanned dim) — an under/over-determined map raises rather than falling
+   back to a least-squares pseudo-inverse. Keeps the feature to the case the
+   closed-form inverse actually covers; a non-square affine is out of scope
+   here, not silently approximated.
 
 *(Resolved since the first draft: storage unification — done; alignment /
 reconciliation policy — above; `swap_dims` does rename the dim to the
-promoted coordinate's name, matching xarray — above.)*
+promoted coordinate's name, matching xarray — above; both items in this
+section — above.)*
 
 ## References
 
