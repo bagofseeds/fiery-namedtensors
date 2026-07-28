@@ -1093,10 +1093,13 @@ class XTensor(ExtendedTensor):
         A **scalar** query drops the axis (like `sel`); a **list**/tensor keeps
         it, its coordinate becoming the queried positions. A **regular**
         (compact `spacing`/`origin`) coordinate supports every `method`; an
-        **irregular** (explicit values) one supports `"nearest"`/`"linear"`
-        exactly (issue #73, via a monotonic `searchsorted` inversion) --
-        higher orders need a true non-uniform spline, not yet implemented
-        (issue #81).
+        **irregular** (explicit values) one only supports `"nearest"`/
+        `"linear"` (issue #73, via a monotonic `searchsorted` inversion) --
+        both are exact because the map between value space and index space is
+        locally affine between two bracketing ticks. A higher order needs a
+        true non-uniform spline in *value* space, which this architecture
+        cannot provide (see issue #81); it is not a currently-missing
+        feature.
         """
         out = self
         for name, target in indexers.items():
@@ -1129,9 +1132,11 @@ class XTensor(ExtendedTensor):
             if order >= 2:
                 raise NotImplementedError(
                     f"interp(method={method!r}) on the irregular coordinate "
-                    f"{name!r} needs a true non-uniform spline (not "
-                    "implemented yet -- see #81); nearest/linear are exact "
-                    "on an irregular coordinate (#73)"
+                    f"{name!r}: only nearest/linear are supported on an "
+                    "irregular coordinate (#73) -- a higher order would need "
+                    "a true non-uniform spline in value space, which this "
+                    "architecture cannot provide (not a missing feature, "
+                    "see #81)"
                 )
             stored_values = dict.__getitem__(coord, "values")
             unit = stored_values.unit

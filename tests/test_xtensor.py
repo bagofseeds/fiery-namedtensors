@@ -1167,9 +1167,9 @@ def test_interp_irregular_coordinate_must_be_monotonic():
         x.interp(t=1.5)
 
 
-def test_interp_irregular_higher_order_is_not_implemented():
-    # higher orders need a true non-uniform spline (a uniform-index-space
-    # spline basis isn't cubic-in-value on non-uniform nodes); see #81.
+def test_interp_irregular_higher_order_is_not_planned():
+    # a uniform-index-space spline basis isn't a true non-uniform spline in
+    # value space -- structurally unsupported, not a pending TODO; see #81.
     x = XTensor(
         torch.tensor([0.0, 1.0, 4.0, 9.0]),
         names=("t",),
