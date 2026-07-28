@@ -1305,17 +1305,25 @@ class Coordinate(_units.MagicDict):
         """
         Convert the coordinate's **position** unit, rescaling
         `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
-        backend.
+        backend. Carries over the axis-size binding (`_bound`/`_bound_axes`)
+        if this coordinate already had one, so `coords[name].to(unit)
+        ["values"]` still materialises instead of raising for lack of a
+        bound size.
         """
         if self._compact():
             out = Coordinate()
             out["spacing"] = dict.__getitem__(self, "spacing").to(unit)
             if "origin" in self:
                 out["origin"] = dict.__getitem__(self, "origin").to(unit)
-            return out
-        return Coordinate(
-            values=dict.__getitem__(self, "values").to_unit(unit)
-        )
+        else:
+            out = Coordinate(
+                values=dict.__getitem__(self, "values").to_unit(unit)
+            )
+        if "_size" in self.__dict__:
+            out._size = self._size
+        if "_axes" in self.__dict__:
+            out._axes = self._axes
+        return out
 
 
 def _as_unitful(obj: tx.Any) -> tx.Any:
@@ -1397,6 +1405,48 @@ def _as_unitful_origin(obj: tx.Any) -> tx.Any:
     return unitful
 
 
+def _reconcile_origin_unit(coord: Coordinate) -> None:
+    """
+    Make a compact coordinate's `origin` share `spacing`'s **unit**, in
+    place. `_materialise`/`_materialise_axes` add `origin`'s raw magnitude
+    directly onto the `spacing`-scaled index and label the *result* with
+    `spacing`'s unit alone -- `origin`'s own declared unit is never
+    otherwise consulted, so if it differs from `spacing`'s the two
+    magnitudes would silently get mixed as if they were the same unit.
+
+    A no-op if either is missing, or they already agree. If `origin`'s unit
+    wasn't specified at all (a bare number, defaulting to `""`) it simply
+    *inherits* `spacing`'s unit -- that default shouldn't read as a real,
+    conflicting "dimensionless" declaration. Otherwise (`origin` was given
+    an explicit unit that differs from `spacing`'s) it's converted into
+    `spacing`'s unit if compatible (needs a backend for the actual
+    conversion), or raises if the two are declared in incompatible units.
+    """
+    if "spacing" not in coord or "origin" not in coord:
+        return
+    spacing_unit = dict.__getitem__(coord, "spacing")["unit"]
+    origin = dict.__getitem__(coord, "origin")
+    origin_unit = origin["unit"]
+    if _units.equal(spacing_unit, origin_unit):
+        return
+    # an omitted unit defaults to `""` with no backend, or normalises to the
+    # real string `"dimensionless"` under pint -- either way, that default
+    # shouldn't read as a deliberate, conflicting declaration.
+    if not origin_unit or _units.dimensionless(origin_unit):
+        dict.__setitem__(
+            coord,
+            "origin",
+            _units.Unitful(value=origin["value"], unit=spacing_unit),
+        )
+        return
+    if not _units.compatible(spacing_unit, origin_unit):
+        raise ValueError(
+            f"coords: origin's unit {origin_unit!r} is not compatible with "
+            f"spacing's unit {spacing_unit!r}"
+        )
+    dict.__setitem__(coord, "origin", origin.to(spacing_unit))
+
+
 def _is_compact_coord(spec: tx.Any) -> bool:
     """Whether a `coords[dim]` value is a compact numeric coordinate (a mapping
     with `spacing`/`origin`) rather than a sequence of labels."""
@@ -1424,6 +1474,7 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
         coord["spacing"] = _as_unitful(spec["spacing"])
     if "origin" in spec:
         coord["origin"] = _as_unitful_origin(spec["origin"])
+    _reconcile_origin_unit(coord)
     return coord
 
 
@@ -1443,6 +1494,7 @@ def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
     coord["spacing"] = _as_unitful_vector(spec["spacing"], ndims)
     if "origin" in spec:
         coord["origin"] = _as_unitful_origin(spec["origin"])
+    _reconcile_origin_unit(coord)
     return coord
 
 
