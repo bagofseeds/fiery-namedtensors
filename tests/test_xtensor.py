@@ -348,6 +348,88 @@ def test_affine_coordinate_survives_rename():
     )
 
 
+def test_affine_coordinate_rename_onto_one_of_its_dims_is_rejected():
+    # renaming an axis onto a multi-dim coordinate's key would leave an entry
+    # whose key *is* a dim but which is not that dim's index, breaking the
+    # `dims == (name,)` <-> dimension-coordinate invariant (`.sel` and
+    # `__getitem__`'s dimension-coordinate pass would then treat the vector
+    # `spacing` as a 1-D one and corrupt it / raise).
+    def make():
+        return XTensor(
+            torch.zeros(4, 4),
+            names=["y", "x"],
+            coords={
+                "lat": (
+                    ["y", "x"],
+                    {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+                )
+            },
+        )
+
+    with pytest.raises(ValueError, match="multi-dim coordinate's name"):
+        make().rename(y="lat")
+    with pytest.raises(ValueError, match="multi-dim coordinate's name"):
+        make().rename(x="lat")
+    # a *single*-dim non-dimension coordinate still becomes that dim's index
+    single = XTensor(
+        torch.zeros(4, 4),
+        names=["y", "x"],
+        coords={"lab": ("y", torch.arange(4.0))},
+    )
+    assert single.rename(y="lab").sel(lab=2.0).names == ("x",)
+
+
+def test_affine_coordinate_grid_follows_the_tensor_axis_order():
+    # `["values"]` is a bare array with no dims of its own, so it must be laid
+    # out in the *tensor's* axis order -- otherwise transposing silently
+    # misaligns the coordinate with the data (undetectably so when square).
+    x = XTensor(
+        torch.zeros(4, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    for moved in (x.permute(1, 0), x.transpose("y", "x"), x.movedim(0, 1)):
+        assert moved.names == ("x", "y")
+        assert torch.allclose(
+            moved.coords["lat"]["values"].as_subclass(torch.Tensor), full.T
+        )
+    # ... and it keeps following the axes through a later slice
+    sliced = x.permute(1, 0)[1:4, 1:3]
+    assert torch.allclose(
+        sliced.coords["lat"]["values"].as_subclass(torch.Tensor),
+        full.T[1:4, 1:3],
+    )
+
+
+def test_affine_coordinate_dims_may_be_given_out_of_axis_order():
+    # `dims` names the spacing components; the materialised grid still lines
+    # up with the tensor's own axes.
+    x = XTensor(
+        torch.zeros(3, 5),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["x", "y"],
+                {"spacing": ([0.5, 1.0], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    values = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    expected = 10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(5.0)
+    assert values.shape == x.shape
+    assert torch.allclose(values, expected)
+    assert torch.allclose(
+        x[1:3, ::2].coords["lat"]["values"].as_subclass(torch.Tensor),
+        expected[1:3, ::2],
+    )
+
+
 def test_affine_coordinate_gradients_flow_through_spacing_and_origin():
     sy = torch.tensor(1.0, requires_grad=True)
     sx = torch.tensor(0.5, requires_grad=True)

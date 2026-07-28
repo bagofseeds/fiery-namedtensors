@@ -483,9 +483,22 @@ class XTensor(ExtendedTensor):
                 # multi-dim / affine coordinate (Proposal 0005 step 3) -- only
                 # the compact form is implemented; anything else is unreachable
                 # (rejected at input time) so it is simply skipped here.
+                # The grid is laid out in **this tensor's** axis order, not in
+                # `dims` order: the two differ when `dims` was given in
+                # another order, or once an axis-reordering op (`permute` /
+                # `transpose` / `movedim`) has moved them, and `["values"]` is
+                # a bare array with no dims of its own -- so materialising in
+                # `dims` order would silently misalign it with the data.
                 if isinstance(coord, Coordinate) and coord._compact():
-                    sizes = tuple(self.shape[names.index(dim)] for dim in dims)
-                    valid[name] = coord._bound_axes(sizes)
+                    axes = [names.index(dim) for dim in dims]
+                    valid[name] = coord._bound_axes(
+                        tuple(
+                            (component, self.shape[axes[component]])
+                            for component in sorted(
+                                range(len(dims)), key=axes.__getitem__
+                            )
+                        )
+                    )
                 continue
             size = self.shape[names.index(dims[0])]
             if isinstance(coord, Coordinate):
@@ -686,6 +699,20 @@ class XTensor(ExtendedTensor):
                     "name); choose a name that doesn't collide"
                 )
             new_dims = tuple(rename_of[dim] for dim in dims)
+            if new_key in new_names and new_dims != (new_key,):
+                # Renaming an axis onto a **multi-dim** coordinate's key would
+                # leave an entry whose key *is* a dim but which is not that
+                # dim's index -- breaking the `dims == (name,)` <=> dimension
+                # coordinate invariant every consumer relies on (`sel`,
+                # `__getitem__`'s dimension-coordinate pass, `flip`/`roll`
+                # would then treat the vector `spacing` as a 1-D one and
+                # corrupt it). Refuse, like any other name collision.
+                raise ValueError(
+                    f"rename: coordinate name collision on {new_key!r} "
+                    "(a renamed axis now matches a multi-dim coordinate's "
+                    f"name, which spans {new_dims}); choose a name that "
+                    "doesn't collide"
+                )
             remapped[new_key] = (new_dims, coord)
         return remapped
 
@@ -1218,19 +1245,21 @@ class Coordinate(_units.MagicDict):
         out._size = size
         return out
 
-    def _bound_axes(self, sizes: tuple) -> "Coordinate":
+    def _bound_axes(self, axes: tuple) -> "Coordinate":
         """
-        A copy bound to several axis sizes -- one per spanned dim -- so
-        `["values"]` materialises an N-D **affine** grid (Proposal 0005 step
-        3: `spacing` is a vector with one component per dim).
+        A copy bound to several axes -- `((spacing component, axis size),
+        ...)`, **in the host tensor's axis order** -- so `["values"]`
+        materialises an N-D **affine** grid laid out like the tensor
+        (Proposal 0005 step 3: `spacing` is a vector with one component per
+        spanned dim, but `dims` need not be in the tensor's own axis order).
         """
         out = Coordinate(self)
-        out._sizes = tuple(sizes)
+        out._axes = tuple(axes)
         return out
 
     def __getitem__(self, key: tx.Any) -> tx.Any:
         if key == "values" and self._compact():
-            if "_sizes" in self.__dict__:
+            if "_axes" in self.__dict__:
                 return self._materialise_axes()
             return self._materialise()
         return dict.__getitem__(self, key)
@@ -1249,23 +1278,26 @@ class Coordinate(_units.MagicDict):
     def _materialise_axes(self) -> "XTensor":
         """
         Materialise a compact **affine** coordinate (Proposal 0005 step 3)
-        over its bound `_sizes`: `origin + sum_d spacing[d] * index_d`, via a
+        over its bound `_axes`: `origin + sum_d spacing[d] * index_d`, via a
         broadcast `arange` per spanned dim -- an N-D grid, still
         differentiable w.r.t. `spacing`/`origin` (no dense grid is stored,
-        only assembled fresh on each access, exactly like the 1-D case).
+        only assembled fresh on each access, exactly like the 1-D case). The
+        axes come in the host tensor's order (see `_bound_axes`), each paired
+        with the `spacing` component it draws on, so the grid lines up with
+        the data whatever order `dims` is in.
         """
         spacing = dict.__getitem__(self, "spacing")
         origin = dict.get(self, "origin")
         components = spacing["value"]
         total = origin["value"] if origin is not None else 0
-        ndim = len(self._sizes)
-        for d, size in enumerate(self._sizes):
-            component = components[d]
+        ndim = len(self._axes)
+        for axis, (component_index, size) in enumerate(self._axes):
+            component = components[component_index]
             index = torch.arange(size)
             if isinstance(component, Tensor):
                 index = index.to(component)
             shape = [1] * ndim
-            shape[d] = size
+            shape[axis] = size
             total = total + index.view(shape) * component
         return XTensor(total, unit=spacing["unit"])
 

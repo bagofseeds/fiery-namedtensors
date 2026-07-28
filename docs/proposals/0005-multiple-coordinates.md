@@ -203,7 +203,11 @@ affine feature.
 - `["values"]` materialises the N-D grid lazily (`Coordinate._materialise_axes`,
   bound to per-dim sizes by `_bound_axes`): `origin + Σ_d spacing[d]·index_d`
   via a broadcast `arange` per dim — no dense grid cached, so it stays
-  differentiable exactly like the 1-D case.
+  differentiable exactly like the 1-D case. The grid is laid out in the
+  **tensor's** axis order rather than in `dims` order (the two differ when
+  `dims` is given out of order, or after a `permute`/`transpose`/`movedim`
+  carries the coordinate through), since `["values"]` is a bare array
+  carrying no dims of its own to disambiguate the layout.
 - `__getitem__` re-slices it **exactly**, per spanned dim
   (`_slice_affine_coordinate`): a basic slice updates that dim's component
   (`origin += start·component; component *= step`); an **integer** index
@@ -214,8 +218,10 @@ affine feature.
   branch on this, it isn't just a vector of length 1); anything else
   (boolean/advanced indexing) can't stay affine, so the *whole* coordinate
   drops. `rename` remaps every dim in `dims` the same way a 1-D non-dimension
-  coordinate's single dim already does (no change needed there — already
-  generic over `dims` length).
+  coordinate's single dim already does (already generic over `dims` length),
+  but now also refuses to rename an axis *onto* a multi-dim coordinate's key
+  — that would leave a key which is a dim yet isn't that dim's index, which
+  `.sel` and the dimension-coordinate slicing pass would then misread.
 - A general multi-dim **explicit** coordinate (arbitrary curvilinear
   `lat(y,x)` values, not a compact affine map) is **not** implemented —
   raises `NotImplementedError`, pointing at the compact form. That's separate,
