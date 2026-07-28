@@ -2503,10 +2503,28 @@ def _(input: XTensor, source, destination) -> XTensor:
 # -- rank-changing reshape --------------------------------------------------
 
 
-def _prepend_axes_meta(input: XTensor, n_new: int) -> dict:
-    """`_carry` overrides for an op that prepends `n_new` unnamed axes."""
-    # Existing axes keep their name and size, so their coordinates stay valid.
-    return {"_axis_names": (None,) * n_new + input.names}
+def _broadcast_meta(input: XTensor, result: Tensor) -> dict:
+    """
+    `_carry` overrides for `expand`/`broadcast_to`: prepends unnamed axes for
+    any new leading dims, and drops the coordinate of any *existing* named
+    axis whose size actually grew (a size-1 axis broadcast to N). A compact
+    coordinate has no length of its own to invalidate the way a label/
+    explicit one does, so without this it would silently rebind to the new
+    size as if that many positions had always existed (issue #90) -- N
+    positions along a broadcast axis are still only ever *one* position's
+    worth of underlying data.
+    """
+    n_new = result.ndim - input.ndim
+    in_names = input.names
+    changed = {
+        in_names[i]
+        for i, size in enumerate(input.shape)
+        if size != result.shape[i + n_new] and in_names[i] is not None
+    }
+    overrides = {"_axis_names": (None,) * n_new + in_names}
+    if changed:
+        overrides["_coords"] = _coords_dropping(input, *changed)
+    return overrides
 
 
 @XTensor.overrides(_torch_func("flatten"))
@@ -2547,17 +2565,13 @@ def _(input: XTensor, *sizes: int | tx.Sequence) -> XTensor:
     if len(sizes) == 1 and isinstance(sizes[0], (tuple, list, torch.Size)):
         sizes = tuple(sizes[0])
     result = Tensor.expand(input, *sizes)
-    return _carry(
-        input, result, **_prepend_axes_meta(input, result.ndim - input.ndim)
-    )
+    return _carry(input, result, **_broadcast_meta(input, result))
 
 
 @XTensor.overrides(_torch_func("broadcast_to"))
 def _(input: XTensor, shape: tx.Sequence) -> XTensor:
     result = Tensor.broadcast_to(input, shape)
-    return _carry(
-        input, result, **_prepend_axes_meta(input, result.ndim - input.ndim)
-    )
+    return _carry(input, result, **_broadcast_meta(input, result))
 
 
 @XTensor.overrides(_torch_func("diagonal"))
@@ -2678,9 +2692,21 @@ def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
     unit_kw = _reduce_unit(input, removed)
     # `keepdim` is inferable from the output rank: a reduction either removes
     # the reduced axes or keeps them as size-1. Either way the reduced axis's
-    # coordinates go, so its folded unit still applies.
+    # coordinates go, so its folded unit still applies. Dropped explicitly
+    # (issue #90): the reduced axis's *name* is unchanged under `keepdim`, so
+    # a compact coordinate -- which has no length of its own to invalidate,
+    # unlike a label/explicit one -- would otherwise silently rebind to the
+    # new size-1 axis as if it described "position 0" of the original extent.
     if dim is not None and result.ndim == ndim:
-        return _carry(input, result, _axis_names=input.names, **unit_kw)
+        in_names = input.names
+        reduced = {in_names[ax] for ax in removed if ax < len(in_names)}
+        return _carry(
+            input,
+            result,
+            _axis_names=in_names,
+            _coords=_coords_dropping(input, *reduced),
+            **unit_kw,
+        )
     names = tuple(n for i, n in enumerate(input.names) if i not in removed)
     return _carry(
         input,
