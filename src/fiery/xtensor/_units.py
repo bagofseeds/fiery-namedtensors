@@ -140,6 +140,17 @@ def is_unit_like(obj: tx.Any) -> bool:
     return isinstance(obj, (pint.Unit, pint.Quantity))
 
 
+def looks_like_unit(obj: tx.Any) -> bool:
+    """
+    Whether `obj` could be a **unit** spec on its own: `None`, a string, or
+    the active backend's own `Unit`/`Quantity` object -- never a bare number.
+    A unit is one of those three things or nothing at all, so this fully
+    disambiguates a 2-tuple: `(value, unit)` iff the second element looks
+    like a unit, otherwise it is a raw (possibly vector) value, not a pair.
+    """
+    return obj is None or isinstance(obj, str) or is_unit_like(obj)
+
+
 def split_quantity(obj: tx.Any) -> tx.Tuple[tx.Any, str]:
     """
     Decompose a backend unit/quantity into `(magnitude, unit_string)`: a bare
@@ -209,12 +220,17 @@ def as_unitful(obj: tx.Any) -> Unitful:
     `{"value", "unit"}` dict, a `(value, unit)` tuple, a backend `Unit`/
     `Quantity`, a unit string, or a bare value (dimensionless). A united
     `XTensor` value is handled by the caller (it needs the tensor type).
+
+    A 2-tuple is `(value, unit)` only when its second element `looks_like_unit`
+    (`None`/a string/a backend `Unit`/`Quantity`) -- a 2-tuple of bare numbers
+    (e.g. a 2-component vector `spacing`) is never mistaken for `(value,
+    unit)`; it falls through as a raw value instead (issue #93).
     """
     if isinstance(obj, Unitful):
         return obj
     if isinstance(obj, dict) and "value" in obj:
         return Unitful(value=obj["value"], unit=normalise(obj.get("unit", "")))
-    if isinstance(obj, tuple) and len(obj) == 2:
+    if isinstance(obj, tuple) and len(obj) == 2 and looks_like_unit(obj[1]):
         return Unitful(value=obj[0], unit=normalise(obj[1]))
     if is_unit_like(obj):
         magnitude, unit = split_quantity(obj)
