@@ -2482,7 +2482,27 @@ def _(input: XTensor, dims: int | str | tx.Sequence) -> XTensor:
     coords = _coords_dropping(input, *flipped)
     for name in flipped:
         labels = input.coords.get(name)
-        if labels is not None:
+        if labels is None:
+            continue
+        if isinstance(labels, Coordinate):
+            # A compact coordinate flips exactly by negating its spacing
+            # (`_slice_coordinate`'s basic-slice path, `slice(None,None,-1)`
+            # -- stays compact, no materialisation). An explicit one can't
+            # use that same slice object: PyTorch tensors reject a negative
+            # step (`t[::-1]` itself raises "step must be greater than
+            # zero"), so it goes through the advanced-index path instead
+            # (an explicit reversed position list) -- either way, never
+            # `reversed()`/indexed as if it were a plain dict (#85).
+            size = input.shape[input.names.index(name)]
+            reverser = (
+                slice(None, None, -1)
+                if labels._compact()
+                else list(range(size - 1, -1, -1))
+            )
+            reversed_coord = _slice_coordinate(labels, reverser, size)
+            if reversed_coord is not None:
+                coords[name] = (name,), reversed_coord
+        else:
             coords[name] = (name,), tuple(reversed(labels))
     overrides = {"_coords": coords}
     meta = input._valid_axis_meta()
@@ -2521,7 +2541,19 @@ def _(
     coords = _coords_dropping(input, *shift_by_name)
     for name, shift in shift_by_name.items():
         labels = input.coords.get(name)
-        if labels is not None:
+        if labels is None:
+            continue
+        if isinstance(labels, Coordinate):
+            # a roll is a cyclic permutation, not a `slice`; give
+            # `_slice_coordinate` the equivalent advanced index instead of
+            # treating the coordinate as if it were a plain dict (#85).
+            size = input.shape[input.names.index(name)]
+            shift %= size or 1
+            order = [(i - shift) % size for i in range(size)]
+            rolled = _slice_coordinate(labels, order, size)
+            if rolled is not None:
+                coords[name] = (name,), rolled
+        else:
             n = len(labels)
             shift %= n or 1
             coords[name] = (

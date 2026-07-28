@@ -1358,6 +1358,68 @@ def test_roll_rolls_coordinates_on_the_rolled_axis():
     assert x.roll(1, dims="c").coords == {"c": ("z", "w", "x", "y")}
 
 
+def test_flip_reverses_a_compact_numeric_coordinate_and_stays_compact():
+    # #85: reversed()/indexing a Coordinate like a plain dict silently
+    # dropped it (flip) or crashed (roll); it must materialise/negate the
+    # numeric *values* instead.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    out = x.flip("t")
+    assert out.tolist() == [3.0, 2.0, 1.0, 0.0]
+    coord = out.coords["t"]
+    assert coord._compact()  # negating spacing keeps it exact + compact
+    assert coord["values"].tolist() == [3.0, 2.0, 1.0, 0.0]
+    assert out.flip("t").coords["t"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_flip_reverses_an_explicit_numeric_coordinate():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0])},
+    )
+    assert x.flip("t").coords["t"]["values"].tolist() == [
+        40.0,
+        30.0,
+        20.0,
+        10.0,
+    ]
+
+
+def test_roll_rolls_a_compact_numeric_coordinate():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    # a right shift of 1: same cyclic convention as the label test above
+    out = x.roll(1, dims="t")
+    assert out.tolist() == [3.0, 0.0, 1.0, 2.0]
+    assert out.coords["t"]["values"].tolist() == [3.0, 0.0, 1.0, 2.0]
+
+
+def test_roll_rolls_an_explicit_numeric_coordinate():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0])},
+    )
+    assert x.roll(-1, dims="t").coords["t"]["values"].tolist() == [
+        20.0,
+        30.0,
+        40.0,
+        10.0,
+    ]
+
+
+def test_flip_of_a_compact_numeric_coordinate_keeps_gradients_flowing():
+    spacing = torch.tensor(2.0, requires_grad=True)
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": spacing}}
+    )
+    x.flip("t").coords["t"]["values"].sum().backward()
+    assert spacing.grad is not None
+
+
 # ----------------------------------------------------------------------
 # reshape-family (rank-changing): flatten / unflatten / expand / diagonal
 # ----------------------------------------------------------------------
