@@ -1046,8 +1046,12 @@ class XTensor(ExtendedTensor):
         [`set_options`][fiery.xtensor.set_options].
 
         A **scalar** query drops the axis (like `sel`); a **list**/tensor keeps
-        it, its coordinate becoming the queried positions. Only **regular**
-        (compact `spacing`/`origin`) coordinates are supported for now.
+        it, its coordinate becoming the queried positions. A **regular**
+        (compact `spacing`/`origin`) coordinate supports every `method`; an
+        **irregular** (explicit values) one supports `"nearest"`/`"linear"`
+        exactly (issue #73, via a monotonic `searchsorted` inversion) --
+        higher orders need a true non-uniform spline, not yet implemented
+        (issue #81).
         """
         out = self
         for name, target in indexers.items():
@@ -1067,19 +1071,29 @@ class XTensor(ExtendedTensor):
         coord = self.coords.get(name)
         if not isinstance(coord, Coordinate):
             raise ValueError(f"interp: dim {name!r} has no numeric coordinate")
-        if not coord._compact():
-            raise NotImplementedError(
-                f"interp on the irregular coordinate {name!r} is not "
-                "supported yet (regular spacing/origin only for now; see #73)"
-            )
-        spacing = dict.__getitem__(coord, "spacing")
-        origin = dict.get(coord, "origin")
-        unit = spacing["unit"]
-        step = spacing["value"]
-        base = origin["value"] if origin is not None else 0
-        query, is_many = _query_values(target, unit)
-        frac = (query - base) / step
         order = _interp_order(method)
+        if coord._compact():
+            spacing = dict.__getitem__(coord, "spacing")
+            origin = dict.get(coord, "origin")
+            unit = spacing["unit"]
+            step = spacing["value"]
+            base = origin["value"] if origin is not None else 0
+            query, is_many = _query_values(target, unit)
+            frac = (query - base) / step
+        else:
+            if order >= 2:
+                raise NotImplementedError(
+                    f"interp(method={method!r}) on the irregular coordinate "
+                    f"{name!r} needs a true non-uniform spline (not "
+                    "implemented yet -- see #81); nearest/linear are exact "
+                    "on an irregular coordinate (#73)"
+                )
+            stored_values = dict.__getitem__(coord, "values")
+            unit = stored_values.unit
+            query, is_many = _query_values(target, unit)
+            frac = _irregular_frac(
+                stored_values.as_subclass(Tensor), query, name
+            )
         eff_bound = _get_option("interp_bound") if bound is None else bound
         eff_extrap = (
             _get_option("interp_extrapolate")
@@ -1950,6 +1964,63 @@ def _query_values(target: tx.Any, unit: tx.Optional[str]) -> tx.Any:
     values = [_selector_value(one, unit) for one in items]
     query = torch.tensor(values, dtype=torch.get_default_dtype())
     return query, is_many
+
+
+def _irregular_frac(values: Tensor, query: Tensor, name: str) -> Tensor:
+    """
+    Fractional index for `query` against an **irregular** (non-uniform,
+    strictly monotonic) 1-D coordinate `values`, via `torch.searchsorted` +
+    a local linear inverse (issue #73): `searchsorted` brackets each query
+    between two adjacent ticks `values[k] <= query <= values[k+1]` (ascending
+    order; a descending coordinate is bracketed the same way by searching
+    its reverse), then `k + (query - values[k]) / (values[k+1] - values[k])`
+    is the exact fractional index -- it inverts the same piecewise-linear
+    map the nearest/linear pull already samples between those two ticks, so
+    the round trip is exact (unlike a higher order, whose spline basis is
+    uniform in index space -- see #81). Differentiable w.r.t. both `query`
+    and `values`: only the *search* (which bracket a query falls in) runs on
+    detached copies, since an index has no useful gradient; the returned
+    fraction is computed from the original tensors.
+    """
+    if values.dim() != 1:
+        raise ValueError(
+            f"interp: irregular coordinate {name!r} must be 1-D, but its "
+            f"values have shape {tuple(values.shape)}"
+        )
+    n = values.numel()
+    if n < 2:
+        raise ValueError(
+            f"interp: irregular coordinate {name!r} needs at least 2 points"
+        )
+    ticks = values.detach()  # the check is a predicate: no graph needed
+    diffs = ticks[1:] - ticks[:-1]
+    if bool((diffs > 0).all()):
+        ascending, ordered = True, values
+    elif bool((diffs < 0).all()):
+        ascending, ordered = False, values.flip(0)
+    else:
+        # point at the first offending pair -- a tie (a repeated tick, easy to
+        # hit by accident in float32) reads as "not monotonic" otherwise, with
+        # nothing to say *where*.
+        wanted = diffs > 0 if bool(diffs[0] > 0) else diffs < 0
+        j = int(wanted.logical_not().long().argmax())
+        raise ValueError(
+            f"interp: irregular coordinate {name!r} must be strictly "
+            f"monotonic (ascending or descending); ticks {j} and {j + 1} "
+            f"are {float(ticks[j])} and {float(ticks[j + 1])}"
+        )
+    # a coordinate sliced with a step (`x[::2]`) is a strided view, which
+    # `searchsorted` copies (and warns about) -- do it once, quietly.
+    k = (
+        torch.searchsorted(
+            ordered.detach().contiguous(), query.detach(), right=False
+        )
+        - 1
+    )
+    k = k.clamp(0, n - 2)
+    v0, v1 = ordered[k], ordered[k + 1]
+    frac = k.to(query.dtype) + (query - v0) / (v1 - v0)
+    return frac if ascending else (n - 1) - frac
 
 
 def _interpol() -> tx.Any:

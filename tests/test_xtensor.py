@@ -1026,14 +1026,278 @@ def test_interp_bound_option_and_override():
         assert got.item() == 4.0  # clamps
 
 
-def test_interp_irregular_coordinate_not_supported():
-    x = XTensor(
-        torch.arange(4.0),
+def test_interp_irregular_nearest_is_builtin_without_the_backend(monkeypatch):
+    # order-0 (nearest) needs no fiery.interpol, same as the regular case.
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = XTensor(  # value == index**2, ticks 0, 1, 4, 9 (irregular)
+        torch.tensor([0.0, 1.0, 4.0, 9.0]),
         names=("t",),
-        coords={"t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), unit="s")},
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
     )
-    with pytest.raises(NotImplementedError, match="irregular"):
-        x.interp(t=[2.0])
+    got = x.interp(t=[2.5, 8.0], method="nearest")
+    assert got.tolist() == [4.0, 9.0]  # nearest tick to 2.5 is 4, to 8 is 9
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        2.5,
+        8.0,
+    ]
+
+
+def test_interp_irregular_linear_computes_new_values():
+    pytest.importorskip("fiery.interpol")
+    # data 0, 10, 20, 30 at irregular ticks 0, 1, 4, 9 -- deliberately *not*
+    # the identity map, so a bracket-and-interpolate bug can't hide behind
+    # "the query happened to equal the answer".
+    x = XTensor(
+        torch.tensor([0.0, 10.0, 20.0, 30.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    # 0.5 is halfway between ticks 0 and 1 (positions 0 and 1) -> data 0..10
+    # 2.5 is 1.5/3 of the way between ticks 1 and 4 (positions 1 and 2)
+    got = x.interp(t=[0.5, 2.5])
+    assert got.tolist() == pytest.approx([5.0, 15.0])
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        0.5,
+        2.5,
+    ]
+    # exact match on a tick is exact, not just "close"
+    assert x.interp(t=4.0).item() == pytest.approx(20.0)
+    # out-of-range clamps to the edge value (the "replicate" default bound,
+    # same as the regular-coordinate case) -- the fractional index itself
+    # still extrapolates past the end segment's slope (frac -1 and 3.2 for
+    # these queries), it's `bound` that then clamps it into range.
+    got_extrap = x.interp(t=[-1.0, 10.0])
+    assert got_extrap.tolist() == pytest.approx([0.0, 30.0])
+
+
+def test_interp_irregular_descending_coordinate():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.tensor([0.0, 10.0, 20.0, 30.0]),
+        names=("t",),
+        coords={"t": torch.tensor([9.0, 4.0, 1.0, 0.0])},  # descending
+    )
+    # 2.5 is 1.5/3 of the way between ticks 4 (index 1) and 1 (index 2)
+    assert x.interp(t=2.5).item() == pytest.approx(15.0)
+    assert x.interp(t=9.0).item() == pytest.approx(0.0)
+    assert x.interp(t=0.0).item() == pytest.approx(30.0)
+
+
+def test_interp_irregular_coordinate_must_be_monotonic():
+    x = XTensor(
+        torch.zeros(4),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 2.0, 1.0, 3.0])},
+    )
+    with pytest.raises(ValueError, match="strictly monotonic"):
+        x.interp(t=1.5)
+
+
+def test_interp_irregular_higher_order_is_not_implemented():
+    # higher orders need a true non-uniform spline (a uniform-index-space
+    # spline basis isn't cubic-in-value on non-uniform nodes); see #81.
+    x = XTensor(
+        torch.tensor([0.0, 1.0, 4.0, 9.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    with pytest.raises(NotImplementedError, match="#81"):
+        x.interp(t=2.5, method="cubic")
+
+
+def test_interp_irregular_gradients_flow_through_query_and_values():
+    pytest.importorskip("fiery.interpol")
+    values = torch.tensor([0.0, 1.0, 4.0, 9.0], requires_grad=True)
+    x = XTensor(
+        torch.tensor([0.0, 1.0, 4.0, 9.0]), names=("t",), coords={"t": values}
+    )
+    q = torch.tensor(2.5, requires_grad=True)
+    x.interp(t=q).backward()
+    assert q.grad is not None and q.grad.item() != 0.0
+    assert values.grad is not None
+    # only the bracketing ticks (indices 1 and 2, ticks 1 and 4) get a
+    # nonzero gradient -- the query never touches ticks 0 or 3
+    assert values.grad[0].item() == 0.0
+    assert values.grad[3].item() == 0.0
+    assert values.grad[1].item() != 0.0
+    assert values.grad[2].item() != 0.0
+
+
+def test_interp_irregular_gradcheck_against_finite_differences():
+    # "gradients flow" is not the same as "gradients are right": check the
+    # analytic gradient of the whole value -> frac -> pull chain numerically.
+    pytest.importorskip("fiery.interpol")
+    data = torch.tensor([3.0, -1.0, 7.0, 2.0, 11.0], dtype=torch.float64)
+
+    def pull(vals, query):
+        x = XTensor(data, names=("t",), coords={"t": vals})
+        return x.interp(t=query).as_subclass(torch.Tensor)
+
+    ticks = torch.tensor(
+        [0.0, 1.0, 4.0, 9.0, 25.0], dtype=torch.float64, requires_grad=True
+    )
+    # in-range brackets only (a query sitting exactly on a tick is a kink of
+    # the piecewise-linear map, where a one-sided derivative is expected)
+    q = torch.tensor([0.5, 2.5, 12.0], dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(pull, (ticks, q), eps=1e-6, atol=1e-6)
+    # ... and the same for a descending coordinate (the flipped search path)
+    down = torch.tensor(
+        [25.0, 9.0, 4.0, 1.0, 0.0], dtype=torch.float64, requires_grad=True
+    )
+    assert torch.autograd.gradcheck(pull, (down, q), eps=1e-6, atol=1e-6)
+
+
+def test_interp_irregular_matches_the_regular_path_when_ticks_are_uniform():
+    # an explicit coordinate that *happens* to be uniform must agree with the
+    # compact one describing the same ticks -- bit for bit, for every bound.
+    pytest.importorskip("fiery.interpol")
+    data = torch.tensor([3.0, -1.0, 7.0, 2.0, 11.0])
+    query = [-3.0, 0.25, 1.7, 3.9, 4.5, 11.0]  # ticks are 1, 3, 5, 7, 9
+    explicit = XTensor(
+        data, names=("t",), coords={"t": torch.arange(5.0) * 2.0 + 1.0}
+    )
+    compact = XTensor(
+        data, names=("t",), coords={"t": {"spacing": 2.0, "origin": 1.0}}
+    )
+    for method in ("nearest", "linear"):
+        got = explicit.interp(t=query, method=method)
+        want = compact.interp(t=query, method=method)
+        assert got.tolist() == want.tolist()
+    for bound in ("replicate", "zero", "dft"):
+        got = explicit.interp(t=query, bound=bound)
+        want = compact.interp(t=query, bound=bound)
+        assert got.tolist() == want.tolist()
+
+
+def test_interp_irregular_matches_piecewise_linear_over_a_batch():
+    # one query per bracket plus both out-of-range ends, all in one call --
+    # the brackets differ across the batch, so a non-vectorised (or
+    # first-bracket-for-everyone) inversion would show up here.
+    pytest.importorskip("fiery.interpol")
+    ticks = [0.0, 1.0, 4.0, 9.0, 25.0]
+    data = [3.0, -1.0, 7.0, 2.0, 11.0]
+    x = XTensor(
+        torch.tensor(data), names=("t",), coords={"t": torch.tensor(ticks)}
+    )
+    query = [0.5, 2.5, 6.5, 17.0]
+    expected = [1.0, 3.0, 4.5, 6.5]  # hand-computed segment midpoints
+    assert x.interp(t=query).tolist() == pytest.approx(expected)
+    # every tick reproduces its own value exactly (not just "close")
+    assert x.interp(t=ticks).tolist() == data
+    # both ends clamp under the default "replicate" bound
+    assert x.interp(t=[-100.0, 100.0]).tolist() == pytest.approx([3.0, 11.0])
+
+
+def test_interp_irregular_descending_out_of_range_both_ends():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.tensor([11.0, 2.0, 7.0, -1.0, 3.0]),
+        names=("t",),
+        coords={"t": torch.tensor([25.0, 9.0, 4.0, 1.0, 0.0])},
+    )
+    # past the *high* end is index 0, past the *low* end is index -1
+    got = x.interp(t=[-100.0, 0.5, 17.0, 100.0])
+    assert got.tolist() == pytest.approx([3.0, 1.0, 6.5, 11.0])
+
+
+def test_interp_irregular_two_point_coordinate():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(  # the smallest coordinate an inversion can bracket
+        torch.tensor([1.0, 5.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 4.0])},
+    )
+    got = x.interp(t=[-1.0, 0.0, 2.0, 4.0, 6.0])
+    assert got.tolist() == pytest.approx([1.0, 1.0, 3.0, 5.0, 5.0])
+
+
+def test_interp_irregular_is_unit_aware():
+    pytest.importorskip("fiery.interpol")
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(
+            torch.tensor([0.0, 10.0, 20.0, 30.0]),
+            names=("t",),
+            coords={
+                "t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), unit="s")
+            },
+        )
+        assert x.interp(t="2500ms").item() == pytest.approx(15.0)
+        got = x.interp(t=["500ms", "2500ms"])
+        assert got.tolist() == pytest.approx([5.0, 15.0])
+        # the new coordinate carries the *position* unit, not the query's
+        coord = got.coords["t"]["values"]
+        assert coord.unit == "second"
+        assert coord.as_subclass(torch.Tensor).tolist() == [0.5, 2.5]
+
+
+def test_interp_irregular_higher_order_needs_the_backend(monkeypatch):
+    # the backend guard is the same one the regular path uses: order >= 1
+    # still needs fiery.interpol on an irregular coordinate.
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = XTensor(
+        torch.tensor([0.0, 1.0, 4.0, 9.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    with pytest.raises(ImportError, match="fiery-xtensor\\[interp\\]"):
+        x.interp(t=[2.5], method="linear")
+
+
+def test_interp_irregular_repeated_ticks_name_the_offending_pair():
+    # a repeated tick is a zero-width cell: there is no inverse, and it is
+    # easy to hit by accident (a float32 cumsum of many small steps), so the
+    # error says *where* rather than just "not monotonic".
+    x = XTensor(
+        torch.zeros(4),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 1.0, 2.0])},
+    )
+    with pytest.raises(ValueError, match="ticks 1 and 2 are 1.0 and 1.0"):
+        x.interp(t=1.5)
+
+
+def test_interp_irregular_needs_at_least_two_ticks():
+    x = XTensor(
+        torch.tensor([5.0]), names=("t",), coords={"t": torch.tensor([2.0])}
+    )
+    with pytest.raises(ValueError, match="at least 2 points"):
+        x.interp(t=2.0)
+
+
+def test_interp_irregular_needs_a_1d_coordinate():
+    # `coords={dim: <tensor>}` accepts any tensor whose *first* axis matches,
+    # so a 2-D one is storable; interp must say so rather than fall through
+    # to an opaque searchsorted shape error.
+    x = XTensor(
+        torch.arange(6.0).reshape(3, 2),
+        names=("t", "u"),
+        coords={"t": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])},
+    )
+    with pytest.raises(ValueError, match="must be 1-D"):
+        x.interp(t=1.5)
+
+
+def test_interp_irregular_on_a_sliced_coordinate():
+    # `x[::2]` leaves the coordinate a strided view; the inversion must still
+    # bracket against the *sliced* ticks.
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.tensor([3.0, -1.0, 7.0, 2.0, 11.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0, 25.0])},
+    )
+    sliced = x[::2]  # ticks 0, 4, 25 / data 3, 7, 11
+    assert sliced.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        0.0,
+        4.0,
+        25.0,
+    ]
+    assert sliced.interp(t=2.0).item() == pytest.approx(5.0)
 
 
 def test_interp_needs_a_numeric_coordinate():
