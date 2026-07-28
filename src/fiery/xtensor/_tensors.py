@@ -1657,22 +1657,41 @@ def _irregular_frac(values: Tensor, query: Tensor, name: str) -> Tensor:
     detached copies, since an index has no useful gradient; the returned
     fraction is computed from the original tensors.
     """
+    if values.dim() != 1:
+        raise ValueError(
+            f"interp: irregular coordinate {name!r} must be 1-D, but its "
+            f"values have shape {tuple(values.shape)}"
+        )
     n = values.numel()
     if n < 2:
         raise ValueError(
             f"interp: irregular coordinate {name!r} needs at least 2 points"
         )
-    diffs = values[1:] - values[:-1]
+    ticks = values.detach()  # the check is a predicate: no graph needed
+    diffs = ticks[1:] - ticks[:-1]
     if bool((diffs > 0).all()):
         ascending, ordered = True, values
     elif bool((diffs < 0).all()):
         ascending, ordered = False, values.flip(0)
     else:
+        # point at the first offending pair -- a tie (a repeated tick, easy to
+        # hit by accident in float32) reads as "not monotonic" otherwise, with
+        # nothing to say *where*.
+        wanted = diffs > 0 if bool(diffs[0] > 0) else diffs < 0
+        j = int(wanted.logical_not().long().argmax())
         raise ValueError(
             f"interp: irregular coordinate {name!r} must be strictly "
-            "monotonic (ascending or descending)"
+            f"monotonic (ascending or descending); ticks {j} and {j + 1} "
+            f"are {float(ticks[j])} and {float(ticks[j + 1])}"
         )
-    k = torch.searchsorted(ordered.detach(), query.detach(), right=False) - 1
+    # a coordinate sliced with a step (`x[::2]`) is a strided view, which
+    # `searchsorted` copies (and warns about) -- do it once, quietly.
+    k = (
+        torch.searchsorted(
+            ordered.detach().contiguous(), query.detach(), right=False
+        )
+        - 1
+    )
     k = k.clamp(0, n - 2)
     v0, v1 = ordered[k], ordered[k + 1]
     frac = k.to(query.dtype) + (query - v0) / (v1 - v0)
