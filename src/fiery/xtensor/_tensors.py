@@ -1541,12 +1541,24 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
             values = spec
         else:
             values = XTensor(spec, unit=_units.normalise(""))
+        if values.ndim != 1:
+            raise ValueError(
+                "coords: a numeric coordinate must be 1-D, got shape "
+                f"{tuple(values.shape)}"
+            )
         return Coordinate(values=values)
     coord = Coordinate()
-    if "spacing" in spec:
-        coord["spacing"] = _as_unitful(spec["spacing"])
     if "origin" in spec:
         coord["origin"] = _as_unitful_origin(spec["origin"])
+    if "spacing" in spec:
+        coord["spacing"] = _as_unitful(spec["spacing"])
+    else:
+        # symmetric to an omitted `origin` defaulting to 0 in `spacing`'s
+        # unit (see `_materialise`): an omitted `spacing` defaults to 1 in
+        # `origin`'s unit -- `_is_compact_coord` guarantees at least one of
+        # the two is present, so this only runs with `origin` given.
+        origin_unit = coord["origin"]["unit"] if "origin" in coord else ""
+        coord["spacing"] = _units.Unitful(value=1, unit=origin_unit)
     _reconcile_origin_unit(coord)
     return coord
 
@@ -2039,13 +2051,10 @@ def _irregular_frac(values: Tensor, query: Tensor, name: str) -> Tensor:
     uniform in index space -- see #81). Differentiable w.r.t. both `query`
     and `values`: only the *search* (which bracket a query falls in) runs on
     detached copies, since an index has no useful gradient; the returned
-    fraction is computed from the original tensors.
+    fraction is computed from the original tensors. `values` is guaranteed
+    1-D here -- `_make_coordinate` rejects a non-1-D coordinate at
+    construction (#97), so there's no need to re-check it per consumer.
     """
-    if values.dim() != 1:
-        raise ValueError(
-            f"interp: irregular coordinate {name!r} must be 1-D, but its "
-            f"values have shape {tuple(values.shape)}"
-        )
     n = values.numel()
     if n < 2:
         raise ValueError(

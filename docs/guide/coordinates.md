@@ -101,7 +101,7 @@ slot, so the two never collide.
 ## Numeric coordinates
 
 A coordinate can also be **numeric** — a physical position per element — given
-compactly as a `spacing` (and optional `origin`), each a value with a unit
+compactly as `spacing` and/or `origin`, each a value with a unit
 ([Proposal 0001](../proposals/0001-units.md)):
 
 ```python
@@ -110,6 +110,17 @@ img = xtensor(data, names=("y", "x"),
 
 img.coords["x"]["spacing"].unit   # "mm"  — the position unit
 img.coords["x"]["values"]         # tensor([-16, -15.5, …]) with .unit == "mm"
+```
+
+Only one of `spacing`/`origin` needs to be given — the other defaults, and the
+default always takes the unit of the one you did give:
+
+```python
+xtensor(data, names=("x",), coords={"x": {"spacing": (0.5, "mm")}})
+# origin defaults to 0 mm  -> positions 0, 0.5, 1, …
+
+xtensor(data, names=("x",), coords={"x": {"origin": (-16, "mm")}})
+# spacing defaults to 1 mm -> positions -16, -15, -14, …
 ```
 
 `["values"]` materializes `origin + i·spacing` on demand (differentiable — a
