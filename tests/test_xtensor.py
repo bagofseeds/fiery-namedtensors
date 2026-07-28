@@ -1554,6 +1554,101 @@ def test_sel_range_needs_a_monotonic_explicit_coordinate():
         x.sel(t=slice(0, 3))
 
 
+def test_sel_range_allows_a_repeated_tick_on_an_explicit_coordinate():
+    # only-non-decreasing (a repeated tick) is not a *reversal*, and the
+    # matching set is still contiguous -- same monotonicity requirement
+    # `_numeric_select`'s mode="prev"/"next" already uses (>=0/<=0), not a
+    # *strict* requirement `.interp` needs (division by v1 - v0).
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 1.0, 1.0, 2.0])},
+    )
+    assert x.sel(t=slice(0.5, 2.0)).tolist() == [1.0, 2.0]
+
+
+def test_sel_range_on_an_int_coordinate_keeps_fractional_bounds():
+    # a bound must not be silently truncated to the coordinate's own
+    # (integer) dtype when the needle is built for `searchsorted` -- 10.5
+    # becoming 10 would wrongly include tick 10.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([0, 10, 20, 30, 40]))},
+    )
+    assert x.sel(t=slice(10.5, 30.5)).tolist() == [2.0, 3.0]
+    assert x.sel(t=slice(9.9, 30.1)).tolist() == [1.0, 2.0, 3.0]
+
+
+def test_sel_range_handles_infinite_bounds_on_both_coordinate_kinds():
+    # slice(-inf, inf) is an idiomatic slice(None, None); a compact
+    # coordinate must resolve it exactly like an explicit one, not crash.
+    c = XTensor(
+        torch.arange(10.0), names=("t",), coords={"t": {"spacing": 0.1}}
+    )
+    assert c.sel(t=slice(1.0, float("inf"))).tolist() == []
+    assert c.sel(t=slice(float("-inf"), 0.3)).tolist() == [0.0, 1.0, 2.0]
+
+    e = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 1.0, 2.0, 3.0])},
+    )
+    assert e.sel(t=slice(float("-inf"), float("inf"))).tolist() == [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+    ]
+
+
+def test_sel_range_nan_bound_raises_on_both_coordinate_kinds():
+    c = XTensor(
+        torch.arange(10.0), names=("t",), coords={"t": {"spacing": 0.1}}
+    )
+    with pytest.raises(ValueError, match="NaN"):
+        c.sel(t=slice(float("nan"), 1.0))
+    e = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor([0.0, 1.0, 2.0, 3.0])},
+    )
+    with pytest.raises(ValueError, match="NaN"):
+        e.sel(t=slice(float("nan"), 1.0))
+
+
+def test_sel_range_compact_never_materialises(monkeypatch):
+    # #109's range selection shares #110's O(1) property for a compact
+    # coordinate -- it must not materialise the whole grid just to find
+    # unit/size.
+    def boom(self):
+        raise AssertionError("materialise() called -- O(1) fast path bypassed")
+
+    monkeypatch.setattr(Coordinate, "_materialise", boom)
+    x = XTensor(
+        torch.arange(1_000_000.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert x.sel(t=slice(500_000.0, 500_002.0)).tolist() == [
+        500000.0,
+        500001.0,
+    ]
+
+
+def test_sel_range_survives_a_large_origin_spacing_ratio():
+    # the same cancellation-error hazard fixed for point-selection (#110)
+    # applies to range bounds too, since they share the same closed-form
+    # primitives -- an epoch-seconds axis with millisecond spacing.
+    x = XTensor(
+        torch.arange(20.0),
+        names=("t",),
+        coords={"t": {"spacing": 0.001, "origin": 1.7e9}},
+    )
+    result = x.sel(t=slice(1700000000.005, 1700000000.010))
+    assert result.tolist() == [5.0, 6.0, 7.0, 8.0, 9.0]
+
+
 def test_sel_range_is_half_open_at_exact_tick_boundaries():
     # ticks 0,1,2,3,4 ; slice(1, 3) should include 1 but exclude 3
     x = XTensor(
