@@ -240,6 +240,42 @@ pattern is worth internalising rather than re-discovering.
    (vector `origin`!), and an advanced index raised a bare torch shape error.
    **Rule**: when an invariant is established at input time, check that every
    *re-keying* path (rename, swap_dims, merge) re-establishes it too.
+   `swap_dims` (Proposal 0005 step 4) sidesteps this trap entirely rather than
+   adding another check: it never re-keys a coordinate at all, only remaps
+   `dims` tuples through the axis substitution — "dimension vs non-dimension"
+   falls out structurally from `dims == (key,)` afterwards, so there's no
+   separate re-establishment step that could be forgotten.
+10. **A compact coordinate's "fits any size" trap isn't just a slicing
+    problem — every size-*changing* op needs the same guard.** #90: a compact
+    (`spacing`/`origin`) **dimension** coordinate on a size-1 axis silently
+    rebound to the new size after `expand`/`broadcast_to`, and a `keepdim=True`
+    reduction's compact coordinate rebound to the reduced axis's new size-1
+    result — both as if that many/that one position had always existed, with
+    no error, because a compact coordinate has no stored length to invalidate
+    the way a label already does. Both ops' `_carry` call had simply forgotten
+    to pass a `_coords` override at all, so the *old* (pre-op) `_coords` rode
+    through untouched and the `.coords` property's own `_bound(size)` call
+    freshly rebound it to whatever size the axis happened to be now — no
+    validation failure, just silently wrong values. **Rule**: when a
+    `_carry(...)` call for a size-changing op omits `_coords=`, check that's
+    actually intentional (no coordinate can possibly be affected) rather than
+    an oversight — the default (carry the old dict through) is exactly wrong
+    for a compact coordinate on any axis whose size just changed.
+11. **A syntactically-overloaded input (same shape, two meanings) needs a
+    type-level disambiguator, not a length- or position-based guess.** #93: a
+    bare 2-tuple spacing (`(1.0, 0.5)`, meant as a 2-component vector) is the
+    same Python shape as the existing `(value, unit)` convention (0001), and
+    `as_unitful` always parsed a 2-tuple as the latter — silently turning
+    `0.5` into a nonsense "unit" with no error until a much later, confusingly
+    unrelated shape-mismatch check. The fix wasn't a better error message
+    (that was tried first, in #88's review) but a real type-level rule: a
+    *unit* can only ever be `None`, a string, or the backend's own
+    `Unit`/`Quantity` — never a bare number — so a 2-tuple is `(value, unit)`
+    **iff** its second element is unit-*like* (`_units.looks_like_unit`),
+    otherwise it's a raw value. **Rule**: when one input shape is asked to
+    mean two different things, look for a type (not length/position)
+    invariant that already, unconditionally, distinguishes them — it usually
+    exists and fully resolves the ambiguity rather than just documenting it.
 
 - **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
   attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in
