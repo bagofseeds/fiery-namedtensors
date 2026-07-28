@@ -2,9 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — **for discussion** (a first slice is implemented; not merged) |
+| **Status** | Draft — **for discussion** (the first slice — regular coordinates — landed; irregular `.interp` (#73) landed too) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
+| **Updated** | 2026-07-28 — irregular (non-uniform) 1-D `.interp` landed ([#73](https://github.com/bagofseeds/fiery-xtensor/issues/73), nearest/linear via `searchsorted`) |
 | **Tracking** | [#66](https://github.com/bagofseeds/fiery-xtensor/issues/66); builds on Proposal 0001 (numeric coordinates) |
 
 ## Abstract
@@ -160,14 +161,22 @@ are usually resampled.
 - Several dims interpolate **independently** (axis by axis), matching xarray's
   orthogonal `.interp(x=…, y=…)`.
 
-### Regular coordinates first
+### Regular coordinates, then irregular (#73, landed)
 
-The first slice supports **regular** (compact `spacing`/`origin`) coordinates
-only — the affine value→index map is exact. Interpolation over an **irregular**
-(explicit, non-uniform) coordinate needs a monotonic value→index inversion
-(a searchsorted-style step) and is deferred to
-[#73](https://github.com/bagofseeds/fiery-xtensor/issues/73); calling `.interp`
-on one raises `NotImplementedError` for now.
+The first slice supported **regular** (compact `spacing`/`origin`) coordinates
+only — the affine value→index map is exact. Interpolation over an
+**irregular** (explicit, non-uniform) coordinate needed a monotonic
+value→index inversion instead of a closed-form affine one; that landed in
+[#73](https://github.com/bagofseeds/fiery-xtensor/issues/73) for `nearest`/
+`linear` (see "What #73 adds" below) — **exact**, via `torch.searchsorted` +
+a local linear inverse between the two bracketing ticks, the same
+piecewise-linear map those two methods already sample between. Higher orders
+(`"quadratic"`/`"cubic"`/…) on an irregular coordinate still raise
+`NotImplementedError`, pointing at
+[#81](https://github.com/bagofseeds/fiery-xtensor/issues/81) — a uniform-
+index-space spline basis (what `fiery.interpol.grid_pull` provides) isn't a
+true non-uniform spline in value space, so a real fix needs new capability in
+`fiery.interpol`, not just an xtensor-side inversion.
 
 ## What the first slice implements
 
@@ -178,17 +187,33 @@ on one raises `NotImplementedError` for now.
 - `.interp(method="linear", bound=None, extrapolate=None, **indexers)` —
   nearest built in; orders ≥ 1 via `fiery.interpol.grid_pull`; `interp_bound`
   (default `"replicate"`) and `interp_extrapolate` (default `True`) options
-  with per-call overrides; **regular coordinates only**.
+  with per-call overrides; **regular coordinates only** at this point.
 - The optional `fiery-xtensor[interp]` extra (the `fiery.interpol` backend).
 - Tests: nearest without the backend, linear/cubic with it, scalar-drops-axis,
   multi-axis preservation, unit conversion, gradient flow, `bound` option +
   override, and the irregular-coordinate guard.
 
+## What #73 adds
+
+- `.interp(method="nearest"|"linear", **indexers)` on an **irregular**
+  (explicit-values) 1-D coordinate: `torch.searchsorted` brackets each query
+  between two adjacent ticks (ascending, or a descending coordinate searched
+  via its reverse), then `k + (query − ticks[k]) / (ticks[k+1] − ticks[k])`
+  is the exact fractional index fed to the same `_interp_pull` the regular
+  path already uses.
+- The coordinate must be **strictly monotonic** (ascending or descending);
+  a non-monotonic one raises `ValueError` (no unique inverse otherwise).
+- **Differentiable** w.r.t. both the query and the coordinate's own values
+  (only the bracket *search* runs on detached copies — an index has no
+  useful gradient; the returned fraction is computed from the original,
+  gradient-carrying tensors).
+- Higher orders (`method` resolving to order ≥ 2) raise `NotImplementedError`
+  pointing at #81, rather than silently doing the uniform-index-space
+  approximation.
+
 ## Open questions (for discussion)
 
-1. **Irregular-coordinate interpolation** — the deferred half above
-   ([#73](https://github.com/bagofseeds/fiery-xtensor/issues/73)). Worth an
-   O(log n) searchsorted inversion, or is regular-only enough in practice?
+1. ~~**Irregular-coordinate interpolation**~~ — landed, see #73 above.
 2. **Range selection** on `.sel` — `x.sel(t=slice("1s", "5s"))` (a value range
    → a contiguous slice). Natural and useful; not in this slice.
 3. **`.sel` directional modes** — *resolved*: `floor`/`ceil` (value space) and

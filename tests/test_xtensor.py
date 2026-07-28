@@ -555,14 +555,103 @@ def test_interp_bound_option_and_override():
         assert got.item() == 4.0  # clamps
 
 
-def test_interp_irregular_coordinate_not_supported():
-    x = XTensor(
-        torch.arange(4.0),
+def test_interp_irregular_nearest_is_builtin_without_the_backend(monkeypatch):
+    # order-0 (nearest) needs no fiery.interpol, same as the regular case.
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = XTensor(  # value == index**2, ticks 0, 1, 4, 9 (irregular)
+        torch.tensor([0.0, 1.0, 4.0, 9.0]),
         names=("t",),
-        coords={"t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), unit="s")},
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
     )
-    with pytest.raises(NotImplementedError, match="irregular"):
-        x.interp(t=[2.0])
+    got = x.interp(t=[2.5, 8.0], method="nearest")
+    assert got.tolist() == [4.0, 9.0]  # nearest tick to 2.5 is 4, to 8 is 9
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        2.5,
+        8.0,
+    ]
+
+
+def test_interp_irregular_linear_computes_new_values():
+    pytest.importorskip("fiery.interpol")
+    # data 0, 10, 20, 30 at irregular ticks 0, 1, 4, 9 -- deliberately *not*
+    # the identity map, so a bracket-and-interpolate bug can't hide behind
+    # "the query happened to equal the answer".
+    x = XTensor(
+        torch.tensor([0.0, 10.0, 20.0, 30.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    # 0.5 is halfway between ticks 0 and 1 (positions 0 and 1) -> data 0..10
+    # 2.5 is 1.5/3 of the way between ticks 1 and 4 (positions 1 and 2)
+    got = x.interp(t=[0.5, 2.5])
+    assert got.tolist() == pytest.approx([5.0, 15.0])
+    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+        0.5,
+        2.5,
+    ]
+    # exact match on a tick is exact, not just "close"
+    assert x.interp(t=4.0).item() == pytest.approx(20.0)
+    # out-of-range clamps to the edge value (the "replicate" default bound,
+    # same as the regular-coordinate case) -- the fractional index itself
+    # still extrapolates past the end segment's slope (frac -1 and 3.2 for
+    # these queries), it's `bound` that then clamps it into range.
+    got_extrap = x.interp(t=[-1.0, 10.0])
+    assert got_extrap.tolist() == pytest.approx([0.0, 30.0])
+
+
+def test_interp_irregular_descending_coordinate():
+    pytest.importorskip("fiery.interpol")
+    x = XTensor(
+        torch.tensor([0.0, 10.0, 20.0, 30.0]),
+        names=("t",),
+        coords={"t": torch.tensor([9.0, 4.0, 1.0, 0.0])},  # descending
+    )
+    # 2.5 is 1.5/3 of the way between ticks 4 (index 1) and 1 (index 2)
+    assert x.interp(t=2.5).item() == pytest.approx(15.0)
+    assert x.interp(t=9.0).item() == pytest.approx(0.0)
+    assert x.interp(t=0.0).item() == pytest.approx(30.0)
+
+
+def test_interp_irregular_coordinate_must_be_monotonic():
+    x = XTensor(
+        torch.zeros(4),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 2.0, 1.0, 3.0])},
+    )
+    with pytest.raises(ValueError, match="strictly monotonic"):
+        x.interp(t=1.5)
+
+
+def test_interp_irregular_higher_order_is_not_implemented():
+    # higher orders need a true non-uniform spline (a uniform-index-space
+    # spline basis isn't cubic-in-value on non-uniform nodes); see #81.
+    x = XTensor(
+        torch.tensor([0.0, 1.0, 4.0, 9.0]),
+        names=("t",),
+        coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0])},
+    )
+    with pytest.raises(NotImplementedError, match="#81"):
+        x.interp(t=2.5, method="cubic")
+
+
+def test_interp_irregular_gradients_flow_through_query_and_values():
+    pytest.importorskip("fiery.interpol")
+    values = torch.tensor([0.0, 1.0, 4.0, 9.0], requires_grad=True)
+    x = XTensor(
+        torch.tensor([0.0, 1.0, 4.0, 9.0]), names=("t",), coords={"t": values}
+    )
+    q = torch.tensor(2.5, requires_grad=True)
+    x.interp(t=q).backward()
+    assert q.grad is not None and q.grad.item() != 0.0
+    assert values.grad is not None
+    # only the bracketing ticks (indices 1 and 2, ticks 1 and 4) get a
+    # nonzero gradient -- the query never touches ticks 0 or 3
+    assert values.grad[0].item() == 0.0
+    assert values.grad[3].item() == 0.0
+    assert values.grad[1].item() != 0.0
+    assert values.grad[2].item() != 0.0
 
 
 def test_interp_needs_a_numeric_coordinate():
