@@ -69,9 +69,9 @@ This page lists where the two diverge, in both directions.
   broadcasts positionally; a `None` *after* a named axis on differently-named
   operands raises (ambiguous). See [broadcasting](broadcasting.md).
 - **Selection vs interpolation are separate verbs.** Like xarray, `.sel` picks
-  an existing position (exact, or snapped by `mode`/`method` with a
-  `tolerance`) and `.interp` computes values off the grid, on both regular
-  and irregular numeric coordinates
+  an existing position (exact, or snapped by `mode` with a `tolerance`) and
+  `.interp` computes values off the grid, on both regular and irregular
+  numeric coordinates
   ([Proposal 0004](../proposals/0004-numeric-selection.md)).
 - **Name-as-`dim` is method-only.** `x.sum(dim="height")` works; the functional
   form `torch.sum(x, dim="height")` does not — a **PyTorch limitation** (its
