@@ -4677,6 +4677,33 @@ def test_deepcopy_preserves_requires_grad_as_a_fresh_leaf():
     assert copied.is_leaf
 
 
+def test_repr_of_an_int_dtype_tensor_does_not_recurse():
+    # issue #118: torch.Tensor.__format__ checks `type(self) is Tensor` and
+    # falls back to `object.__format__` (== str(self)) for any subclass --
+    # fatal specifically for an int-dtype tensor, whose repr formats each
+    # element via f"{value}" on a 0-dim slice of the same subclass, which
+    # then recurses back into the very same tensor-printing machinery
+    # forever (a float-dtype tensor's repr never hits that code path).
+    x = XTensor(torch.arange(3))
+    assert repr(x) == "XTensor([0, 1, 2])"
+    assert str(x) == "XTensor([0, 1, 2])"
+
+
+def test_format_of_a_zero_dim_tensor_extracts_the_scalar():
+    s_int = XTensor(torch.tensor(3))
+    assert f"{s_int}" == "3"
+    s_float = XTensor(torch.tensor(3.0))
+    assert f"{s_float}" == "3.0"
+    # a format spec should still apply to the extracted scalar, not to the
+    # tensor's own repr
+    assert f"{s_float:.2f}" == "3.00"
+
+
+def test_repr_of_a_multi_dim_int_tensor_with_names_does_not_recurse():
+    m = XTensor(torch.arange(6).reshape(2, 3), names=("row", "col"))
+    assert "XTensor" in repr(m)
+
+
 def test_zero_dim_tensor_index_behaves_like_the_equivalent_int():
     x = XTensor(
         torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
