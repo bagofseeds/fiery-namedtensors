@@ -9,7 +9,11 @@ from fiery.xtensor import (
     xmatrix,
     xvector,
 )
-from fiery.xtensor._tensors import _slice_labels, _torch_func
+from fiery.xtensor._tensors import (
+    _coerce_unitful_tensor,
+    _slice_labels,
+    _torch_func,
+)
 
 # Ops added in torch 1.8; the package registers them only when present, so on
 # an older torch (the 1.7 floor) the corresponding tests are skipped.
@@ -807,6 +811,57 @@ def test_learnable_spacing_keeps_its_gradient():
         )
         x.coords["t"]["values"].sum().backward()
         assert leaf.grad.item() == 10.0  # d/dstep sum(i*step) = 0+1+2+3+4
+
+
+def test_coerce_unitful_tensor_from_a_bare_scalar():
+    out = _coerce_unitful_tensor(2.0, "mm")
+    assert isinstance(out, XTensor)
+    assert out.item() == 2.0
+    assert out.unit == "mm"
+    assert not out.requires_grad
+
+
+def test_coerce_unitful_tensor_does_not_force_a_float_dtype():
+    # must not change the input's natural dtype (review comment on #112):
+    # an int spacing/origin stays int64, matching what Unitful's current
+    # do-nothing storage already lets downstream arithmetic produce.
+    assert _coerce_unitful_tensor(2, "").dtype == torch.int64
+    assert _coerce_unitful_tensor(2.0, "").dtype == torch.get_default_dtype()
+
+
+def test_coerce_unitful_tensor_preserves_the_graph_of_an_existing_tensor():
+    # the torch.tensor(existing_tensor) footgun: it always copies, silently
+    # returning requires_grad=False even when the input required grad. This
+    # must go through the as_subclass-based (torch.as_tensor-like) path
+    # instead, which never detaches.
+    leaf = torch.tensor(2.0, requires_grad=True)
+    out = _coerce_unitful_tensor(leaf, "mm")
+    assert out.requires_grad
+    assert out.data_ptr() == leaf.data_ptr()  # same storage, no copy at all
+    (out.as_subclass(torch.Tensor) * 3).sum().backward()
+    assert leaf.grad.item() == 3.0
+
+
+def test_coerce_unitful_tensor_preserves_the_graph_across_a_dtype_conversion():
+    # a genuine dtype conversion still has to happen (float32 -> float64),
+    # so it can't be the *same* tensor -- but it must stay a differentiable
+    # op, not a detaching copy.
+    leaf = torch.tensor(2.0, dtype=torch.float32, requires_grad=True)
+    out = _coerce_unitful_tensor(leaf.to(torch.float64), "mm")
+    assert out.requires_grad
+    assert out.dtype == torch.float64
+    (out.as_subclass(torch.Tensor) * 5).sum().backward()
+    assert leaf.grad.item() == 5.0
+
+
+def test_coerce_unitful_tensor_from_a_plain_non_xtensor_tensor():
+    leaf = torch.tensor(3.0, requires_grad=True)
+    out = _coerce_unitful_tensor(leaf, "s")
+    assert isinstance(out, XTensor)
+    assert out.unit == "s"
+    assert out.requires_grad
+    (out.as_subclass(torch.Tensor) * 2).sum().backward()
+    assert leaf.grad.item() == 2.0
 
 
 def test_spacing_unitful_converts():

@@ -1497,6 +1497,37 @@ class Coordinate(_units.MagicDict):
         return out
 
 
+def _coerce_unitful_tensor(value: tx.Any, unit: tx.Any) -> XTensor:
+    """
+    Coerce a unitful **value** (a bare Python number, a plain `Tensor`, or an
+    `XTensor`) into a real `XTensor` carrying `unit` -- **graph-safe**: an
+    already-a-tensor `value` keeps its exact autograd history (same storage,
+    since no dtype/device conversion is ever requested here), never a
+    detaching copy.
+
+    This exists to replace `Unitful`'s bare-scalar-or-tensor storage with a
+    uniform `XTensor` representation without silently severing a learnable
+    `spacing`/`origin`'s gradient -- the classic footgun here is
+    `torch.tensor(existing_tensor)`, which PyTorch itself warns about: it
+    always **copies**, silently returning a fresh, non-differentiable leaf
+    (`requires_grad=False`, no `grad_fn`) even when the input required grad.
+
+    `torch.as_tensor(value)` with no `dtype=`/`device=` is a strict identity
+    passthrough for an already-a-tensor `value` -- the *same object*, subclass
+    and all (no conversion is ever requested, so there's no path where it
+    would drop `XTensor`-ness or the graph) -- and constructs a fresh tensor
+    for a bare Python scalar (which was never part of a graph to begin with).
+    Either way, wrapping the result in `XTensor(..., unit=unit)` -- itself
+    graph-safe, built on `as_subclass` -- is what actually re-establishes the
+    (possibly new) `unit`; a bare scalar's dtype is left to `as_tensor`'s own
+    inference (an `int` stays `int64`, a `float` becomes `get_default_dtype()`
+    -- both match what `Unitful`'s current do-nothing storage already leaves
+    downstream arithmetic to produce, so this doesn't change existing
+    behaviour for either).
+    """
+    return XTensor(torch.as_tensor(value), unit=unit)
+
+
 def _as_unitful(obj: tx.Any) -> tx.Any:
     """Coerce a spacing/origin input to a `Unitful`, preserving a tensor."""
     if isinstance(obj, XTensor):
