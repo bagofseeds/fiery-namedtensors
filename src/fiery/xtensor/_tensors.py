@@ -1950,7 +1950,9 @@ def _selector_value(selector: tx.Any, unit: tx.Optional[str]) -> float:
     """
     A numeric selector as a plain float in the coordinate's position `unit`. A
     bare number is taken as already in that unit; a unitful selector (`"2mm"`,
-    `(2, "mm")`, a pint quantity, ...) is converted under an active backend.
+    `(2, "mm")`, a pint quantity, ...) has its magnitude/unit split regardless
+    of a backend -- only the actual **conversion** into a *different* unit
+    (e.g. `"2000ms"` onto a `"s"` coordinate) needs one active.
     """
     if isinstance(selector, (int, float)):
         return float(selector)

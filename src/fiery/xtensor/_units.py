@@ -14,6 +14,8 @@ unyt) is a matter of teaching these functions a new name.
 
 from __future__ import annotations
 
+import re
+
 import typing_extensions as tx
 
 from fiery.xtensor._options import get_option
@@ -199,12 +201,27 @@ class Unitful(MagicDict):
         return Unitful(value=self["value"] * scale, unit=target)
 
 
+#: A leading numeric literal (optional sign, decimal, exponent) followed by
+#: whatever's left (the unit suffix, possibly empty/whitespace-only).
+_VALUE_UNIT_RE = re.compile(
+    r"^\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(.*)$"
+)
+
+
 def _parse_unit_string(text: str) -> tx.Tuple[tx.Any, str]:
     """
-    `"0.5mm"` -> `(0.5, "mm")`, `"mm"` -> `(1, "mm")`. A value+unit string
-    needs a backend to parse; without one the whole string is an opaque unit.
+    `"0.5mm"` -> `(0.5, "mm")`, `"mm"` -> `(1, "mm")`. With a backend, pint
+    parses the full value+unit grammar (algebra, aliases, ...). Without one,
+    a regex splits a leading numeric literal from the unit suffix -- not a
+    real unit parser, but enough to not silently discard the magnitude the
+    way unconditionally returning `(1, text)` used to: `"0.5mm"` no longer
+    becomes `(1, "0.5mm")`, just `(1, text)` for a string with no leading
+    number at all (a bare unit, e.g. `"mm"`).
     """
     if active() != "pint":
+        match = _VALUE_UNIT_RE.match(text)
+        if match:
+            return float(match.group(1)), match.group(2).strip()
         return 1, text
     _, ureg = _pint()
     try:
