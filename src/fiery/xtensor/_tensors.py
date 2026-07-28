@@ -9,6 +9,7 @@ from __future__ import annotations
 # stdlib
 import copy
 import enum
+import math
 from functools import wraps
 
 # dependencies
@@ -2074,6 +2075,15 @@ def _positions_to_index(positions: list) -> tx.Any:
 #: Relative tolerance for an "exact" numeric-coordinate match (floats).
 _EXACT_MATCH_REL = 1e-6
 
+#: Relative epsilon guarding the closed-form `.sel` index computation
+#: (`_closed_form_sel_index`) against floating-point noise from the
+#: `(value - origin) / spacing` division -- deliberately far smaller than
+#: `_EXACT_MATCH_REL` (a user-facing "close enough" default): this only
+#: needs to absorb a few ULPs of division/subtraction rounding (empirically
+#: ~1e-16 relative), not treat a genuinely different value like `2.9999999`
+#: (1e-7 away from `3`) as if it were exactly on a tick.
+_IDX_ROUNDING_EPS_REL = 1e-9
+
 
 def _selector_value(selector: tx.Any, unit: tx.Optional[str]) -> float:
     """
@@ -2159,6 +2169,117 @@ def _pick_sel_index(
     return int(cand.argmin())
 
 
+def _closed_form_sel_index(
+    idx_float: float, mode: str, ascending: bool, size: int
+) -> tx.Optional[int]:
+    """
+    The integer index `mode` selects for `idx_float` (a target already
+    converted to fractional **index** space -- `(value - origin) / spacing`),
+    directly -- no search, no materialised array (issue #110). Mirrors
+    `_pick_sel_index`'s semantics exactly:
+
+    - `round` always returns *some* index (clamped into `[0, size)`), matching
+      `(values - target).abs().argmin()` never failing to find a nearest
+      tick; an exact tie breaks toward the **lower** index, matching
+      `argmin`'s first-occurrence tie-break (`ceil(idx_float - 0.5)` is
+      round-half-*down*, independent of ascending/descending -- `argmin`'s
+      scan order is by index, not by value, so the tie-break direction
+      doesn't flip with the coordinate's direction either).
+    - `prev`/`next` resolve to `floor`/`ceil` per direction, same as the
+      search-based path.
+    - `floor`/`ceil` **clamp** (not `None`) when `idx_float` overshoots on the
+      side every tick already satisfies -- e.g. `floor` with a target beyond
+      the whole coordinate means *every* tick is `<= target`, so the answer
+      is simply the last one, not "no floor tick". Only overshooting on the
+      *unsatisfiable* side is `None` (mirrors `_pick_sel_index`'s empty-mask
+      case). Which raw op (`floor`/`ceil` of `idx_float`) is the "clamp-up"
+      vs "clamp-down" side follows from which inequality it solves, not from
+      `mode` directly -- worked out once, symbolically, per direction.
+    - A small relative epsilon nudges `floor`/`ceil`/the round tie-break
+      before rounding, so a target that lands (up to float rounding noise)
+      exactly on a tick resolves the same way computing `origin + i*spacing`
+      and comparing directly would -- dividing to get `idx_float` is more
+      sensitive to this than the direct multiply-and-compare the search path
+      uses, right at an integer boundary.
+    """
+    if mode == "prev":
+        mode = "floor" if ascending else "ceil"
+    elif mode == "next":
+        mode = "ceil" if ascending else "floor"
+    eps = _IDX_ROUNDING_EPS_REL * max(1.0, abs(idx_float))
+    if mode == "round":
+        j = math.ceil(idx_float - 0.5 - eps)
+        return max(0, min(size - 1, j))
+    # floor (largest tick <= target): ascending -> floor(idx_float);
+    # ceil (smallest tick >= target): ascending -> ceil(idx_float);
+    # descending swaps both (dividing by a negative spacing flips the
+    # inequality direction).
+    floor_like = mode == "floor" if ascending else mode == "ceil"
+    if floor_like:
+        j = math.floor(idx_float + eps)
+        return min(size - 1, j) if j >= 0 else None
+    j = math.ceil(idx_float - eps)
+    return max(0, j) if j < size else None
+
+
+def _numeric_select_compact(
+    coord: "Coordinate",
+    selector: tx.Any,
+    mode: str,
+    tolerance: tx.Any,
+    name: str,
+) -> tx.Any:
+    """
+    `_numeric_select` for a **compact** coordinate: `origin`/`spacing` give an
+    O(1) closed-form inverse (`index = (value - origin) / spacing`), so this
+    never materialises `["values"]` or searches it (issue #110) -- the whole
+    point of the compact representation is to avoid exactly that for a large
+    regular grid. `coord` must already be size-bound (`coord._bound(size)`,
+    what `.coords` always returns), so `coord._size` is available.
+    """
+    spacing = dict.__getitem__(coord, "spacing")
+    origin = dict.get(coord, "origin")
+    unit = spacing["unit"]
+    step = float(spacing["value"])
+    base = float(origin["value"]) if origin is not None else 0.0
+    size = coord._size
+    is_many = isinstance(selector, list)
+    wanted = list(selector) if is_many else [selector]
+    tol = None if tolerance is None else _selector_value(tolerance, unit)
+    ascending = step > 0
+    positions = []
+    for one in wanted:
+        target = _selector_value(one, unit)
+        if step == 0:
+            # degenerate: every tick sits at `base` -- round always matches
+            # it (index 0, the same tie-break `argmin` gives an all-equal
+            # array); floor/ceil are valid only from the matching side.
+            eff_mode = "floor" if mode in ("prev", "next") else mode
+            if (
+                eff_mode == "round"
+                or (eff_mode == "floor" and base <= target)
+                or (eff_mode == "ceil" and base >= target)
+            ):
+                j = 0
+            else:
+                j = None
+        else:
+            idx_float = (target - base) / step
+            j = _closed_form_sel_index(idx_float, mode, ascending, size)
+        if j is None:
+            raise ValueError(f"sel: no {mode} tick for {one!r} on {name!r}")
+        gap = abs(base + j * step - target)
+        if tol is not None:
+            cap = tol if tol > 0 else _EXACT_MATCH_REL * max(1.0, abs(target))
+            if gap > cap:
+                raise ValueError(
+                    f"sel: {mode} tick for {one!r} on {name!r} is {gap} away, "
+                    f"over tolerance {tol}"
+                )
+        positions.append(j)
+    return positions if is_many else positions[0]
+
+
 def _numeric_select(
     coord: "Coordinate",
     selector: tx.Any,
@@ -2170,8 +2291,12 @@ def _numeric_select(
     Resolve a value-based selector against a numeric `Coordinate` to integer
     position(s) (Proposal 0004), snapping per `mode` (see `sel`). `tolerance`
     (a delta in the position unit) caps the gap; `None` is unbounded, `0` is
-    exact (up to float epsilon).
+    exact (up to float epsilon). A **compact** coordinate resolves in closed
+    form (`_numeric_select_compact`, issue #110); an **explicit** one
+    materialises and searches, below.
     """
+    if coord._compact():
+        return _numeric_select_compact(coord, selector, mode, tolerance, name)
     materialised = coord["values"]
     values = materialised.as_subclass(Tensor)
     unit = materialised.unit

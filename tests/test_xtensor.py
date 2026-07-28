@@ -1113,6 +1113,74 @@ def test_sel_modes_split_value_vs_tickorder_on_descending():
     assert d.sel(t=5.0, mode="next").item() == 20.0  # == floor here
 
 
+def test_sel_compact_descending_modes_split_value_vs_tickorder():
+    # same as the explicit-coordinate version above, but compact (negative
+    # spacing) -- exercises the closed-form path's ascending/descending swap.
+    d = XTensor(
+        torch.arange(5.0) * 10,
+        names=("t",),
+        coords={"t": {"spacing": -2.0, "origin": 8.0}},  # ticks 8,6,4,2,0
+    )
+    assert d.sel(t=5.0, mode="floor").item() == 20.0  # value 4
+    assert d.sel(t=5.0, mode="ceil").item() == 10.0  # value 6
+    assert d.sel(t=5.0, mode="prev").item() == 10.0  # == ceil here
+    assert d.sel(t=5.0, mode="next").item() == 20.0  # == floor here
+
+
+def test_sel_compact_never_materialises(monkeypatch):
+    # the whole point of #110: resolving *which* position(s) a scalar
+    # selector targets on a compact coordinate must be O(1), never touching
+    # Coordinate._materialise / a search over the full array. (A *list*
+    # selector is a separate matter -- carrying the resulting several
+    # positions through __getitem__ as an advanced index always materialises
+    # the coordinate for the surviving positions, compact or not; that's
+    # _slice_coordinate's pre-existing behaviour, not part of this path.)
+    def boom(self):
+        raise AssertionError("materialise() called -- O(1) fast path bypassed")
+
+    monkeypatch.setattr(Coordinate, "_materialise", boom)
+    x = XTensor(
+        torch.arange(1_000_000.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert x.sel(t=500_000.5, mode="round").item() == 500000.0
+    assert x.sel(t=500_000.5, mode="floor").item() == 500000.0
+    assert x.sel(t=500_000.5, mode="ceil").item() == 500001.0
+
+
+def test_sel_compact_floor_ceil_clamp_beyond_the_whole_coordinate():
+    # a target beyond every tick still has a floor (the last tick) / ceil
+    # (the first tick) match -- it's not "no tick", unlike a target beyond
+    # the coordinate on the *unsatisfiable* side, which is.
+    x = XTensor(
+        torch.arange(5.0) * 10,  # ticks 0,1,2,3,4
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    assert x.sel(t=100.0, mode="floor").item() == 40.0  # clamps to the last
+    with pytest.raises(ValueError, match="no ceil tick"):
+        x.sel(t=100.0, mode="ceil")  # nothing is >= 100
+    assert x.sel(t=-100.0, mode="ceil").item() == 0.0  # clamps to the first
+    with pytest.raises(ValueError, match="no floor tick"):
+        x.sel(t=-100.0, mode="floor")  # nothing is <= -100
+
+
+def test_sel_compact_exact_tick_is_robust_to_division_rounding():
+    # (target - origin) / spacing can land a hair off an exact integer due
+    # to floating-point division noise even when the target IS exactly on a
+    # tick -- must still resolve exactly, the same way the direct
+    # origin + i*spacing comparison the search path uses would.
+    x = XTensor(
+        torch.arange(8.0),
+        names=("t",),
+        coords={"t": {"spacing": 0.3, "origin": -1.0}},
+    )
+    assert x.sel(t=-0.7, mode="ceil").item() == 1.0  # exact tick (index 1)
+    assert x.sel(t=-0.7, mode="floor").item() == 1.0
+    assert x.sel(t=-0.7).item() == 1.0  # bare (exact, tolerance=0) sel too
+
+
 def test_sel_mode_and_method_are_exclusive_and_validated():
     x = XTensor(
         torch.arange(5.0),
