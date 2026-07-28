@@ -1617,6 +1617,121 @@ def test_rename_moves_coordinates_to_the_new_dim_name():
     assert z.coords == {"feature": ("w", "x", "y", "z")}
 
 
+def test_swap_dims_promotes_a_label_and_demotes_the_old_index():
+    x = XTensor(
+        torch.arange(6.0),
+        names=("time",),
+        coords={
+            "time": (0.0, 0.5, 1.0, 1.5, 2.0, 2.5),
+            "label": ("time", ("a", "b", "c", "d", "e", "f")),
+        },
+    )
+    y = x.swap_dims({"time": "label"})
+    assert y.names == ("label",)
+    assert y.coords == {
+        "time": (0.0, 0.5, 1.0, 1.5, 2.0, 2.5),
+        "label": ("a", "b", "c", "d", "e", "f"),
+    }
+    assert y.sel(label="c").item() == 2.0
+    with pytest.raises(ValueError, match="not an index"):
+        y.sel(time=1.0)
+
+
+def test_swap_dims_by_keyword():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": (10.0, 20.0, 30.0, 40.0),
+            "label": ("t", ("a", "b", "c", "d")),
+        },
+    )
+    assert x.swap_dims(t="label").names == ("label",)
+
+
+def test_swap_dims_demotes_a_compact_coordinate_and_it_still_reslices():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": {"spacing": 1.0, "origin": 0.0},
+            "label": ("t", ("a", "b", "c", "d")),
+        },
+    )
+    y = x.swap_dims({"t": "label"})
+    assert y.names == ("label",)
+    # the demoted compact coordinate keeps its old key and rides the renamed
+    # axis, and still re-slices exactly (same machinery as a multi-dim affine
+    # coordinate, generalised to a single dim).
+    values = y[:2].coords["t"]["values"].as_subclass(torch.Tensor)
+    assert values.tolist() == [0.0, 1.0]
+
+
+def test_swap_dims_axis_descriptor_follows_the_renamed_axis():
+    x = XTensor(
+        torch.arange(4.0),
+        axes=[{"name": "t", "type": "time", "unit": "s"}],
+        coords={
+            "t": (0.0, 1.0, 2.0, 3.0),
+            "label": ("t", ("a", "b", "c", "d")),
+        },
+    )
+    y = x.swap_dims({"t": "label"})
+    assert y.axes == ({"name": "label", "type": "time", "unit": "s"},)
+
+
+def test_swap_dims_rejects_a_nonexistent_dim():
+    x = XTensor(torch.zeros(3), names=("t",))
+    with pytest.raises(ValueError, match="no axis named"):
+        x.swap_dims({"nope": "label"})
+
+
+def test_swap_dims_rejects_a_target_that_is_not_a_coordinate():
+    x = XTensor(torch.zeros(3), names=("t",))
+    with pytest.raises(ValueError, match="must be an existing"):
+        x.swap_dims({"t": "label"})
+
+
+def test_swap_dims_rejects_a_multi_dim_coordinate_as_target():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=("y", "x"),
+        coords={"lat": (("y", "x"), {"spacing": ([1.0, 0.5], "mm")})},
+    )
+    with pytest.raises(ValueError, match="must be an existing"):
+        x.swap_dims({"y": "lat"})
+
+
+def test_swap_dims_rejects_a_new_name_colliding_with_an_axis():
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=("y", "x"),
+        coords={"y2": ("y", ("a", "b", "c"))},
+    )
+    with pytest.raises(ValueError, match="already an axis name"):
+        x.swap_dims({"y": "x"})
+
+
+def test_swap_dims_in_place_returns_self():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": (0.0, 1.0, 2.0, 3.0),
+            "label": ("t", ("a", "b", "c", "d")),
+        },
+    )
+    out = x.swap_dims_({"t": "label"})
+    assert out is x
+    assert x.names == ("label",)
+
+
+def test_swap_dims_empty_mapping_is_a_noop():
+    x = XTensor(torch.zeros(3), names=("t",))
+    assert x.swap_dims({}) is x
+    assert x.swap_dims() is x
+
+
 # ----------------------------------------------------------------------
 # builtin named-tensor API, re-implemented self-managed
 # ----------------------------------------------------------------------

@@ -788,6 +788,101 @@ class XTensor(ExtendedTensor):
         self._axis_names = new_names
         return self
 
+    def _swap_dims_state(self, dims_map: dict) -> tuple:
+        """
+        Validate a `swap_dims` mapping and compute its `(new_names,
+        new_coords)`. Each `{old_dim: new_name}` pair promotes `new_name` --
+        an existing non-dimension coordinate riding `old_dim` **alone** -- to
+        be `old_dim`'s replacement index, renaming the axis to `new_name` in
+        the process (xarray's `swap_dims`).
+
+        This is *not* a rename with extra steps: `rename` would re-key
+        `old_dim`'s own dimension coordinate onto `new_name` too, colliding
+        with the very coordinate being promoted (the same collision `rename`
+        already raises on). `swap_dims` never re-keys a coordinate -- it only
+        remaps `dims` tuples through the axis substitution, exactly like
+        `rename` does for a coordinate's `dims` -- so which entry counts as
+        *the* dimension coordinate falls out structurally afterwards (`dims
+        == (key,)`): `new_name`'s entry becomes `(new_name,)` (now the
+        index), and `old_dim`'s former entry becomes `(new_name,)` too but
+        keyed `old_dim` (now a rider, since its key no longer matches its own
+        `dims`) -- exactly xarray's "old index survives under its old name,
+        riding the renamed axis" behaviour.
+        """
+        names = self.names
+        stored = self.__dict__.get("_coords") or {}
+        for old_dim, new_name in dims_map.items():
+            if old_dim not in names:
+                raise ValueError(f"swap_dims: no axis named {old_dim!r}")
+            if new_name in names and new_name != old_dim:
+                raise ValueError(
+                    f"swap_dims: {new_name!r} is already an axis name"
+                )
+            entry = stored.get(new_name)
+            if entry is None or entry[0] != (old_dim,):
+                raise ValueError(
+                    f"swap_dims: {new_name!r} must be an existing "
+                    f"non-dimension coordinate riding {old_dim!r} alone, "
+                    "to be promoted to its index"
+                )
+        new_names = tuple(dims_map.get(n, n) for n in names)
+        seen = [n for n in new_names if n is not None]
+        if len(set(seen)) != len(seen):
+            raise ValueError(
+                "swap_dims: the result would have duplicate axis names "
+                f"{tuple(new_names)}"
+            )
+        new_coords = {
+            key: (tuple(dims_map.get(d, d) for d in dims), coord)
+            for key, (dims, coord) in stored.items()
+        }
+        return new_names, new_coords
+
+    def swap_dims(
+        self, dims_map: tx.Optional[dict] = None, **kwargs: str
+    ) -> tx.Self:
+        """
+        Promote a non-dimension coordinate to be its dim's index, demoting
+        the previous index to ride along under its old key -- xarray's
+        `swap_dims`. `{old_dim: new_name}` (positionally or as keywords):
+        `new_name` must already be a non-dimension coordinate riding
+        `old_dim` alone (`coords={..., new_name: (old_dim, values)}`).
+
+        ```python
+        da.swap_dims({"time": "label"}).sel(label="c")   # promote, then select
+        ```
+
+        The axis itself is renamed `old_dim -> new_name` (so `.names` and any
+        axis descriptor follow, like [`rename`][fiery.xtensor.XTensor.rename]);
+        every other coordinate riding `old_dim` keeps its own key and simply
+        rides the renamed axis.
+        """
+        mapping = dict(dims_map or {})
+        mapping.update(kwargs)
+        if not mapping:
+            return self
+        new_names, new_coords = self._swap_dims_state(mapping)
+        out = self.as_subclass(type(self))
+        out.__dict__.update(self.__dict__)
+        out._coords = new_coords
+        out._axis_meta = self._remap_named("_axis_meta", new_names)
+        out._axis_names = new_names
+        return out
+
+    def swap_dims_(
+        self, dims_map: tx.Optional[dict] = None, **kwargs: str
+    ) -> tx.Self:
+        """In-place variant of `swap_dims`."""
+        mapping = dict(dims_map or {})
+        mapping.update(kwargs)
+        if not mapping:
+            return self
+        new_names, new_coords = self._swap_dims_state(mapping)
+        self._coords = new_coords
+        self._axis_meta = self._remap_named("_axis_meta", new_names)
+        self._axis_names = new_names
+        return self
+
     # -- indexing / selection ---------------------------------------------
 
     def _resolve_label_slicer(self, slicer: SmartSlicerT) -> SmartSlicerT:
