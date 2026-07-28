@@ -821,6 +821,14 @@ def test_coerce_unitful_tensor_from_a_bare_scalar():
     assert not out.requires_grad
 
 
+def test_coerce_unitful_tensor_does_not_force_a_float_dtype():
+    # must not change the input's natural dtype (review comment on #112):
+    # an int spacing/origin stays int64, matching what Unitful's current
+    # do-nothing storage already lets downstream arithmetic produce.
+    assert _coerce_unitful_tensor(2, "").dtype == torch.int64
+    assert _coerce_unitful_tensor(2.0, "").dtype == torch.get_default_dtype()
+
+
 def test_coerce_unitful_tensor_preserves_the_graph_of_an_existing_tensor():
     # the torch.tensor(existing_tensor) footgun: it always copies, silently
     # returning requires_grad=False even when the input required grad. This

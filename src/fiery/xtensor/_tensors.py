@@ -1517,13 +1517,17 @@ def _coerce_unitful_tensor(value: tx.Any, unit: tx.Any) -> XTensor:
     genuine differentiable conversion op that still backpropagates to the
     original leaf. `XTensor(value, unit=unit)` reaches that same safe path
     for both a plain `Tensor` and an `XTensor` input, so only a bare Python
-    scalar (never itself part of a graph) needs an explicit `torch.as_tensor`.
+    scalar (never itself part of a graph) needs an explicit `torch.as_tensor`
+    -- with no `dtype=` override, so it infers the same dtype `Unitful`'s
+    current do-nothing storage already leaves downstream arithmetic to
+    produce (an all-`int` `spacing`/`origin` stays `int64`, matching
+    `torch.as_tensor`'s own inference; a bare Python `float` becomes
+    `get_default_dtype()`, which is what an unconstrained `torch.as_tensor`
+    call already does for a float with no explicit dtype at all).
     """
     if isinstance(value, Tensor):
         return XTensor(value, unit=unit)
-    return XTensor(
-        torch.as_tensor(value, dtype=torch.get_default_dtype()), unit=unit
-    )
+    return XTensor(torch.as_tensor(value), unit=unit)
 
 
 def _as_unitful(obj: tx.Any) -> tx.Any:
