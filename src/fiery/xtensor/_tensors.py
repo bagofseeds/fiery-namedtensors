@@ -1354,11 +1354,47 @@ def _as_unitful_vector(obj: tx.Any, ndims: int) -> tx.Any:
     else:
         vec = torch.as_tensor(value, dtype=torch.get_default_dtype())
     if vec.ndim != 1 or vec.shape[0] != ndims:
+        hint = ""
+        if vec.ndim == 0 and isinstance(obj, tuple) and len(obj) == ndims:
+            # the classic ambiguity: a bare `(v0, v1)` is indistinguishable
+            # from the ordinary `(value, unit)` spelling, so it was parsed as
+            # one scalar value with a (nonsense) "unit" of `v1` -- point at
+            # the fix rather than leaving that silently wrong turn a mystery.
+            hint = (
+                " -- if you meant several separate components, wrap them "
+                "in a list/tensor, not a bare tuple: e.g. "
+                f"{{'spacing': ({list(obj)!r}, unit)}}, not "
+                f"{{'spacing': {obj!r}}}"
+            )
         raise ValueError(
             "coords: an affine coordinate's spacing must have one component "
-            f"per dim ({ndims} here), got shape {tuple(vec.shape)}"
+            f"per dim ({ndims} here), got shape {tuple(vec.shape)}{hint}"
         )
     return _units.Unitful(value=vec, unit=unitful["unit"])
+
+
+def _as_unitful_origin(obj: tx.Any) -> tx.Any:
+    """
+    Coerce a coordinate's `origin` input to a `Unitful`, requiring it be a
+    **scalar** -- unlike `spacing`, `origin` is always a single value shared
+    across every spanned dim, even for a multi-dim affine coordinate (step
+    3). Catches a non-scalar origin here with a clear message instead of
+    deferring to an opaque broadcast-shape error at materialisation time.
+    """
+    unitful = _as_unitful(obj)
+    value = unitful["value"]
+    if isinstance(value, Tensor):
+        shape = tuple(value.shape)
+    elif isinstance(value, (list, tuple)):
+        shape = (len(value),)
+    else:
+        shape = ()
+    if shape:
+        raise ValueError(
+            f"coords: a coordinate's origin must be a scalar, got shape "
+            f"{shape}"
+        )
+    return unitful
 
 
 def _is_compact_coord(spec: tx.Any) -> bool:
@@ -1387,7 +1423,7 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
     if "spacing" in spec:
         coord["spacing"] = _as_unitful(spec["spacing"])
     if "origin" in spec:
-        coord["origin"] = _as_unitful(spec["origin"])
+        coord["origin"] = _as_unitful_origin(spec["origin"])
     return coord
 
 
@@ -1406,7 +1442,7 @@ def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
     coord = Coordinate()
     coord["spacing"] = _as_unitful_vector(spec["spacing"], ndims)
     if "origin" in spec:
-        coord["origin"] = _as_unitful(spec["origin"])
+        coord["origin"] = _as_unitful_origin(spec["origin"])
     return coord
 
 
@@ -1562,6 +1598,47 @@ def _coords_dropping(input: XTensor, *dims: tx.Optional[str]) -> dict:
         for key, (entry_dims, coord) in stored.items()
         if key in valid and not touched & set(entry_dims)
     }
+
+
+def _fold_affine_coords(
+    input: XTensor, squeezed: tuple, result_names: tuple
+) -> dict:
+    """
+    `input`'s coordinates after squeezing away `squeezed` (dim names, all of
+    size 1 by `squeeze`'s own contract). A compact **affine** coordinate
+    (Proposal 0005 step 3) that spans one or more of them folds those dims
+    out **exactly** -- the same fold `_slice_affine_coordinate` already does
+    for an integer index, reused here by treating each squeezed dim as index
+    `0` (its only position) and every other dim as a full pass-through slice
+    -- rather than being dropped outright the way `_coords_for` would (a
+    size-1 axis is exact to fold, not merely "conservative to keep"). Labels
+    and explicit coordinates aren't foldable this way, so they fall back to
+    the ordinary survives-or-drops rule.
+    """
+    squeezed_set = set(squeezed)
+    valid = _coords_of(input)
+    stored = input.__dict__.get("_coords") or {}
+    kept = {name for name in result_names if name is not None}
+    names = input.names
+    out = {}
+    for key, (dims, coord) in stored.items():
+        if key not in valid:
+            continue
+        touched = squeezed_set & set(dims)
+        if not touched:
+            if all(dim in kept for dim in dims):
+                out[key] = (dims, coord)
+            continue
+        if not (isinstance(coord, Coordinate) and coord._compact()):
+            continue  # labels / explicit: conservatively dropped, as before
+        if any(dim not in kept and dim not in squeezed_set for dim in dims):
+            continue  # some other, non-squeezed dim didn't survive either
+        pieces = {dim: (0 if dim in touched else slice(None)) for dim in dims}
+        sizes = {dim: input.shape[names.index(dim)] for dim in dims}
+        result = _slice_affine_coordinate(coord, dims, pieces, sizes)
+        if result is not None:
+            out[key] = result
+    return out
 
 
 def _is_label_index(value: tx.Any) -> bool:
@@ -1974,6 +2051,12 @@ def _slice_affine_coordinate(
     because every dim it spanned was folded away by integer indices, leaving
     no axis for it to ride on).
     """
+    if all(
+        isinstance(pieces[dim], slice)
+        and pieces[dim].indices(sizes[dim]) == (0, sizes[dim], 1)
+        for dim in dims
+    ):
+        return dims, coord  # every dim is a full no-op slice; nothing to do
     spacing = dict.__getitem__(coord, "spacing")
     origin = dict.get(coord, "origin")
     unit = spacing["unit"]
@@ -2057,16 +2140,31 @@ def _(input: XTensor, dim: int | str | tx.Sequence | None = None) -> XTensor:
         Tensor.squeeze(input) if dim is None else Tensor.squeeze(input, dim)
     )
     if dim is None:
+        squeezed_positions = [
+            i for i, size in enumerate(input.shape) if size == 1
+        ]
         names = [name for name, size in zip(names, input.shape) if size != 1]
     else:
         if isinstance(dim, int):
             dim = (dim,)
         dim = [d + ndim if d < 0 else d for d in dim]
+        squeezed_positions = list(dim)
         for d in sorted(dim, reverse=True):
             names.pop(d)
     names = tuple(names)
+    # a squeezed dim is always size 1, so a compact **affine** coordinate
+    # spanning it folds out exactly (Proposal 0005 step 3), rather than being
+    # dropped the way `_coords_for` would.
+    squeezed_names = tuple(
+        input.names[i]
+        for i in squeezed_positions
+        if input.names[i] is not None
+    )
     return _carry(
-        input, result, _axis_names=names, _coords=_coords_for(input, names)
+        input,
+        result,
+        _axis_names=names,
+        _coords=_fold_affine_coords(input, squeezed_names, names),
     )
 
 

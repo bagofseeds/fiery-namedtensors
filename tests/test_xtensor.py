@@ -212,6 +212,38 @@ def test_affine_coordinate_spacing_must_match_dims():
         )
 
 
+def test_affine_coordinate_ambiguous_tuple_spacing_hints_at_a_list():
+    # a bare `(v0, v1)` is indistinguishable from the ordinary `(value,
+    # unit)` spelling, so it's parsed as one scalar value -- point at the fix
+    # (wrap in a list) rather than leaving the shape-mismatch a mystery.
+    with pytest.raises(ValueError, match="wrap them in a list"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "x"], {"spacing": (1.0, 0.5)})},
+        )
+
+
+def test_coordinate_origin_must_be_a_scalar():
+    with pytest.raises(ValueError, match="origin must be a scalar"):
+        XTensor(
+            torch.zeros(4),
+            names=["t"],
+            coords={"t": {"spacing": 1.0, "origin": torch.tensor([1.0, 2.0])}},
+        )
+    with pytest.raises(ValueError, match="origin must be a scalar"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={
+                "lat": (
+                    ["y", "x"],
+                    {"spacing": ([1.0, 0.5], "deg"), "origin": [1.0, 2.0]},
+                )
+            },
+        )
+
+
 def test_multi_dim_explicit_coordinate_is_not_implemented():
     # only the compact affine form is implemented (step 3); a general
     # curvilinear array of explicit values is future work (#82).
@@ -427,6 +459,60 @@ def test_affine_coordinate_dims_may_be_given_out_of_axis_order():
     assert torch.allclose(
         x[1:3, ::2].coords["lat"]["values"].as_subclass(torch.Tensor),
         expected[1:3, ::2],
+    )
+
+
+def test_affine_coordinate_squeeze_folds_a_size_one_dim_exactly():
+    # a squeezed dim is always size 1, so folding it (like an integer index
+    # would) is exact -- not merely a conservative drop.
+    x = XTensor(
+        torch.zeros(1, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    for squeezed in (x.squeeze(), x.squeeze(dim="y")):
+        assert squeezed.names == ("x",)
+        assert torch.allclose(
+            squeezed.coords["lat"]["values"].as_subclass(torch.Tensor),
+            full[0, :],
+        )
+    # every spanned dim squeezed away -> no axis left, drops
+    y = XTensor(
+        torch.zeros(1, 1),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    assert "lat" not in y.squeeze().coords
+
+
+def test_affine_coordinate_full_noop_slice_is_a_fast_path():
+    # `x[:, :]` shouldn't rebuild `spacing`/`origin` -- verify it stays
+    # correct (the implementation returns the coordinate object unchanged).
+    x = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={
+            "lat": (
+                ["y", "x"],
+                {"spacing": ([1.0, 0.5], "deg"), "origin": 10.0},
+            )
+        },
+    )
+    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    noop = x[:, :]
+    assert torch.allclose(
+        noop.coords["lat"]["values"].as_subclass(torch.Tensor), full
     )
 
 
