@@ -1,12 +1,10 @@
 # Data units
 
-A tensor's **values** can carry a physical unit that rides through operations
-the way names and coordinates do. By default a unit is an opaque string; with a
-units backend it also gains validation, conversion, and dimensional algebra.
-
 A tensor's **values** can carry a physical unit — the `.unit` property (a
-constructor `unit=` kwarg or a settable attribute). It rides through operations
-like names and coordinates do:
+constructor `unit=` kwarg or a settable attribute) — that rides through
+operations the way names and coordinates do. By default a unit is an opaque
+string; with a units backend it also gains validation, conversion, and
+dimensional algebra:
 
 ```python
 v = xtensor(data, names=("b", "t"), unit="V")

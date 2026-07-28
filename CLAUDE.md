@@ -416,6 +416,26 @@ Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 4. **A tensor with no coordinates reports `{}`** and must still slice/select
    without error; a labelled dim must be named.
 
+## Documentation style (`docs/*.md`, tutorials, examples)
+
+Docs are for **humans who are not necessarily experts in arcane Python/PyTorch
+features**. They want to know how to call `xtensor` well — correct,
+beautiful, performant code. Apply this to every hand-written `docs/*.md`
+page, tutorial, and example — not just the header doc-comments:
+
+1. **Value sugar before hacky calls.** When multiple syntaxes lead to the
+   same behaviour, list them all using `=== "..."` tabs.
+2. **Plain language.** No agentic/internal-monologue phrasing, and no
+   unexplained internal engine names — those belong in code comments and
+   this file's internals sections, not in `docs/*.md`. Say what a reader
+   needs in order to use the library, not what `xtensor`'s implementation
+   does internally.
+3. **Leanness bar.** If an example or tutorial snippet doesn't read as short
+   and natural, that's a signal: either a nicer `xtensor` spelling already
+   exists and the example should use it, or `xtensor` itself is missing
+   sugar — file an `enhancement` issue for the gap rather than shipping an
+   awkward example.
+
 ## Known follow-ups (see the tracking issues)
 
 - **Per-method survey.** Every name-related torch op should carry names+coords
