@@ -89,14 +89,36 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   tensor>}`, from `coords={dim: tensor}`); `__getitem__` slices a *dimension*
   coordinate **affinely** (`_slice_coordinate`: compact updates
   `spacing*=step`/`origin+=start*spacing`, explicit slices the array, advanced
-  index materialises a compact coord to explicit) — a non-dimension
-  coordinate isn't re-sliced (no slice-tracking yet, Proposal 0005 step 6), it
-  just rides through unchanged or drops; only labels/explicit values are
-  accepted for one (a **compact** non-dim spec raises `NotImplementedError` —
-  see the pitfall below). `Coordinate.to(unit)` converts the position unit.
-  `rename`/`rename_` remap both the storage key **and** the embedded `dims`
-  (`_remap_coords`), raising on a name collision (renaming an axis onto an
-  existing coordinate's name) rather than silently dropping one. A raw
+  index materialises a compact coord to explicit). A **single-dim**
+  non-dimension coordinate isn't re-sliced (no slice-tracking yet, Proposal
+  0005 step 6), it just rides through unchanged or drops; only labels/explicit
+  values are accepted for one (a compact single-dim spec raises
+  `NotImplementedError` — see the pitfall below). A non-dimension coordinate
+  spanning **several** dims *is* re-sliced exactly, in its one supported form
+  — the compact **affine** coordinate (Proposal 0005 step 3, landed):
+  `spacing` becomes a **vector** (one component per dim in `dims`, wrapped by
+  `_as_unitful_vector`), `origin` stays one scalar shared across them,
+  `Coordinate._materialise_axes`/`_bound_axes` assemble the N-D grid via a
+  broadcast `arange` per dim (`origin + Σ_d spacing[d]*index_d`, still
+  differentiable) — laid out in the **host tensor's axis order**, not in
+  `dims` order (`_bound_axes` takes `((spacing component, axis size), …)`
+  already sorted by axis: `["values"]` is a bare array with no dims of its
+  own, and `dims` may be given out of order or permuted later) — and
+  `_slice_affine_coordinate` re-slices it component-wise
+  in `__getitem__` — a basic slice updates that dim's component like 0001's
+  trick, an integer index folds the dim out (absorbing `index*component` into
+  `origin`, possibly collapsing to a plain 1-D compact coordinate), anything
+  else (boolean/advanced indexing) drops the whole coordinate (can't stay
+  affine). A general multi-dim *explicit* (curvilinear) coordinate isn't
+  implemented yet — only the compact affine form is. `Coordinate.to(unit)`
+  converts the position unit (works unchanged for a vector `spacing` too,
+  since `Unitful.to` just rescales `["value"]` elementwise). `rename`/
+  `rename_` remap both the storage key **and** every dim in the embedded
+  `dims` (`_remap_coords`), raising on a name collision (renaming an axis onto
+  an existing coordinate's name, or onto a **multi-dim** coordinate's name —
+  that would leave a key that *is* a dim but is not that dim's index, breaking
+  the `dims == (name,)` ⟺ dimension-coordinate invariant) rather than silently
+  dropping or corrupting one. A raw
   `input.__dict__.get("_coords")` read must unpack `(dims, coord)` per entry —
   code that only wants the flat view should go through `input.coords` instead
   (see `_reduce_unit`/`_axis_uniform_unit`, and the pitfall below).
@@ -180,6 +202,44 @@ pattern is worth internalising rather than re-discovering.
    `{name: (dims, coord)}` model (via `git reset --hard origin/main` on the
    branch) was faster and produced a cleaner diff than untangling the
    conflict markers would have.
+7. **A "collapsed" derived coordinate can silently change representation
+   shape underneath code that assumes it stays constant.** Building the
+   affine coordinate (step 3), folding an integer index into one dim of a
+   multi-dim `spacing` *vector* correctly leaves the collapsed, one-remaining-
+   dim coordinate storing a bare **scalar** `spacing` (the ordinary 1-D
+   compact form) rather than a length-1 vector — that's the right
+   representation (it's what the plain 1-D materialisation path already
+   expects), but the reslicing code that *produced* it kept indexing
+   `spacing["value"][i]` unconditionally on the *next* slice, which crashes
+   (`IndexError: invalid index of a 0-dim tensor`) the moment that collapsed
+   coordinate is sliced again. Caught by testing the case one level deeper
+   than the first pass covered (reslice *after* a fold, not just a fold on
+   its own) — the fix branches on `len(dims) > 1` to decide whether `spacing`
+   is indexable. **Rule**: when an op can produce a *lower-rank* version of
+   its own input as an intermediate/derived value, explicitly test that
+   derived value is a valid input to the *same* op again, not just to reads.
+8. **A multi-dim derived value has an axis *order*, and `.coords` hands it
+   back with the names stripped off.** The affine coordinate materialised its
+   grid in `dims` order, which matches the tensor only until something
+   reorders the axes — `permute`/`transpose`/`movedim` carry the coordinate
+   through untouched (all its dims survive), so `x.T.coords["lat"]["values"]`
+   came back transposed relative to `x.T`, *undetectably* on a square tensor.
+   The fix binds the grid to `((spacing component, size), …)` sorted by the
+   host tensor's axis index, so the layout follows the data. **Rule**: any
+   metadata that is more than 1-D must be materialised against the *tensor's*
+   current axis order, not the order it was declared in; test it under a
+   `permute` with a **square** shape (a non-square one only raises later, by
+   luck).
+9. **Renaming an axis can violate an invariant that only the *setter*
+   enforces.** The `coords` setter guarantees "key is an axis name ⟺ the
+   coordinate is that dim's index (`dims == (name,)`)", but `rename` re-keys
+   axes underneath the stored dict: `x.rename(y="lat")` on a `lat(y, x)`
+   affine produced an entry keyed `lat` whose `dims` was `("lat", "x")` —
+   `.sel` then treated a vector `spacing` as an index, `__getitem__`'s
+   dimension-coordinate pass and `flip` re-sliced it as if it were 1-D
+   (vector `origin`!), and an advanced index raised a bare torch shape error.
+   **Rule**: when an invariant is established at input time, check that every
+   *re-keying* path (rename, swap_dims, merge) re-establishes it too.
 
 - **attaching a unit by `*`** (Proposal 0003 phase 4): `x * u.mm` / `x / u.s`
   attach/derive a data unit from a backend `Unit`/`Quantity`. This is caught in

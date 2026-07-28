@@ -458,23 +458,47 @@ class XTensor(ExtendedTensor):
         _tensors.Coordinate] (`{spacing[, origin]}`, whose `["values"]` key
         materialises the positions; Proposal 0001).
 
-        Only entries that are still valid are returned -- their dimension must
-        be named on this tensor (and, for labels, its size must match the label
-        count) -- so stale metadata propagated onto a shape-changing op is
-        hidden.
+        Only entries that are still valid are returned -- every dim in their
+        `dims` must still be named on this tensor (and, for labels, its size
+        must match the label count) -- so stale metadata propagated onto a
+        shape-changing op is hidden.
 
         Stored internally as `{name: (dims, coord)}` (Proposal 0005): a
         **dimension** coordinate has `dims == (name,)` (it *is* the dim's
         index, so `.sel(name=...)` works); a **non-dimension** coordinate
         (disambiguated by key: `name` is not itself a dim) rides along some
-        other dim, `dims == (dim,)`, and is not an index. A wider `dims`
-        (multi-dim / affine coordinates) is a later slice.
+        other dim(s), and is not an index. A non-dimension coordinate may span
+        **several** dims (a compact **affine** coordinate, Proposal 0005 step
+        3 -- `spacing` is a vector, one component per dim in `dims`, `origin`
+        a single scalar shared across them); a general multi-dim *explicit*
+        (curvilinear) coordinate isn't implemented yet.
         """
         names = self.names
         valid = {}
         stored = self.__dict__.get("_coords") or {}
         for name, (dims, coord) in stored.items():
             if any(dim not in names for dim in dims):
+                continue
+            if len(dims) > 1:
+                # multi-dim / affine coordinate (Proposal 0005 step 3) -- only
+                # the compact form is implemented; anything else is unreachable
+                # (rejected at input time) so it is simply skipped here.
+                # The grid is laid out in **this tensor's** axis order, not in
+                # `dims` order: the two differ when `dims` was given in
+                # another order, or once an axis-reordering op (`permute` /
+                # `transpose` / `movedim`) has moved them, and `["values"]` is
+                # a bare array with no dims of its own -- so materialising in
+                # `dims` order would silently misalign it with the data.
+                if isinstance(coord, Coordinate) and coord._compact():
+                    axes = [names.index(dim) for dim in dims]
+                    valid[name] = coord._bound_axes(
+                        tuple(
+                            (component, self.shape[axes[component]])
+                            for component in sorted(
+                                range(len(dims)), key=axes.__getitem__
+                            )
+                        )
+                    )
                 continue
             size = self.shape[names.index(dims[0])]
             if isinstance(coord, Coordinate):
@@ -497,11 +521,16 @@ class XTensor(ExtendedTensor):
             if key not in names:
                 # a coord keyed by a non-axis name is a **non-dimension**
                 # coordinate (Proposal 0005): given as `(dim, values)`, it
-                # rides along `dim` rather than indexing it.
-                dim, coord = _parse_nondim_coord(key, spec, names)
-                size = self.shape[names.index(dim)]
-                _check_nondim_len(key, dim, coord, size)
-                unified[key] = (dim,), coord
+                # rides along `dim` rather than indexing it -- or, spanning
+                # several dims, `(dims, {spacing, ...})` is a compact
+                # **affine** coordinate (step 3); that form materialises and
+                # re-slices exactly, so (unlike a single-dim non-dimension
+                # coordinate) it has no fixed "length" to check on input.
+                dims, coord = _parse_nondim_coord(key, spec, names)
+                if len(dims) == 1:
+                    size = self.shape[names.index(dims[0])]
+                    _check_nondim_len(key, dims[0], coord, size)
+                unified[key] = dims, coord
                 continue
             if _is_compact_coord(spec) or _is_explicit_coord(spec):
                 unified[key] = _pack_coord(key, _make_coordinate(spec))
@@ -670,6 +699,20 @@ class XTensor(ExtendedTensor):
                     "name); choose a name that doesn't collide"
                 )
             new_dims = tuple(rename_of[dim] for dim in dims)
+            if new_key in new_names and new_dims != (new_key,):
+                # Renaming an axis onto a **multi-dim** coordinate's key would
+                # leave an entry whose key *is* a dim but which is not that
+                # dim's index -- breaking the `dims == (name,)` <=> dimension
+                # coordinate invariant every consumer relies on (`sel`,
+                # `__getitem__`'s dimension-coordinate pass, `flip`/`roll`
+                # would then treat the vector `spacing` as a 1-D one and
+                # corrupt it). Refuse, like any other name collision.
+                raise ValueError(
+                    f"rename: coordinate name collision on {new_key!r} "
+                    "(a renamed axis now matches a multi-dim coordinate's "
+                    f"name, which spans {new_dims}); choose a name that "
+                    "doesn't collide"
+                )
             remapped[new_key] = (new_dims, coord)
         return remapped
 
@@ -829,6 +872,32 @@ class XTensor(ExtendedTensor):
                         new_stored[name] = (name,), tuple(sliced)
                     else:
                         new_stored.pop(in_name, None)
+            # A compact non-dimension coordinate -- one whose key is not the
+            # dim it rides on, so the loop above never looks it up -- *is*
+            # explicitly re-sliced when it spans a multi-dim compact
+            # **affine** coordinate (Proposal 0005 step 3): exact per-
+            # component, like a dimension coordinate's own basic-slice
+            # update, just applied once per spanned dim.
+            for key, (dims, coord) in stored.items():
+                if len(dims) == 1 and dims[0] == key:
+                    continue  # a dimension coordinate; handled above
+                if not (isinstance(coord, Coordinate) and coord._compact()):
+                    continue  # labels / explicit: ride through unchanged
+                if any(dim not in in_names for dim in dims):
+                    continue  # already invalid; the coords property drops it
+                pieces = {}
+                sizes = {}
+                for dim in dims:
+                    src = in_names.index(dim)
+                    pieces[dim] = arrayutils._get_slicer_by_index(
+                        unrolled, src
+                    )
+                    sizes[dim] = self.shape[src]
+                result = _slice_affine_coordinate(coord, dims, pieces, sizes)
+                if result is None:
+                    new_stored.pop(key, None)
+                else:
+                    new_stored[key] = result
             # Selecting a single position on a unit-carrying axis collapses
             # that axis away; its per-position data unit folds into the base
             # data unit (effective unit = base * product of coord units).
@@ -1176,8 +1245,22 @@ class Coordinate(_units.MagicDict):
         out._size = size
         return out
 
+    def _bound_axes(self, axes: tuple) -> "Coordinate":
+        """
+        A copy bound to several axes -- `((spacing component, axis size),
+        ...)`, **in the host tensor's axis order** -- so `["values"]`
+        materialises an N-D **affine** grid laid out like the tensor
+        (Proposal 0005 step 3: `spacing` is a vector with one component per
+        spanned dim, but `dims` need not be in the tensor's own axis order).
+        """
+        out = Coordinate(self)
+        out._axes = tuple(axes)
+        return out
+
     def __getitem__(self, key: tx.Any) -> tx.Any:
         if key == "values" and self._compact():
+            if "_axes" in self.__dict__:
+                return self._materialise_axes()
             return self._materialise()
         return dict.__getitem__(self, key)
 
@@ -1191,6 +1274,32 @@ class Coordinate(_units.MagicDict):
             index = index.to(step)
         values = start + index * step
         return XTensor(values, unit=spacing["unit"])
+
+    def _materialise_axes(self) -> "XTensor":
+        """
+        Materialise a compact **affine** coordinate (Proposal 0005 step 3)
+        over its bound `_axes`: `origin + sum_d spacing[d] * index_d`, via a
+        broadcast `arange` per spanned dim -- an N-D grid, still
+        differentiable w.r.t. `spacing`/`origin` (no dense grid is stored,
+        only assembled fresh on each access, exactly like the 1-D case). The
+        axes come in the host tensor's order (see `_bound_axes`), each paired
+        with the `spacing` component it draws on, so the grid lines up with
+        the data whatever order `dims` is in.
+        """
+        spacing = dict.__getitem__(self, "spacing")
+        origin = dict.get(self, "origin")
+        components = spacing["value"]
+        total = origin["value"] if origin is not None else 0
+        ndim = len(self._axes)
+        for axis, (component_index, size) in enumerate(self._axes):
+            component = components[component_index]
+            index = torch.arange(size)
+            if isinstance(component, Tensor):
+                index = index.to(component)
+            shape = [1] * ndim
+            shape[axis] = size
+            total = total + index.view(shape) * component
+        return XTensor(total, unit=spacing["unit"])
 
     def to(self, unit: tx.Any) -> "Coordinate":
         """
@@ -1219,6 +1328,75 @@ def _as_unitful(obj: tx.Any) -> tx.Any:
     return _units.as_unitful(obj)
 
 
+def _as_unitful_vector(obj: tx.Any, ndims: int) -> tx.Any:
+    """
+    Coerce an affine coordinate's `spacing` input (Proposal 0005 step 3) to a
+    `Unitful` wrapping a 1-D tensor of `ndims` components -- one per spanned
+    dim. Any component given as a tensor (e.g. a learnable 0-rank tensor) is
+    preserved via `torch.stack` rather than `torch.as_tensor`, so it keeps its
+    autograd graph; a component given as a bare number is not learnable.
+    """
+    unitful = _as_unitful(obj)
+    value = unitful["value"]
+    if isinstance(value, Tensor):
+        vec = value
+    elif isinstance(value, (list, tuple)) and any(
+        isinstance(v, Tensor) for v in value
+    ):
+        vec = torch.stack(
+            [
+                v
+                if isinstance(v, Tensor)
+                else torch.as_tensor(v, dtype=torch.get_default_dtype())
+                for v in value
+            ]
+        )
+    else:
+        vec = torch.as_tensor(value, dtype=torch.get_default_dtype())
+    if vec.ndim != 1 or vec.shape[0] != ndims:
+        hint = ""
+        if vec.ndim == 0 and isinstance(obj, tuple) and len(obj) == ndims:
+            # the classic ambiguity: a bare `(v0, v1)` is indistinguishable
+            # from the ordinary `(value, unit)` spelling, so it was parsed as
+            # one scalar value with a (nonsense) "unit" of `v1` -- point at
+            # the fix rather than leaving that silently wrong turn a mystery.
+            hint = (
+                " -- if you meant several separate components, wrap them "
+                "in a list/tensor, not a bare tuple: e.g. "
+                f"{{'spacing': ({list(obj)!r}, unit)}}, not "
+                f"{{'spacing': {obj!r}}}"
+            )
+        raise ValueError(
+            "coords: an affine coordinate's spacing must have one component "
+            f"per dim ({ndims} here), got shape {tuple(vec.shape)}{hint}"
+        )
+    return _units.Unitful(value=vec, unit=unitful["unit"])
+
+
+def _as_unitful_origin(obj: tx.Any) -> tx.Any:
+    """
+    Coerce a coordinate's `origin` input to a `Unitful`, requiring it be a
+    **scalar** -- unlike `spacing`, `origin` is always a single value shared
+    across every spanned dim, even for a multi-dim affine coordinate (step
+    3). Catches a non-scalar origin here with a clear message instead of
+    deferring to an opaque broadcast-shape error at materialisation time.
+    """
+    unitful = _as_unitful(obj)
+    value = unitful["value"]
+    if isinstance(value, Tensor):
+        shape = tuple(value.shape)
+    elif isinstance(value, (list, tuple)):
+        shape = (len(value),)
+    else:
+        shape = ()
+    if shape:
+        raise ValueError(
+            f"coords: a coordinate's origin must be a scalar, got shape "
+            f"{shape}"
+        )
+    return unitful
+
+
 def _is_compact_coord(spec: tx.Any) -> bool:
     """Whether a `coords[dim]` value is a compact numeric coordinate (a mapping
     with `spacing`/`origin`) rather than a sequence of labels."""
@@ -1245,7 +1423,26 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
     if "spacing" in spec:
         coord["spacing"] = _as_unitful(spec["spacing"])
     if "origin" in spec:
-        coord["origin"] = _as_unitful(spec["origin"])
+        coord["origin"] = _as_unitful_origin(spec["origin"])
+    return coord
+
+
+def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
+    """
+    Build a compact **affine** `Coordinate` spanning `ndims` dims (Proposal
+    0005 step 3) -- a generalisation of the 1-D compact form (0001) where
+    `spacing` is a **vector**, one component per dim, and `origin` stays a
+    single scalar shared across them: `value[i_0,...] = origin +
+    sum_d spacing[d] * i_d`.
+    """
+    if "spacing" not in spec:
+        raise ValueError(
+            "coords: an affine (multi-dim) coordinate requires 'spacing'"
+        )
+    coord = Coordinate()
+    coord["spacing"] = _as_unitful_vector(spec["spacing"], ndims)
+    if "origin" in spec:
+        coord["origin"] = _as_unitful_origin(spec["origin"])
     return coord
 
 
@@ -1261,35 +1458,70 @@ def _nondim_coord_len(coord: tx.Any) -> int:
 
 def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
     """
-    Parse a `(dim, values)` non-dimension coordinate spec into `(dim, coord)`,
-    where `coord` is an **explicit** numeric `Coordinate` or a tuple of
-    labels. A **compact** (`spacing`/`origin`) spec isn't supported here yet:
-    unlike a dimension coordinate, a non-dimension one isn't re-sliced when
-    its dim is (Proposal 0005's "no slice-tracking yet") -- for an explicit
-    or label coordinate that's caught by the length check on resize, but a
-    compact coordinate binds to *any* size, so it would silently rebind to
-    the wrong affine after a non-trivial slice instead of raising or
-    dropping. Rejecting it here avoids that silent-wrong-values trap; lift
-    the restriction once non-dimension coordinates are re-sliced properly.
+    Parse a `(dim(s), values)` non-dimension coordinate spec into `(dims,
+    coord)`. `dim(s)` is a single dim name (1-D, rides along that one dim), or
+    a sequence of several dim names -- only supported for a **compact**
+    (`spacing`/`origin`) coordinate: a multi-dim **affine** coordinate
+    (Proposal 0005 step 3, `spacing` a vector, one component per dim).
+
+    A **1-D compact** spec isn't supported: unlike a dimension coordinate, a
+    single-dim non-dimension one isn't re-sliced when its dim is (there is no
+    per-component affine to update against just one dim's slicer the way
+    step 3's multi-dim form is) -- for an explicit or label coordinate
+    that's caught by the length check on resize, but a compact coordinate
+    binds to *any* size, so it would silently rebind to the wrong affine
+    after a non-trivial slice instead of raising or dropping. Rejecting it
+    here avoids that silent-wrong-values trap.
+
+    A **multi-dim explicit** (general curvilinear, e.g. arbitrary `lat(y,x)`
+    values) spec isn't implemented yet either -- only the compact affine form
+    is (step 3); curvilinear arrays are future work (#82).
     """
-    if not (
-        isinstance(spec, tuple) and len(spec) == 2 and isinstance(spec[0], str)
-    ):
+    if not (isinstance(spec, tuple) and len(spec) == 2):
         raise ValueError(
             f"coords: {key!r} is not an axis; a non-dimension coordinate must "
-            "be given as (dim, values)"
+            "be given as (dim, values) or (dims, values) for a multi-dim "
+            "coordinate"
         )
-    dim, raw = spec
-    if dim not in names:
-        raise ValueError(f"coords: no axis named {dim!r} in {tuple(names)}")
+    dims_spec, raw = spec
+    if isinstance(dims_spec, str):
+        dims = (dims_spec,)
+    elif (
+        isinstance(dims_spec, (list, tuple))
+        and dims_spec
+        and all(isinstance(d, str) for d in dims_spec)
+    ):
+        dims = tuple(dims_spec)
+    else:
+        raise ValueError(
+            f"coords: {key!r} -- expected a dim name or a sequence of dim "
+            f"names, got {dims_spec!r}"
+        )
+    for dim in dims:
+        if dim not in names:
+            raise ValueError(
+                f"coords: no axis named {dim!r} in {tuple(names)}"
+            )
+    if len(set(dims)) != len(dims):
+        raise ValueError(f"coords: {key!r} repeats a dim in {dims!r}")
     if _is_compact_coord(raw):
+        if len(dims) == 1:
+            raise NotImplementedError(
+                f"coords: {key!r} -- a compact (spacing/origin) "
+                "non-dimension coordinate over a single dim isn't supported "
+                "yet (it wouldn't survive slicing its dim correctly); use "
+                "an explicit tensor of values instead"
+            )
+        return dims, _make_affine_coordinate(raw, len(dims))
+    if len(dims) > 1:
         raise NotImplementedError(
-            f"coords: {key!r} -- a compact (spacing/origin) non-dimension "
-            "coordinate isn't supported yet (it wouldn't survive slicing its "
-            "dim correctly); use an explicit tensor of values instead"
+            f"coords: {key!r} -- a multi-dim non-dimension coordinate is "
+            "only supported in compact (spacing/origin) affine form for "
+            "now; explicit per-position values over several dims "
+            "(curvilinear) isn't implemented yet"
         )
     coord = _make_coordinate(raw) if _is_explicit_coord(raw) else tuple(raw)
-    return dim, coord
+    return dims, coord
 
 
 def _check_nondim_len(key: str, dim: str, coord: tx.Any, size: int) -> None:
@@ -1366,6 +1598,47 @@ def _coords_dropping(input: XTensor, *dims: tx.Optional[str]) -> dict:
         for key, (entry_dims, coord) in stored.items()
         if key in valid and not touched & set(entry_dims)
     }
+
+
+def _fold_affine_coords(
+    input: XTensor, squeezed: tuple, result_names: tuple
+) -> dict:
+    """
+    `input`'s coordinates after squeezing away `squeezed` (dim names, all of
+    size 1 by `squeeze`'s own contract). A compact **affine** coordinate
+    (Proposal 0005 step 3) that spans one or more of them folds those dims
+    out **exactly** -- the same fold `_slice_affine_coordinate` already does
+    for an integer index, reused here by treating each squeezed dim as index
+    `0` (its only position) and every other dim as a full pass-through slice
+    -- rather than being dropped outright the way `_coords_for` would (a
+    size-1 axis is exact to fold, not merely "conservative to keep"). Labels
+    and explicit coordinates aren't foldable this way, so they fall back to
+    the ordinary survives-or-drops rule.
+    """
+    squeezed_set = set(squeezed)
+    valid = _coords_of(input)
+    stored = input.__dict__.get("_coords") or {}
+    kept = {name for name in result_names if name is not None}
+    names = input.names
+    out = {}
+    for key, (dims, coord) in stored.items():
+        if key not in valid:
+            continue
+        touched = squeezed_set & set(dims)
+        if not touched:
+            if all(dim in kept for dim in dims):
+                out[key] = (dims, coord)
+            continue
+        if not (isinstance(coord, Coordinate) and coord._compact()):
+            continue  # labels / explicit: conservatively dropped, as before
+        if any(dim not in kept and dim not in squeezed_set for dim in dims):
+            continue  # some other, non-squeezed dim didn't survive either
+        pieces = {dim: (0 if dim in touched else slice(None)) for dim in dims}
+        sizes = {dim: input.shape[names.index(dim)] for dim in dims}
+        result = _slice_affine_coordinate(coord, dims, pieces, sizes)
+        if result is not None:
+            out[key] = result
+    return out
 
 
 def _is_label_index(value: tx.Any) -> bool:
@@ -1754,6 +2027,74 @@ def _slice_coordinate(
     return None
 
 
+def _slice_affine_coordinate(
+    coord: Coordinate, dims: tuple, pieces: dict, sizes: dict
+) -> tx.Optional[tuple]:
+    """
+    Apply one slicer per spanned dim to a compact coordinate that may span
+    **several** dims (a non-dimension coordinate, `len(dims) >= 1`; the
+    genuinely multi-dim case is Proposal 0005 step 3's affine coordinate --
+    `spacing` a vector, one component per dim, `origin` a single shared
+    scalar). Exact per-component, 0001's trick generalised:
+
+    - a **basic slice** on a dim updates that dim's component exactly
+      (`origin += start * component`, `component *= step`) and keeps the dim;
+    - an **integer** index folds that dim out entirely (`origin += index *
+      component`), dropping it from `dims`/`spacing` -- the coordinate
+      survives with one fewer dim (possibly collapsing to an ordinary 1-D
+      compact non-dimension coordinate);
+    - anything else (boolean / advanced indexing) can't stay affine, so the
+      *whole* coordinate is dropped.
+
+    Returns `(new_dims, new_coord)`, or `None` to drop the coordinate
+    (either because an unsupported indexer touched one of its dims, or
+    because every dim it spanned was folded away by integer indices, leaving
+    no axis for it to ride on).
+    """
+    if all(
+        isinstance(pieces[dim], slice)
+        and pieces[dim].indices(sizes[dim]) == (0, sizes[dim], 1)
+        for dim in dims
+    ):
+        return dims, coord  # every dim is a full no-op slice; nothing to do
+    spacing = dict.__getitem__(coord, "spacing")
+    origin = dict.get(coord, "origin")
+    unit = spacing["unit"]
+    components = spacing["value"]
+    # a coordinate already collapsed to a single dim stores a bare scalar
+    # `spacing` (the ordinary 1-D compact form), not a length-1 vector -- only
+    # index into it when there is more than one component to pick from.
+    is_vector = len(dims) > 1
+    base = origin["value"] if origin is not None else 0
+    new_dims = []
+    new_components = []
+    for i, dim in enumerate(dims):
+        piece = pieces[dim]
+        size = sizes[dim]
+        component = components[i] if is_vector else components
+        if isinstance(piece, slice):
+            start, _stop, step = piece.indices(size)
+            base = base + start * component
+            new_dims.append(dim)
+            new_components.append(component * step)
+        elif isinstance(piece, int):
+            index = piece + size if piece < 0 else piece
+            base = base + index * component
+        else:
+            return None  # boolean / advanced index: can't stay affine
+    if not new_dims:
+        return None  # every spanned dim was folded away; no axis left to ride
+    new_coord = Coordinate()
+    new_coord["spacing"] = _units.Unitful(
+        value=new_components[0]
+        if len(new_components) == 1
+        else torch.stack(new_components),
+        unit=unit,
+    )
+    new_coord["origin"] = _units.Unitful(value=base, unit=unit)
+    return tuple(new_dims), new_coord
+
+
 # ======================================================================
 #
 #                       R E S H A P E   /   R E O R D E R
@@ -1799,16 +2140,31 @@ def _(input: XTensor, dim: int | str | tx.Sequence | None = None) -> XTensor:
         Tensor.squeeze(input) if dim is None else Tensor.squeeze(input, dim)
     )
     if dim is None:
+        squeezed_positions = [
+            i for i, size in enumerate(input.shape) if size == 1
+        ]
         names = [name for name, size in zip(names, input.shape) if size != 1]
     else:
         if isinstance(dim, int):
             dim = (dim,)
         dim = [d + ndim if d < 0 else d for d in dim]
+        squeezed_positions = list(dim)
         for d in sorted(dim, reverse=True):
             names.pop(d)
     names = tuple(names)
+    # a squeezed dim is always size 1, so a compact **affine** coordinate
+    # spanning it folds out exactly (Proposal 0005 step 3), rather than being
+    # dropped the way `_coords_for` would.
+    squeezed_names = tuple(
+        input.names[i]
+        for i in squeezed_positions
+        if input.names[i] is not None
+    )
     return _carry(
-        input, result, _axis_names=names, _coords=_coords_for(input, names)
+        input,
+        result,
+        _axis_names=names,
+        _coords=_fold_affine_coords(input, squeezed_names, names),
     )
 
 
