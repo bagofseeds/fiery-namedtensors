@@ -1,5 +1,7 @@
 """Tests for fiery.xtensor."""
 
+import enum
+
 import pytest
 import torch
 
@@ -10,6 +12,7 @@ from fiery.xtensor import (
     xvector,
 )
 from fiery.xtensor._tensors import (
+    Coordinate,
     _coerce_unitful_tensor,
     _slice_labels,
     _torch_func,
@@ -297,6 +300,132 @@ def test_explicit_coordinate_must_be_1d():
             names=["t", "u"],
             coords={"t": torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])},
         )
+
+
+def test_bare_numeric_tuple_coordinate_is_auto_promoted():
+    # a bare tuple/list of plain numbers used to be an uncomparable "label"
+    # -- .sel could never match it, even the exact value (#107). It's now
+    # auto-promoted through the same explicit-coordinate path a tensor spec
+    # already takes.
+    x = XTensor(
+        torch.arange(6.0),
+        names=("t",),
+        coords={"t": (0.0, 0.5, 1.0, 1.5, 2.0, 2.5)},
+    )
+    assert isinstance(x.coords["t"], Coordinate)
+    assert x.sel(t=1.0).item() == 2.0
+    assert x.sel(t=1.7, mode="round").item() == 3.0
+    # an int-only sequence keeps its int dtype (no gratuitous float upcast)
+    y = XTensor(torch.arange(4.0), names=("t",), coords={"t": (0, 1, 2, 3)})
+    assert (
+        y.coords["t"]["values"].as_subclass(torch.Tensor).dtype == torch.int64
+    )
+
+
+def test_mixed_numeric_and_non_numeric_coordinate_raises():
+    with pytest.raises(ValueError, match="mixes numeric values"):
+        XTensor(torch.arange(3.0), names=["t"], coords={"t": (0, "a", 2)})
+
+
+def test_intenum_coordinate_stays_a_label_not_a_numeric_coordinate():
+    # an IntEnum member *is* an actual int (Python's own
+    # class IntEnum(int, Enum)) -- it must not be swept into the numeric
+    # auto-promotion, since that would discard the one thing that made
+    # someone reach for an enum: a name (#107).
+    season = enum.IntEnum("Season", ["WINTER", "SPRING", "SUMMER", "FALL"])
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": (season.WINTER, season.SPRING, season.SUMMER, season.FALL)
+        },
+    )
+    assert not isinstance(x.coords["t"], Coordinate)
+    # both calling conventions resolve to the same position
+    assert x.sel(t=season.SPRING).item() == 1.0
+    assert x.sel(t="SPRING").item() == 1.0
+
+
+def test_plain_enum_coordinate_is_selectable_by_member_or_name():
+    Color = enum.Enum("Color", ["RED", "GREEN", "BLUE"])
+    x = XTensor(
+        torch.arange(3.0),
+        names=("c",),
+        coords={"c": (Color.RED, Color.GREEN, Color.BLUE)},
+    )
+    assert x.sel(c=Color.GREEN).item() == 1.0
+    assert x.sel(c="GREEN").item() == 1.0
+
+
+def test_bool_coordinate_is_selectable_by_value():
+    # bool is technically an int subclass too, but a fixed two-value
+    # category (like an Enum), not a position -- stays a label, and (unlike
+    # before #107) is now actually selectable.
+    x = XTensor(torch.arange(2.0), names=("t",), coords={"t": (True, False)})
+    assert not isinstance(x.coords["t"], Coordinate)
+    assert x.sel(t=True).item() == 0.0
+    assert x.sel(t=False).item() == 1.0
+
+
+def test_auto_promoted_numeric_coordinate_still_gets_the_length_check():
+    # the #95/#97 "N labels for size M" validation must not be bypassed
+    # just because the sequence happens to be all-numeric.
+    with pytest.raises(ValueError, match="3 values.*size 6|6.*3 values"):
+        XTensor(torch.arange(6.0), names=("t",), coords={"t": (0.0, 0.5, 1.0)})
+
+
+def test_str_mixin_enum_coordinate_resolves_by_name_not_value():
+    # a `class X(str, Enum)` member IS a str instance -- `_label_name` must
+    # check `enum.Enum` before `str`, or this silently matches on the
+    # member's *value* instead of its name (the same bug #107 fixed for
+    # IntEnum, but on the str side).
+    class Color(str, enum.Enum):
+        RED = "r"
+        BLUE = "b"
+
+    x = XTensor(
+        torch.arange(2.0), names=("c",), coords={"c": (Color.RED, Color.BLUE)}
+    )
+    assert x.sel(c="RED").item() == 0.0
+    assert x.sel(c=Color.BLUE).item() == 1.0
+    with pytest.raises(ValueError, match="no label"):
+        x.sel(c="r")  # the *value*, not the name -- must not match
+
+
+def test_composite_intflag_coordinate_is_selectable_by_member():
+    # a composite Flag/IntFlag value (e.g. RED | BLUE) can have no single
+    # matching member name (`.name` is `None` on Python <= 3.10) -- it must
+    # still be selectable by passing the member back, even without a string
+    # spelling for it.
+    class Color(enum.IntFlag):
+        RED = 1
+        BLUE = 2
+
+    composite = Color.RED | Color.BLUE
+    x = XTensor(
+        torch.arange(2.0),
+        names=("c",),
+        coords={"c": (Color.RED, composite)},
+    )
+    assert x.sel(c=composite).item() == 1.0
+    assert x.sel(c=Color.RED).item() == 0.0
+
+
+def test_non_dimension_numeric_coordinate_also_auto_promotes():
+    # #107's bug was reachable through a non-dimension coordinate too (via
+    # swap_dims promoting it to be the index) -- the auto-promotion must
+    # apply there as well, not just to a dim's own coordinate.
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": {"spacing": 1.0, "origin": 0.0},
+            "sec": ("t", (0.0, 0.5, 1.0, 1.5)),
+        },
+    )
+    assert isinstance(x.coords["sec"], Coordinate)
+    y = x.swap_dims({"t": "sec"})
+    assert y.sel(sec=1.0).item() == 2.0
 
 
 def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
@@ -1718,6 +1847,8 @@ def test_rename_moves_coordinates_to_the_new_dim_name():
 
 
 def test_swap_dims_promotes_a_label_and_demotes_the_old_index():
+    # "time" is a bare numeric tuple -- auto-promoted to a numeric
+    # coordinate (#107), not a plain label tuple.
     x = XTensor(
         torch.arange(6.0),
         names=("time",),
@@ -1728,10 +1859,16 @@ def test_swap_dims_promotes_a_label_and_demotes_the_old_index():
     )
     y = x.swap_dims({"time": "label"})
     assert y.names == ("label",)
-    assert y.coords == {
-        "time": (0.0, 0.5, 1.0, 1.5, 2.0, 2.5),
-        "label": ("a", "b", "c", "d", "e", "f"),
-    }
+    assert set(y.coords) == {"time", "label"}
+    assert y.coords["time"]["values"].as_subclass(torch.Tensor).tolist() == [
+        0.0,
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+    ]
+    assert y.coords["label"] == ("a", "b", "c", "d", "e", "f")
     assert y.sel(label="c").item() == 2.0
     with pytest.raises(ValueError, match="not an index"):
         y.sel(time=1.0)
