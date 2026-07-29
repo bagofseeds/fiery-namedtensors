@@ -1095,7 +1095,12 @@ def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
 
 def test_as_xtensor_device_override_actually_converts():
     # a genuine (GPU-free) device conversion, not just the cpu->cpu no-op
-    # the other device test covers -- "meta" exercises the real .to() path.
+    # the other device test covers -- "meta" exercises the real .to() path,
+    # where available (old torch doesn't recognise it as a device type).
+    try:
+        torch.device("meta")
+    except RuntimeError:
+        pytest.skip("this torch build has no 'meta' device")
     x = XTensor(
         torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
     )
