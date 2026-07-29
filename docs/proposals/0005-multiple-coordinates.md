@@ -172,9 +172,10 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
      host tensor's own axis order; drops (rather than rebinding wrong) once
      a spanned dim's slice moves its size on without it.
    - ✅ `.sel` — a joint query resolves to the single **nearest** grid point
-     by exact Euclidean distance (`torch.cdist`, brute force, torch-native).
-     Single point only, with a size guard against a runaway distance
-     matrix — see `vs-xarray.md` for why bulk regridding isn't in scope.
+     by squared Euclidean distance over the queried coordinates' raw
+     magnitudes (brute force, torch-native, unit-blind). Single point only,
+     with a size guard against a runaway distance computation — see
+     `vs-xarray.md` for why bulk regridding isn't in scope.
    - `.interp` over a curvilinear coordinate is not implemented.
 7. **Non-dim coordinate slice-tracking** — carry non-dim coords through slicing
    instead of dropping on resize.
@@ -396,13 +397,22 @@ affine feature.
 - **`.sel` — brute-force nearest neighbor.** Grouped the same way as the
   affine joint query: every coordinate name queried that spans the same
   `dims` is one group, one value per dim. Stacks the group's coordinate
-  arrays into a `(*grid_shape, k)` point cloud and finds the closest grid
-  point to the target via `torch.cdist` (exact Euclidean distance) — no
-  scipy/sklearn KD-tree, so it stays GPU-capable, but brute force (`O(grid
-  size)` memory/time), since an arbitrary grid has no closed-form inverse.
-  Only `mode="round"`/`method="nearest"` (the default) is supported;
-  `tolerance` is enforced against the actual distance to the chosen point,
-  same convention as every other `.sel` path.
+  arrays into a `(*grid_shape, k)` point cloud (promoted to float64,
+  regardless of the grid's own dtype, matching `.sel`'s affine-path
+  convention) and finds the closest grid point by direct squared distance
+  — no scipy/sklearn KD-tree, so it stays GPU-capable, but brute force
+  (`O(grid size)` memory/time) and unit-blind (mixing e.g. degrees and
+  metres weights the nearer-magnitude one more heavily), since an arbitrary
+  grid has no closed-form inverse. `torch.cdist` was considered and
+  rejected: its default compute mode switches to a `‖a‖²+‖b‖²−2a·b`
+  matrix-multiply identity above 25 points, which catastrophically cancels
+  in float32 for realistic coordinate magnitudes (found in review — silently
+  wrong nearest neighbor on real-sized grids). A NaN grid point (a masked/
+  fill swath cell) is excluded from the search rather than winning by
+  NaN-propagation. Only `mode="round"`/`method="nearest"` (the default) is
+  supported; `tolerance` is enforced **per queried coordinate name** against
+  its own gap to the chosen point (not the joint distance), same convention
+  as every other `.sel` path.
 - **Single point only, by design.** A query vectorized over many points at
   once (the shape a bulk regrid needs) is not supported: the distance
   matrix's cost is the *product* of the grid size and the query count, and

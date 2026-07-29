@@ -51,10 +51,12 @@ This page lists where the two diverge, in both directions.
   values over multiple dims — a **curvilinear** coordinate, alongside the
   compact **affine** form
   ([Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82).
-  `.sel(lat=.., lon=..)` finds the single nearest grid point by exact
-  Euclidean distance (`torch.cdist`, no scipy/sklearn dependency, so it
-  stays GPU-capable) — but brute force, with no tree index behind it. Fine
-  for a one-off lookup against even a large grid; it does **not** scale to
+  `.sel(lat=.., lon=..)` finds the single nearest grid point by squared
+  Euclidean distance over the queried coordinates' raw magnitudes (no
+  scipy/sklearn dependency, so it stays GPU-capable) — but brute force,
+  with no tree index behind it, and unit-blind (mixing e.g. degrees and
+  metres weights the nearer-magnitude one more heavily). Fine for a one-off
+  lookup against even a large grid; it does **not** scale to
   *bulk regridding* (querying a whole new grid's worth of points at once),
   where the distance-matrix cost grows with the *product* of the source
   grid size and the query count — the reason every tree-based library in

@@ -1231,12 +1231,17 @@ class XTensor(ExtendedTensor):
         irregular satellite-swath `lat`/`lon`) works the same way as the
         affine case above -- one value per coordinate name spanning the
         same `dims` -- but resolves to the single **nearest** grid point by
-        Euclidean distance (`torch.cdist`, brute force; there is no
-        closed-form inverse for an arbitrary grid). Only a single point is
-        supported per call, not a vectorized query over many points at
+        squared Euclidean distance across the queried coordinates' raw
+        magnitudes (brute force; there is no closed-form inverse for an
+        arbitrary grid). Mixing coordinates with very different units
+        (degrees and metres, say) weights the nearer one more heavily,
+        same as an un-normalised distance always does. Only a single point
+        is supported per call, not a vectorized query over many points at
         once -- see `vs-xarray.md` for why. `tolerance` and `mode`/`method`
-        behave the same as the affine case (only the default "nearest"
-        mode applies; a distance over `tolerance` raises).
+        behave the same as the affine case -- checked per queried
+        coordinate name against its own gap to the chosen point, not
+        against the joint distance -- (only the default "nearest" mode
+        applies; a gap over `tolerance` raises).
 
         Pass `indexers` as an explicit mapping (`x.sel({"mode": "red"})`)
         instead of keyword arguments when a dim's name collides with one
@@ -1405,6 +1410,7 @@ class XTensor(ExtendedTensor):
         "many points" form here, see `_curvilinear_sel_indices`).
         """
         stored = self.__dict__.get("_coords") or {}
+        valid = self.coords
         groups: dict = {}
         for name in indexers:
             entry = stored.get(name)
@@ -1416,6 +1422,13 @@ class XTensor(ExtendedTensor):
                 and isinstance(coord, Coordinate)
                 and not coord._compact()
             ):
+                if name not in valid:
+                    # dropped (not resliced) by a previous op that changed
+                    # one of its spanned dims' sizes -- leave it out of the
+                    # group entirely so it falls through to the generic
+                    # per-indexer loop below, which raises the usual "has
+                    # no coordinates" error instead of a bare KeyError.
+                    continue
                 groups.setdefault(dims, []).append(name)
         positional: dict = {}
         consumed: set = set()
@@ -1906,10 +1919,11 @@ class Coordinate(_units.MagicDict):
         """
         Convert the coordinate's **position** unit, rescaling
         `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
-        backend. Carries over the axis-size binding (`_bound`/`_bound_axes`)
-        if this coordinate already had one, so `coords[name].to(unit)
-        ["values"]` still materialises instead of raising for lack of a
-        bound size.
+        backend. Carries over the axis binding (`_bound`/`_bound_axes`/
+        `_bound_curvilinear`) if this coordinate already had one, so
+        `coords[name].to(unit)["values"]` still materialises correctly
+        instead of raising for lack of a bound size, or (for a curvilinear
+        coordinate) silently reverting to its construction-order shape.
         """
         if self._compact():
             out = Coordinate()
@@ -1924,6 +1938,8 @@ class Coordinate(_units.MagicDict):
             out._size = self._size
         if "_axes" in self.__dict__:
             out._axes = self._axes
+        if "_curv_order" in self.__dict__:
+            out._curv_order = self._curv_order
         return out
 
 
@@ -2372,13 +2388,25 @@ def _affine_sel_indices(
     return result
 
 
-#: Distance-matrix size guard for `_curvilinear_sel_indices` (issue #82
-#: phase 2) -- `torch.cdist` is brute force (no tree index), so a query
-#: against a grid this large is rejected rather than left to run for a long
-#: time or exhaust memory. A single query point only ever needs one column
-#: of the distance matrix (`grid_size * itemsize` bytes), so this is far
-#: above what any realistic single-point lookup needs; it exists as a
-#: backstop against a pathologically large grid, not a routine limit.
+#: Distance computation's working dtype for `_curvilinear_sel_indices`
+#: (issue #82 phase 2) -- always float64 regardless of the grid's own dtype,
+#: matching `_affine_sel_indices`'s "solved in float64" convention. This
+#: also sidesteps a real footgun a plain squared-distance sum would have in
+#: float32 for realistic coordinate magnitudes (lat ~52 deg, UTM northings
+#: ~6e6 m): squaring and summing large values first loses the precision a
+#: small grid spacing needs (independent review finding -- the same
+#: cancellation `torch.cdist`'s default `use_mm_for_euclid_dist` compute
+#: mode has above 25 points, avoided here by not using `cdist` at all).
+_CURVILINEAR_SEL_DTYPE = torch.float64
+
+#: Distance-computation size guard for `_curvilinear_sel_indices` (issue
+#: #82 phase 2) -- brute force (no tree index), so a query against a grid
+#: this large is rejected rather than left to run for a long time or
+#: exhaust memory. Accounts for the `(n, k)` stacked point cloud plus the
+#: `(n,)` distance vector, both in `_CURVILINEAR_SEL_DTYPE` -- the actual
+#: peak allocation for a single query point -- so this is far above what
+#: any realistic single-point lookup needs; it exists as a backstop against
+#: a pathologically large grid, not a routine limit.
 _CURVILINEAR_SEL_MAX_BYTES = 2 * 1024**3
 
 
@@ -2394,14 +2422,14 @@ def _curvilinear_sel_indices(
     Exact nearest-neighbor lookup for one joint `.sel` query over a general
     **curvilinear** coordinate (issue #82 phase 2): stack the queried
     coordinates' values into one `(*grid_shape, k)` point cloud and find the
-    grid point closest to the target, via `torch.cdist` -- brute force
-    (`O(grid size)` memory/time), since an arbitrary curvilinear grid has no
-    closed-form inverse the way the affine case does. Deliberately
+    grid point closest to the target by direct squared distance -- brute
+    force (`O(grid size)` memory/time), since an arbitrary curvilinear grid
+    has no closed-form inverse the way the affine case does. Deliberately
     torch-native (no scipy/sklearn KD-tree dependency, so it stays
     GPU-capable) and deliberately single-point only: a query vectorized over
     many points at once (the shape a bulk regrid needs) would multiply the
-    distance matrix by the query count, which stops being brute-forceable
-    well before a tree index would even notice -- see `vs-xarray.md`.
+    point cloud by the query count, which stops being brute-forceable well
+    before a tree index would even notice -- see `vs-xarray.md`.
     """
     if sel_mode != "round":
         raise NotImplementedError(
@@ -2409,6 +2437,18 @@ def _curvilinear_sel_indices(
             "curvilinear query (#82 phase 2) -- only nearest-neighbor "
             "(the default, or method='nearest') is"
         )
+    for name in names_in_group:
+        target = indexers[name]
+        if not isinstance(target, (int, float)) and not (
+            isinstance(target, Tensor) and target.ndim == 0
+        ):
+            raise TypeError(
+                f"sel: a joint curvilinear query over {dims!r} (#82 phase "
+                f"2) only supports a single point -- {name}={target!r} "
+                "must be a bare number (or 0-D tensor), not a list/slice/"
+                "multi-element tensor; there is no vectorized multi-point "
+                "form yet, see vs-xarray.md"
+            )
     # `coords_bound[name]["values"]` materialises in **ascending host axis
     # order** among `dims` (see `_bound_curvilinear`), which need not be
     # `dims`'s own given order -- `sorted_dims` matches that same order, so
@@ -2426,26 +2466,28 @@ def _curvilinear_sel_indices(
         grid = coords_bound[name]["values"]
         if grid_shape is None:
             grid_shape = tuple(grid.shape)
-        elif tuple(grid.shape) != grid_shape:
-            raise ValueError(
-                f"sel: curvilinear coordinates {sorted(names_in_group)!r} "
-                f"over {dims!r} must share one shape, got {name!r} with "
-                f"shape {tuple(grid.shape)} vs {grid_shape}"
-            )
         grids.append(grid.as_subclass(Tensor))
         units.append(grid.unit)
     n = 1
     for size in grid_shape:
         n *= size
-    itemsize = grids[0].element_size()
-    if n * itemsize > _CURVILINEAR_SEL_MAX_BYTES:
+    if n == 0:
+        raise ValueError(
+            f"sel: a joint curvilinear query over {dims!r} has an empty "
+            "grid (a spanned dim has size 0) -- there is no nearest point"
+        )
+    k = len(names_in_group)
+    itemsize = torch.tensor([], dtype=_CURVILINEAR_SEL_DTYPE).element_size()
+    if n * itemsize * (k + 1) > _CURVILINEAR_SEL_MAX_BYTES:
         raise ValueError(
             f"sel: a joint curvilinear query over {dims!r} needs a "
             f"brute-force nearest-neighbor search over {n} grid points "
-            f"(~{n * itemsize / 1e9:.2f} GB) -- too large for torch.cdist; "
+            f"(~{n * itemsize * (k + 1) / 1e9:.2f} GB) -- too large; "
             "see vs-xarray.md for the general-curvilinear scaling limit"
         )
-    points = torch.stack([g.reshape(-1) for g in grids], dim=-1)
+    points = torch.stack(
+        [g.reshape(-1).to(_CURVILINEAR_SEL_DTYPE) for g in grids], dim=-1
+    )
     targets = torch.tensor(
         [
             _selector_value(indexers[name], unit)
@@ -2453,8 +2495,18 @@ def _curvilinear_sel_indices(
         ],
         dtype=points.dtype,
         device=points.device,
-    ).unsqueeze(0)
-    flat_index = int(torch.cdist(targets, points).argmin())
+    )
+    # squared distance, not `torch.cdist`: `cdist`'s default compute mode
+    # switches to the `||a||^2 + ||b||^2 - 2 a.b` identity above 25 points,
+    # which catastrophically cancels in float32 for realistic coordinate
+    # magnitudes (independent review finding) -- a direct sum has no such
+    # cliff, and NaN grid points (masked/fill swath cells) are pushed to
+    # +inf here rather than winning the argmin by NaN-propagation.
+    sq_dist = (points - targets).pow(2).sum(-1)
+    sq_dist = torch.where(
+        torch.isnan(sq_dist), torch.full_like(sq_dist, float("inf")), sq_dist
+    )
+    flat_index = int(sq_dist.argmin())
     unraveled = []
     remaining = flat_index
     for size in reversed(grid_shape):
@@ -2462,11 +2514,13 @@ def _curvilinear_sel_indices(
         remaining //= size
     unraveled.reverse()
     result = dict(zip(sorted_dims, unraveled))
-    for name, unit in zip(names_in_group, units):
-        predicted = float(points[flat_index, names_in_group.index(name)])
+    for i, (name, unit) in enumerate(zip(names_in_group, units)):
+        predicted = float(points[flat_index, i])
         target = _selector_value(indexers[name], unit)
         gap = abs(predicted - target)
         tol = None if tolerance is None else _selector_value(tolerance, unit)
+        if not math.isfinite(gap):
+            gap = float("inf")  # a NaN grid point never satisfies a bound
         _check_sel_tolerance(gap, tol, target, sel_mode, indexers[name], name)
     return result
 
