@@ -494,3 +494,12 @@ cd /tmp && python -m pytest <repo>/tests -q     # run from a neutral cwd
 ruff check src tests && ruff format --check src tests
 codespell src tests
 ```
+
+## Delegated review traceability
+
+When a PR's review is delegated to an agent (e.g. an independent Opus
+adversarial-review pass) rather than done inline, post the review — or at
+least a summary of its verdict and findings — as a comment on the PR before
+merging. The review happened whether or not it's visible in the PR itself;
+without a posted comment there's no record of what was checked or why the
+PR was judged mergeable, for anyone reading the PR later.
