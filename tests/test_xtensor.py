@@ -1087,7 +1087,22 @@ def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
     assert out.dtype == torch.float64
     assert out.names == ("t",)
     assert out.unit == "mm"
+    # the coordinate itself isn't converted -- only the data's own dtype is
+    # -- so its dtype is untouched (int64), not just numerically equal.
+    assert out.coords["t"]["values"].dtype == torch.int64
     assert out.coords["t"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_as_xtensor_device_override_actually_converts():
+    # a genuine (GPU-free) device conversion, not just the cpu->cpu no-op
+    # the other device test covers -- "meta" exercises the real .to() path.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    out = as_xtensor(x, device="meta")
+    assert isinstance(out, XTensor)
+    assert out.device.type == "meta"
+    assert out.names == ("t",)
 
 
 def test_as_xtensor_dtype_none_is_a_true_passthrough():
@@ -1114,8 +1129,10 @@ def test_as_xtensor_dtype_override_from_a_bare_number():
 
 
 def test_as_xtensor_no_op_dtype_override_keeps_identity():
-    # matching the current dtype is a no-op -- .to() itself returns the
-    # same object, so this is still a true passthrough, not a fresh copy.
+    # matching the current dtype is a no-op -- as_xtensor skips calling
+    # .to() at all in this case (rather than relying on .to()'s own
+    # no-op-returns-self behaviour, which isn't consistent across the
+    # torch versions this library supports), so this is a true passthrough.
     x = XTensor(torch.arange(3.0), names=("c",))
     assert as_xtensor(x, dtype=x.dtype) is x
 
