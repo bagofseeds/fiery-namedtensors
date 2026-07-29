@@ -98,6 +98,30 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     return dim
 
 
+def _either_dict_or_kwargs(
+    positional: tx.Optional[tx.Mapping], kwargs: dict, funcname: str
+) -> dict:
+    """
+    Merge an optional positional indexer mapping with `**kwargs`, xarray's own
+    escape hatch for `.sel`/`.interp`-style calls: a dim whose name collides
+    with one of the method's own keyword parameters (`.sel`'s `mode`/
+    `tolerance`/`method`, `.interp`'s `method`/`bound`/`extrapolate`/`name`)
+    can never be passed as `**kwargs` -- Python binds a matching keyword to
+    the named parameter first, so it never reaches the catch-all -- but it
+    can always be spelled out in an explicit dict instead
+    (`x.sel({"method": 5.0})`). Passing both raises, rather than silently
+    preferring one.
+    """
+    if positional is None:
+        return dict(kwargs)
+    if kwargs:
+        raise ValueError(
+            f"{funcname}: pass indexers as a dict OR as keyword arguments, "
+            "not both"
+        )
+    return dict(positional)
+
+
 def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
     """
     Expand a single `...` in a name tuple into the run of axes it stands for,
@@ -1120,10 +1144,11 @@ class XTensor(ExtendedTensor):
 
     def sel(
         self,
+        indexers: tx.Optional[tx.Mapping] = None,
         mode: tx.Optional[str] = None,
         tolerance: tx.Any = None,
         method: tx.Optional[str] = None,
-        **indexers: tx.Any,
+        **indexers_kwargs: tx.Any,
     ) -> tx.Self:
         """
         Select by coordinate **label** (or numeric value) along named dims.
@@ -1176,7 +1201,15 @@ class XTensor(ExtendedTensor):
         (a bare query is exact by default) -- checked against the *rounded*
         position's own value, since a joint query never has one "the" gap
         the way a single coordinate does.
+
+        Pass `indexers` as an explicit mapping (`x.sel({"mode": "red"})`)
+        instead of keyword arguments when a dim's name collides with one
+        of `sel`'s own keyword parameters (`mode`, `tolerance`, `method`)
+        -- xarray's own escape hatch for exactly this, since a keyword
+        argument matching one of those names is always bound to the
+        parameter, never reaching the indexers. Passing both raises.
         """
+        indexers = _either_dict_or_kwargs(indexers, indexers_kwargs, "sel")
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
         raw = mode if mode is not None else method

@@ -1480,6 +1480,31 @@ def test_sel_by_numeric_coordinate_value():
         x.sel(t=1.7, mode="round", tolerance=0.1)
 
 
+def test_sel_accepts_indexers_as_a_dict():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    assert x.sel({"t": 2.0}).item() == 1.0
+
+
+def test_sel_dict_escape_hatch_reaches_a_dim_named_like_a_keyword():
+    # a dim literally named "mode" can never be spelled as a keyword
+    # argument -- sel(mode=...) always binds sel's own parameter, never
+    # the indexers -- so the dict form is the only way to reach it.
+    x = XTensor(
+        torch.arange(5.0), names=("mode",), coords={"mode": {"spacing": 2.0}}
+    )
+    assert x.sel({"mode": 2.0}).item() == 1.0
+
+
+def test_sel_indexers_dict_and_kwargs_together_raises():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    with pytest.raises(ValueError, match="dict OR as keyword arguments"):
+        x.sel({"t": 2.0}, t=2.0)
+
+
 def test_sel_modes_round_floor_ceil_prev_next():
     # ascending ticks 0,2,4,6,8 ; data 0,10,20,30,40
     x = XTensor(
