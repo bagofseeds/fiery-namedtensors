@@ -1559,18 +1559,12 @@ class Coordinate(_units.MagicDict):
         return out
 
 
-#: Sentinel for `as_xtensor`'s "not overridden -- preserve whatever `value`
-#: already had" default, distinct from `None` (itself a meaningful override:
-#: `unit=None` explicitly *clears* a unit rather than leaving it alone).
-_UNSET = object()
-
-
 def as_xtensor(
     value: tx.Any,
     *,
-    unit: tx.Any = _UNSET,
-    names: tx.Any = _UNSET,
-    coords: tx.Any = _UNSET,
+    unit: tx.Any = arrayutils._UNSET,
+    names: tx.Any = arrayutils._UNSET,
+    coords: tx.Any = arrayutils._UNSET,
 ) -> XTensor:
     """
     Coerce `value` (a bare Python number, a plain `Tensor`, or an `XTensor`)
@@ -1588,6 +1582,12 @@ def as_xtensor(
     the two) -- simpler to specify and implement than a per-key merge, and
     there's no established "merge coords" semantics to fall back on anyway.
 
+    Unlike `torch.as_tensor`, this does **not** accept `dtype=`/`device=`:
+    those change what the *data* is, not what it's labelled, and mixing them
+    in here would blur `as_xtensor`'s one job (metadata coercion) with
+    `torch.as_tensor`'s (dtype/device conversion) -- call `torch.as_tensor`
+    or `.to(...)` first if you need both.
+
     `value`'s own tensor is never mutated: when nothing is overridden and
     `value` is already an `XTensor`, it is returned as-is (the same object,
     metadata included); otherwise the result is always a **fresh** subclass
@@ -1597,10 +1597,13 @@ def as_xtensor(
     """
     base = torch.as_tensor(value)
     if isinstance(base, XTensor) and (
-        unit is _UNSET and names is _UNSET and coords is _UNSET
+        unit is arrayutils._UNSET
+        and names is arrayutils._UNSET
+        and coords is arrayutils._UNSET
     ):
         return base
-    out = base.as_subclass(XTensor)
+    out_cls = type(base) if isinstance(base, XTensor) else XTensor
+    out = base.as_subclass(out_cls)
     if isinstance(base, XTensor):
         # copy the *raw* stored metadata directly, not through the
         # `names`/`coords` property setters -- those validate against
@@ -1612,14 +1615,12 @@ def as_xtensor(
         # drops it -- direct assignment to `.names` on an existing `XTensor`
         # has exactly this same behaviour today, so this matches it rather
         # than introducing a new failure mode).
-        for attr in ("_axis_names", "_coords", "_axis_meta", "_data_unit"):
-            if attr in base.__dict__:
-                out.__dict__[attr] = base.__dict__[attr]
-    if names is not _UNSET:
+        out.__dict__.update(base.__dict__)
+    if names is not arrayutils._UNSET:
         out.names = names
-    if unit is not _UNSET:
+    if unit is not arrayutils._UNSET:
         out.unit = unit
-    if coords is not _UNSET:
+    if coords is not arrayutils._UNSET:
         out.coords = coords
     return out
 
@@ -1801,6 +1802,11 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
         else:
             # force dimensionless -- via the override kwarg, not a post-hoc
             # mutation, so a unit-less `spec` is never changed in place.
+            # (Benign behaviour change vs. the old `XTensor(spec, unit=...)`
+            # call this replaced: if `spec` is itself an XTensor with
+            # `unit=None`, its own `names`/`coords` now ride along instead of
+            # being silently dropped -- verified inert for every existing
+            # caller, since a bare Tensor/number spec has none to preserve.)
             values = as_xtensor(spec, unit=_units.normalise(""))
         if values.ndim != 1:
             raise ValueError(
