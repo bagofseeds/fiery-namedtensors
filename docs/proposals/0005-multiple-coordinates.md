@@ -335,13 +335,19 @@ affine feature.
   index type — a bare scalar/list query isn't accepted there at all, only
   point-wise `DataArray` indexers sharing a dimension, collapsing to that
   one dimension).
-- The new axis is named via `interp`'s new `name=` keyword (default
-  unnamed — `xstack`'s convention for a brand-new axis, since `torch.stack`
-  itself gives no way to name one either) and carries every queried name's
-  own sampled values as a riding (non-dimension) coordinate — you get the
-  world coordinates of your sampled points back, the same way xarray's
-  vectorized indexing collapses its own auxiliary coordinates onto the new
-  dimension for free.
+- The new axis is named via `interp`'s new `name=` keyword if given, else
+  the shared name of any query that is itself a named 1-D `XTensor` —
+  `x.interp(lat=XTensor([...], names=("pts",)), lon=[...])` needs no
+  `name=` at all, mirroring how xarray derives its vectorized-indexing
+  result's new dimension from the *indexer* arrays' own shared dim name,
+  not a separate parameter; disagreeing indexer names with no `name=`
+  override to resolve them raise. With neither, the axis stays unnamed —
+  `xstack`'s convention for a brand-new axis with nothing to infer from,
+  since `torch.stack` itself gives no way to name one either. Either way
+  it carries every queried name's own sampled values as a riding
+  (non-dimension) coordinate — you get the world coordinates of your
+  sampled points back, the same way xarray's vectorized indexing collapses
+  its own auxiliary coordinates onto the new dimension for free.
 - The new axis is inserted at the left-most spanned dim's position (a
   well-defined choice regardless of whether the spanned dims are adjacent
   in the tensor); every other axis keeps its name and relative order.

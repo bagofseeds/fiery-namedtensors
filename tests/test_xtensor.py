@@ -1099,6 +1099,50 @@ def test_affine_interp_new_axis_defaults_to_unnamed():
     assert out.names == (None,)
 
 
+def test_affine_interp_infers_the_new_axis_name_from_a_named_indexer():
+    # mirrors xarray's own vectorized-indexing convention: the *indexer*
+    # array's own dim name becomes the result's new dimension, no separate
+    # name= needed.
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    lat_q = XTensor(torch.tensor([11.0, 12.0]), names=("pts",))
+    out = x.interp(lat=lat_q, lon=[24.0, 20.0])
+    assert out.names == ("pts",)
+    assert out[0].item() == field[1, 2].item()
+    assert out[1].item() == field[2, 0].item()
+
+
+def test_affine_interp_agreeing_named_indexers_are_fine():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    lat_q = XTensor(torch.tensor([11.0, 12.0]), names=("pts",))
+    lon_q = XTensor(torch.tensor([24.0, 20.0]), names=("pts",))
+    out = x.interp(lat=lat_q, lon=lon_q)
+    assert out.names == ("pts",)
+
+
+def test_affine_interp_disagreeing_named_indexers_raise():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    lat_q = XTensor(torch.tensor([11.0, 12.0]), names=("pts",))
+    lon_q = XTensor(torch.tensor([24.0, 20.0]), names=("other",))
+    with pytest.raises(ValueError, match="disagree on the new axis's name"):
+        x.interp(lat=lat_q, lon=lon_q)
+
+
+def test_affine_interp_explicit_name_overrides_and_resolves_conflicts():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    lat_q = XTensor(torch.tensor([11.0, 12.0]), names=("pts",))
+    lon_q = XTensor(torch.tensor([24.0, 20.0]), names=("other",))
+    # an explicit name= wins outright, even resolving a naming conflict
+    out = x.interp(lat=lat_q, lon=lon_q, name="resolved")
+    assert out.names == ("resolved",)
+    out2 = x.interp(lat=lat_q, lon=[24.0, 20.0], name="explicit")
+    assert out2.names == ("explicit",)
+
+
 def test_affine_interp_new_axis_lands_at_the_left_most_spanned_position():
     pytest.importorskip("fiery.interpol")
     field = torch.arange(24.0).reshape(2, 3, 4)

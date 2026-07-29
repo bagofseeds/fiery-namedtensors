@@ -1359,10 +1359,15 @@ class XTensor(ExtendedTensor):
         one queried name without moving through every spanned dim at once
         (mirroring xarray's own vectorized/pointwise-indexing convention for
         a value-based query on a multi-dim coordinate). The new axis is
-        named `name` (default unnamed, matching
-        [`xstack`][fiery.xtensor.xstack]'s convention for a brand-new axis)
-        and carries every queried name's own sampled values as a riding
-        coordinate. Only **one** joint group per call is supported for now
+        named `name` if given, else the shared name of any query that is
+        itself a named 1-D `XTensor` -- `x.interp(lat=XTensor([...],
+        names=("pts",)), lon=[...])` needs no `name=` at all, mirroring how
+        xarray derives the result's new dimension from the *indexer*
+        arrays' own shared dim name -- else unnamed (matching
+        [`xstack`][fiery.xtensor.xstack]'s convention for a brand-new axis
+        with nothing to infer from). It carries every queried name's own
+        sampled values as a riding coordinate. Only **one** joint group per
+        call is supported for now
         (#82 phase 2); call `interp` again for a second group.
         """
         out, consumed = self._affine_interp_group(
@@ -3294,9 +3299,13 @@ def _affine_interp_pull(
     **one new axis** of `N` sampled points, inserted at the left-most
     spanned dim's position -- not an outer-product grid, since the dims
     are coupled (see `interp`'s docstring). The new axis is named `name`
-    and carries every queried name's own sampled values as a riding
-    coordinate (only when `name` is given -- an unnamed axis can't be
-    keyed).
+    if given, else the shared name of any queried indexer that is itself
+    a named 1-D `XTensor` (mirroring xarray's own vectorized-indexing
+    convention, where the *indexer*'s own dim name becomes the result's
+    new dimension) -- disagreeing indexer names with no `name=` override
+    to resolve them raises. It carries every queried name's own sampled
+    values as a riding coordinate (only when a name was resolved -- an
+    unnamed axis can't be keyed).
     """
     order = _interp_order(method)
     bound = _get_option("interp_bound") if bound is None else bound
@@ -3335,6 +3344,34 @@ def _affine_interp_pull(
         )
     n = next(iter(lengths), 1)
     is_many_group = n > 1 or any(is_many for *_, is_many, _ in per_name)
+    # if a query is itself a named 1-D XTensor, its own name is what the new
+    # axis should be called -- mirroring xarray's own vectorized-indexing
+    # convention (the shared dim name of the *indexer* arrays becomes the
+    # result's new dimension, not a separate parameter). An explicit `name=`
+    # still wins outright; two indexers disagreeing on a name (with no
+    # `name=` override to resolve it) is ambiguous and raises.
+    inferred_name = None
+    conflicting = None
+    for nm in names_in_group:
+        target = indexers[nm]
+        if (
+            isinstance(target, XTensor)
+            and target.ndim == 1
+            and target.names[0] is not None
+        ):
+            tname = target.names[0]
+            if inferred_name is None:
+                inferred_name = tname
+            elif inferred_name != tname:
+                conflicting = tname
+    if name is None and conflicting is not None:
+        raise ValueError(
+            f"interp: a joint affine query over {dims!r} "
+            f"({sorted(names_in_group)!r}) was given named indexers that "
+            f"disagree on the new axis's name ({inferred_name!r} vs. "
+            f"{conflicting!r}) -- pass an explicit name= to resolve it"
+        )
+    name = name if name is not None else inferred_name
     broadcasted = []
     for nm, vec, base, query, _, unit in per_name:
         if query.numel() == 1 and n > 1:
