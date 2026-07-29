@@ -8,6 +8,7 @@ import torch
 from fiery.xtensor import (
     XTensor,
     as_xtensor,
+    is_xtensor,
     set_options,
     xmatrix,
     xvector,
@@ -1948,6 +1949,16 @@ def test_as_xtensor_dtype_override_composes_with_metadata_override():
     assert out.dtype == torch.float64
     assert out.unit == "s"
     assert out.names == ("c",)  # untouched metadata still rides through
+
+
+def test_is_xtensor_true_for_an_xtensor():
+    assert is_xtensor(XTensor(torch.arange(3.0), names=("c",)))
+
+
+def test_is_xtensor_false_for_a_plain_tensor_or_number():
+    assert not is_xtensor(torch.arange(3.0))
+    assert not is_xtensor(2.0)
+    assert not is_xtensor("not a tensor")
 
 
 def test_spacing_unitful_converts():

@@ -23,6 +23,9 @@ coordinates, and unit.
 into an `XTensor`, graph-safely, preserving `unit`/`names`/`coords` unless a
 keyword explicitly overrides them. Like `torch.as_tensor`, it also accepts
 `dtype=`/`device=` to convert the underlying data.
+
+[`is_xtensor`][fiery.xtensor.is_xtensor] is the `XTensor` analogue of
+`torch.is_tensor`.
 """
 
 # Each of these registers its overrides onto XTensor as an import side
@@ -61,7 +64,7 @@ from fiery.xtensor._factories import (
     xzeros_like,
 )
 from fiery.xtensor._options import set_options
-from fiery.xtensor._tensors import XTensor, as_xtensor
+from fiery.xtensor._tensors import XTensor, as_xtensor, is_xtensor
 
 #: Lowercase alias of [`XTensor`][fiery.xtensor.XTensor].
 xtensor = XTensor
@@ -75,6 +78,7 @@ __all__ = [
     "ExtendedTensor",
     "XTensor",
     "as_xtensor",
+    "is_xtensor",
     "xtensor",
     "xvector",
     "xmatrix",

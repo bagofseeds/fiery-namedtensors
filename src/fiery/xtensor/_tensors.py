@@ -1703,6 +1703,12 @@ def as_xtensor(
     return out
 
 
+def is_xtensor(obj: tx.Any) -> bool:
+    """Whether `obj` is an `XTensor` (the `XTensor` analogue of
+    `torch.is_tensor`)."""
+    return isinstance(obj, XTensor)
+
+
 def _as_unitful(obj: tx.Any) -> tx.Any:
     """Coerce a spacing/origin input to a `Unitful`, preserving a tensor."""
     if isinstance(obj, XTensor):
