@@ -94,7 +94,7 @@ be added if needed.)
 
 Where `.sel` picks, `.interp` **computes** a value at any position — the natural
 next verb once a coordinate carries real distances. `fiery` already ships a
-resampler, [`fiery.interpol`](https://github.com/bagofseeds/fiery-interpol), so
+resampler, [`fiery.interpol`](https://bagofseeds.github.io/fiery-interpol/), so
 `.interp` maps the coordinate values to fractional indices and hands the work to
 `grid_pull`; the coordinate provides the affine (`index = (value − origin) /
 spacing`).
@@ -264,7 +264,7 @@ supported on an irregular coordinate.
 
 - xarray `.sel` (`method`, `tolerance`) and `.interp` — <https://docs.xarray.dev>
 - Proposal 0001 (numeric coordinates) — the positions this selects/interpolates
-- [`fiery.interpol`](https://github.com/bagofseeds/fiery-interpol) — `grid_pull`,
+- [`fiery.interpol`](https://bagofseeds.github.io/fiery-interpol/) — `grid_pull`,
   interpolation orders, and boundary conditions
 - Proposal 0005 (multiple coordinates per axis) — the index a future
   `.sel`/`.interp` resolves against

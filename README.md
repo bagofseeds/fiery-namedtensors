@@ -16,7 +16,7 @@ conventions — named dimensions, `coords` keyed by dimension name, `.sel` /
 difference is that an `XTensor` *is* a `torch.Tensor` rather than a wrapper
 around an array. For what it adds, what it is still missing, and where
 behaviour or vocabulary differ, see [Differences from
-xarray](https://github.com/bagofseeds/fiery-xtensor/blob/main/docs/guide/vs-xarray.md).
+xarray](https://bagofseeds.github.io/fiery-xtensor/guide/vs-xarray/).
 
 ## Quickstart
 
