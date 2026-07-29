@@ -46,12 +46,13 @@ This page lists where the two diverge, in both directions.
   and the rest of that suite are not implemented.
 - **No IO / plotting / pandas bridge.** No NetCDF/Zarr readers, no `.plot`, no
   `.to_pandas()` / `MultiIndex`.
-- **Curvilinear (arbitrary multi-dim) coordinates aren't implemented yet.** A
-  dim can already carry several coordinates — a **non-dimension** coordinate
-  rides along it, and a compact **affine** coordinate can span several dims at
-  once ([Proposal 0005](../proposals/0005-multiple-coordinates.md)) — but a
-  general `lat(y, x)`-style array of arbitrary values over multiple dims is
-  not yet landed.
+- **General curvilinear (arbitrary multi-dim) coordinates aren't implemented
+  yet.** A dim can already carry several coordinates — a **non-dimension**
+  coordinate rides along it, and a compact **affine** coordinate can span
+  several dims at once, queryable by value with a joint `.sel`/`.interp`
+  ([Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82) —
+  but a general `lat(y, x)`-style array of *arbitrary* values over multiple
+  dims (not expressible as an affine map) is not yet landed.
 - **Alignment is inner-join only.** There is no `join="outer"/"left"/"right"`
   (which would need NaN fill); operands align to the **intersection** of their
   labels. (xarray's *default* `arithmetic_join` is also `"inner"`, so the

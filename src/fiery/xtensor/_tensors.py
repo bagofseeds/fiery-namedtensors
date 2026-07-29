@@ -98,6 +98,41 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     return dim
 
 
+def _either_dict_or_kwargs(
+    positional: tuple, kwargs: dict, funcname: str
+) -> dict:
+    """
+    Merge an optional positional indexer mapping with `**kwargs`, xarray's own
+    escape hatch for `.sel`/`.interp`-style calls: a dim whose name collides
+    with one of the method's own keyword parameters (`.sel`'s `mode`/
+    `tolerance`/`method`, `.interp`'s `method`/`bound`/`extrapolate`/`name`)
+    can never be passed as `**kwargs` -- Python binds a matching keyword to
+    the named parameter first, so it never reaches the catch-all -- but it
+    can always be spelled out in an explicit dict instead
+    (`x.sel({"method": 5.0})`). Passing both raises, rather than silently
+    preferring one.
+
+    `positional` is captured via the caller's own `*args` (not a named
+    `indexers=` parameter) so this mapping itself can never collide with a
+    query name either -- `x.sel(indexers=5.0)` on a dim literally called
+    "indexers" reaches `**kwargs` exactly as before this escape hatch
+    existed, since a bare `*args` slot can only ever be filled positionally.
+    """
+    if len(positional) > 1:
+        raise TypeError(
+            f"{funcname}: at most one positional argument (an indexers "
+            "mapping) is accepted"
+        )
+    if not positional:
+        return dict(kwargs)
+    if kwargs:
+        raise ValueError(
+            f"{funcname}: pass indexers as a dict OR as keyword arguments, "
+            "not both"
+        )
+    return dict(positional[0])
+
+
 def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
     """
     Expand a single `...` in a name tuple into the run of axes it stands for,
@@ -1306,10 +1341,12 @@ class XTensor(ExtendedTensor):
 
     def interp(
         self,
+        *indexers_positional: tx.Mapping,
         method: tx.Any = "linear",
         bound: tx.Any = None,
         extrapolate: tx.Any = None,
-        **indexers: tx.Any,
+        name: tx.Optional[str] = None,
+        **indexers_kwargs: tx.Any,
     ) -> tx.Self:
         """
         Interpolate onto new coordinate values along named dims (Prop. 0004).
@@ -1342,10 +1379,65 @@ class XTensor(ExtendedTensor):
         true non-uniform spline in *value* space, which this architecture
         cannot provide (see issue #81); it is not a currently-missing
         feature.
+
+        A **joint query over an affine coordinate** (Proposal 0005 step 3 --
+        `lat`/`lon`-style, spanning several dims at once) inverts the affine
+        once (same closed-form `A⁻¹` as `.sel`'s joint query, issue #82
+        phase 1) to a **fractional** index -- never rounded -- then pulls a
+        genuine N-D interpolation via `fiery.interpol.grid_pull` (or a
+        built-in separable nearest gather for `method="nearest"`, no backend
+        needed). A query with every name given as a **scalar** is a single
+        point: all the spanned dims drop, like the 1-D scalar case above.
+        Any name given as a **list**/tensor makes it "many": every name's
+        query broadcasts to a common length `N`, and the spanned dims
+        collapse into **one new axis** of `N` sampled points -- not an
+        outer-product grid, since the dims are coupled and you can't vary
+        one queried name without moving through every spanned dim at once
+        (mirroring xarray's own vectorized/pointwise-indexing convention for
+        a value-based query on a multi-dim coordinate). The new axis is
+        named `name` if given, else the shared name of any query that is
+        itself a named 1-D `XTensor` -- `x.interp(lat=XTensor([...],
+        names=("pts",)), lon=[...])` needs no `name=` at all, mirroring how
+        xarray derives the result's new dimension from the *indexer*
+        arrays' own shared dim name -- else unnamed (matching
+        [`xstack`][fiery.xtensor.xstack]'s convention for a brand-new axis
+        with nothing to infer from). When a name *is* resolved, the axis
+        carries every queried name's own sampled values as a riding
+        coordinate -- an unnamed axis can't be keyed, so it has none. Only
+        **one** joint group per call is supported for now
+        (#82 phase 2); call `interp` again for a second group.
+
+        Pass `indexers` as an explicit mapping (`x.interp({"method":
+        5.0})`) instead of keyword arguments when a dim's name collides
+        with one of `interp`'s own keyword parameters (`method`, `bound`,
+        `extrapolate`, `name`) -- xarray's own escape hatch for exactly
+        this, since a keyword argument matching one of those names is
+        always bound to the parameter, never reaching the indexers.
+        Passing both raises.
         """
-        out = self
-        for name, target in indexers.items():
-            out = out._interp_axis(name, target, method, bound, extrapolate)
+        indexers = _either_dict_or_kwargs(
+            indexers_positional, indexers_kwargs, "interp"
+        )
+        if name is not None and not isinstance(name, str):
+            # `name=` binds to this parameter before a same-named indexer
+            # ever reaches `**indexers_kwargs` -- so `interp(name=3.0)` on a
+            # dim literally called "name" would otherwise silently query
+            # nothing at all (name=3.0 stored as an axis name never used,
+            # since interp is numeric-only, no query needs a string here).
+            # Catching the type mismatch turns that into a loud error;
+            # reach the dim via the indexers dict instead.
+            raise TypeError(
+                f"interp: name= must be a str or None, got {name!r} -- "
+                "pass interp({'name': ...}) to query a dim literally "
+                "called 'name'"
+            )
+        out, consumed = self._affine_interp_group(
+            indexers, method, bound, extrapolate, name
+        )
+        for key, target in indexers.items():
+            if key in consumed:
+                continue
+            out = out._interp_axis(key, target, method, bound, extrapolate)
         return out
 
     def _interp_axis(
@@ -1420,6 +1512,66 @@ class XTensor(ExtendedTensor):
             # a scalar query drops the axis (like integer indexing / sel)
             out = out.isel(**{name: 0})
         return out
+
+    def _affine_interp_group(
+        self,
+        indexers: tx.Mapping[str, tx.Any],
+        method: tx.Any,
+        bound: tx.Any,
+        extrapolate: tx.Any,
+        name: tx.Optional[str],
+    ) -> tuple:
+        """
+        Resolve a **joint affine interp** among `interp`'s indexers (issue
+        #82 phase 2): a multi-dim compact affine coordinate queried jointly
+        by every coordinate name spanning it, returning `(result,
+        consumed_names)` -- `self` unchanged and an empty set when no such
+        group is present, so every existing single-dim `interp` call is
+        untouched. Mirrors `.sel`'s `_affine_sel_groups`, but computes a
+        **fractional** index (never rounded) and performs a genuine N-D
+        pull rather than picking one integer position.
+        """
+        stored = self.__dict__.get("_coords") or {}
+        groups: dict = {}
+        for nm in indexers:
+            entry = stored.get(nm)
+            if entry is None:
+                continue
+            dims, coord = entry
+            if (
+                len(dims) > 1
+                and isinstance(coord, Coordinate)
+                and coord._compact()
+            ):
+                groups.setdefault(dims, []).append(nm)
+        if not groups:
+            return self, set()
+        if len(groups) > 1:
+            raise NotImplementedError(
+                "interp: a joint affine query over more than one "
+                "coordinate group in the same call isn't supported yet "
+                "(#82 phase 2) -- call interp() once per group"
+            )
+        (dims, names_in_group) = next(iter(groups.items()))
+        if len(names_in_group) != len(dims):
+            raise ValueError(
+                f"interp: a joint affine query over {dims!r} needs "
+                f"exactly {len(dims)} coordinate value(s) (one per dim), "
+                f"got {len(names_in_group)} ({sorted(names_in_group)!r}) "
+                "-- square systems only (#82 phase 2), no least-squares "
+                "fallback"
+            )
+        out = _affine_interp_pull(
+            self,
+            dims,
+            names_in_group,
+            indexers,
+            method,
+            bound,
+            extrapolate,
+            name,
+        )
+        return out, set(names_in_group)
 
     def _dims_with_label(self, label: str) -> list:
         """Named dims a label **identity** appears on (usually 0 or 1)."""
@@ -3144,6 +3296,242 @@ def _interp_pull(
         )  # (batch, 1, n)
         out = pulled.reshape(*rest, n)
     return torch.movedim(out, -1, axis)
+
+
+def _nd_nearest_pull(
+    moved: Tensor, frac: Tensor, sizes: tuple, bound: tx.Any
+) -> Tensor:
+    """
+    Built-in N-D nearest-neighbour pull (no backend), the multi-dim
+    counterpart of `_nearest_gather` for a joint affine `interp` query
+    (issue #82 phase 2): nearest-neighbour rounding is separable per axis
+    (no cross-axis interpolation weight is ever needed), so each of
+    `frac`'s `len(sizes)` columns is rounded and bounded independently,
+    then the flat (row-major) index they jointly address is gathered in
+    one shot -- `moved`'s last `len(sizes)` axes flattened to one first,
+    matching how `torch.reshape` itself linearises them.
+    """
+    ndim = len(sizes)
+    idx = frac.round().long()  # (n, ndim)
+    flat_idx = None
+    for k in range(ndim):
+        col = idx[:, k]
+        length = sizes[k]
+        if bound in ("replicate", "nearest", 1):
+            col = col.clamp(0, length - 1)
+        elif bound in ("dft", "wrap", 6):
+            col = col.remainder(length)
+        else:
+            raise ImportError(
+                f"interp method='nearest' with bound {bound!r} needs the "
+                "fiery.interpol backend; install fiery-xtensor[interp]"
+            )
+        flat_idx = col if flat_idx is None else flat_idx * length + col
+    flat_moved = moved.reshape(*moved.shape[:-ndim], -1)
+    return flat_moved.index_select(-1, flat_idx)
+
+
+def _affine_interp_pull(
+    tensor: "XTensor",
+    dims: tuple,
+    names_in_group: list,
+    indexers: tx.Mapping[str, tx.Any],
+    method: tx.Any,
+    bound: tx.Any,
+    extrapolate: tx.Any,
+    name: tx.Optional[str],
+) -> "XTensor":
+    """
+    Solve the closed-form affine inverse for a joint `interp` query (issue
+    #82 phase 2): given a target world value for each of `len(dims)`
+    coordinate names spanning the same `dims`, invert `A` **once** (shared
+    across every query point, unlike `.sel`'s single-point solve) to a
+    **fractional** index -- never rounded -- then genuinely pull the
+    tensor's values at those N-D fractional positions via
+    `fiery.interpol.grid_pull` (order >= 1, or order 0 with the backend
+    installed) or a built-in separable nearest gather (order 0, no
+    backend -- `_nd_nearest_pull`).
+
+    A **scalar** query for every name in the group is a single point: the
+    `len(dims)` spanned dims are dropped entirely (the existing `.sel`/
+    `.interp` scalar-drops-the-axis convention). Any **list**/tensor query
+    makes the whole group "many": every name's query broadcasts to a
+    common length `N`, and the `len(dims)` spanned dims collapse into
+    **one new axis** of `N` sampled points, inserted at the left-most
+    spanned dim's position -- not an outer-product grid, since the dims
+    are coupled (see `interp`'s docstring). The new axis is named `name`
+    if given, else the shared name of any queried indexer that is itself
+    a named 1-D `XTensor` (mirroring xarray's own vectorized-indexing
+    convention, where the *indexer*'s own dim name becomes the result's
+    new dimension) -- disagreeing indexer names with no `name=` override
+    to resolve them raises. It carries every queried name's own sampled
+    values as a riding coordinate (only when a name was resolved -- an
+    unnamed axis can't be keyed).
+    """
+    order = _interp_order(method)
+    bound = _get_option("interp_bound") if bound is None else bound
+    extrapolate = (
+        _get_option("interp_extrapolate")
+        if extrapolate is None
+        else extrapolate
+    )
+    stored = tensor.__dict__.get("_coords") or {}
+    per_name = []
+    lengths = set()
+    for nm in names_in_group:
+        _, coord = stored[nm]
+        spacing = dict.__getitem__(coord, "spacing")
+        origin = dict.get(coord, "origin")
+        vec = spacing["value"]
+        # solved in float64 regardless of the spacing's own/default dtype,
+        # matching the closed-form conventions of both the 1-D interp path
+        # and .sel's joint query (#82 phase 1 review finding #3).
+        if isinstance(vec, Tensor):
+            vec = vec.to(torch.float64)
+        else:
+            vec = torch.as_tensor(vec, dtype=torch.float64)
+        base = float(origin["value"]) if origin is not None else 0.0
+        query, is_many = _query_values(indexers[nm], spacing["unit"])
+        query = query.to(torch.float64)
+        lengths.add(query.numel())
+        per_name.append((nm, vec, base, query, is_many, spacing["unit"]))
+    lengths.discard(1)
+    if len(lengths) > 1:
+        raise ValueError(
+            f"interp: a joint affine query over {dims!r} "
+            f"({sorted(names_in_group)!r}) needs every coordinate's query "
+            "to have the same length (a length-1 query broadcasts) -- got "
+            f"lengths {sorted(lengths)!r}"
+        )
+    n = next(iter(lengths), 1)
+    is_many_group = n > 1 or any(is_many for *_, is_many, _ in per_name)
+    # if a query is itself a named 1-D XTensor, its own name is what the new
+    # axis should be called -- mirroring xarray's own vectorized-indexing
+    # convention (the shared dim name of the *indexer* arrays becomes the
+    # result's new dimension, not a separate parameter). An explicit `name=`
+    # still wins outright; two indexers disagreeing on a name (with no
+    # `name=` override to resolve it) is ambiguous and raises.
+    inferred_name = None
+    conflicting = None
+    for nm in names_in_group:
+        target = indexers[nm]
+        if (
+            isinstance(target, XTensor)
+            and target.ndim == 1
+            and target.names[0] is not None
+        ):
+            tname = target.names[0]
+            if inferred_name is None:
+                inferred_name = tname
+            elif inferred_name != tname:
+                conflicting = tname
+    if name is None and conflicting is not None:
+        raise ValueError(
+            f"interp: a joint affine query over {dims!r} "
+            f"({sorted(names_in_group)!r}) was given named indexers that "
+            f"disagree on the new axis's name ({inferred_name!r} vs. "
+            f"{conflicting!r}) -- pass an explicit name= to resolve it"
+        )
+    name = name if name is not None else inferred_name
+    broadcasted = []
+    for nm, vec, base, query, _, unit in per_name:
+        # `!= 1`, not `> 1`: an empty query (n == 0, #96's empty-axis case)
+        # still needs a length-1 sibling broadcast *down* to empty, or
+        # torch.stack sees mismatched [0]-vs-[1] rows and raises.
+        if query.numel() == 1 and n != 1:
+            query = query.expand(n)
+        broadcasted.append((nm, vec, base, query, unit))
+    matrix = torch.stack([vec for _, vec, _, _, _ in broadcasted])  # (k, k)
+    rhs = torch.stack(
+        [query - base for _, _, base, query, _ in broadcasted]
+    )  # (k, n)
+    try:
+        frac = torch.inverse(matrix) @ rhs  # (k, n)
+    except RuntimeError as exc:
+        if "singular" not in str(exc).lower():
+            raise
+        raise ValueError(
+            f"interp: the affine map over {dims!r} "
+            f"({sorted(names_in_group)!r}) isn't invertible: {exc}"
+        ) from None
+    frac = frac.T.contiguous()  # (n, k)
+
+    axes = [_resolve_axis(tensor.names, d) for d in dims]
+    raw = tensor.as_subclass(Tensor)
+    # `torch.movedim` takes a list of sources/destinations in one call, so
+    # every spanned axis lands at the end, in `dims` order, without the
+    # index-shifting hazard of several sequential single-axis calls.
+    moved = torch.movedim(raw, axes, list(range(-len(axes), 0)))
+    rest = moved.shape[: -len(axes)]
+    sizes = tuple(moved.shape[-len(axes) :])
+    batch = 1
+    for s in rest:
+        batch *= s
+
+    if n == 0:
+        # an empty query -> an empty new axis, mirroring #96's empty-axis
+        # convention for the ordinary 1-D interp path.
+        pulled = torch.empty(*rest, 0, dtype=moved.dtype, device=moved.device)
+    elif order == 0 and _interpol() is None:
+        pulled = _nd_nearest_pull(moved, frac.to(moved.device), sizes, bound)
+    else:
+        interpol = _interpol()
+        if interpol is None:
+            raise ImportError(
+                "interp with order >= 1 needs the fiery.interpol backend; "
+                "install fiery-xtensor[interp]"
+            )
+        flat = moved.reshape(batch, 1, *sizes)
+        if not flat.is_floating_point():
+            flat = flat.to(torch.get_default_dtype())
+        ndim = len(dims)
+        # `grid_pull` treats `grid` as a *dense* output grid, one axis per
+        # input spatial dim (`(batch, *outshape, dim)`, `len(outshape) ==
+        # dim` -- mirroring `torch.nn.functional.grid_sample`'s N-D
+        # convention, not a flat scattered-point-list API), so an arbitrary
+        # point list needs `ndim - 1` synthetic singleton output axes ahead
+        # of the real one (verified empirically against the installed
+        # backend for both 2-D and 3-D `dims`).
+        pad = (1,) * (ndim - 1)
+        grid = (
+            frac.reshape(1, *pad, n, ndim)
+            .to(flat)
+            .expand(batch, *pad, n, ndim)
+        )
+        pulled = interpol.grid_pull(
+            flat,
+            grid,
+            interpolation=order,
+            bound=bound,
+            extrapolate=extrapolate,
+        )  # (batch, 1, *pad, n)
+        pulled = pulled.reshape(*rest, n)
+
+    insert_at = min(axes)
+    if is_many_group:
+        result_raw = torch.movedim(pulled, -1, insert_at)
+    else:
+        result_raw = pulled.reshape(rest)
+
+    remaining_names = []
+    for i, nm0 in enumerate(tensor.names):
+        if i in axes:
+            if i == insert_at and is_many_group:
+                remaining_names.append(name)
+            continue
+        remaining_names.append(nm0)
+
+    out = _carry(tensor, result_raw)
+    out.names = tuple(remaining_names)
+    new_coords = _coords_dropping(tensor, *dims)
+    if is_many_group and name is not None:
+        for nm, _, _, query, unit in broadcasted:
+            values = query.to(torch.get_default_dtype())
+            new_coords[nm] = (name,), Coordinate(
+                values=XTensor(values, unit=unit)
+            )
+    out._coords = new_coords
+    return out
 
 
 def _slice_labels(labels: LabelsT, slicer: _SmartSlicerT) -> LabelsT | None:
