@@ -1,5 +1,5 @@
 ---
-icon: material/fire
+icon: fontawesome/solid/circle-right
 ---
 
 # fiery-xtensor
