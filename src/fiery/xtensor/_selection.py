@@ -74,9 +74,27 @@ def _is_compact_coord(spec: tx.Any) -> bool:
 
 
 def _is_explicit_coord(spec: tx.Any) -> bool:
-    """Whether a `coords[dim]` value is an **explicit** numeric coordinate -- a
-    tensor of positions -- rather than a sequence of labels."""
-    return isinstance(spec, Tensor)
+    """Whether a `coords[dim]` value is an **explicit** numeric coordinate --
+    a tensor of positions, or a `{"value": ...}` mapping wrapping one --
+    rather than a sequence of labels."""
+    if isinstance(spec, Tensor):
+        return True
+    return isinstance(spec, tx.Mapping) and "value" in spec
+
+
+def _check_unambiguous_coord_spec(spec: tx.Any) -> None:
+    """Raise if a mapping spec mixes an explicit `value` with a compact
+    `spacing`/`origin` -- ambiguous, never silently pick one over the
+    other."""
+    if (
+        isinstance(spec, tx.Mapping)
+        and "value" in spec
+        and ("spacing" in spec or "origin" in spec)
+    ):
+        raise ValueError(
+            "coords: a spec cannot mix an explicit 'value' with a compact "
+            "'spacing'/'origin' -- give one or the other"
+        )
 
 
 def _is_pure_number(label: tx.Any) -> bool:
@@ -102,7 +120,7 @@ def _check_curvilinear_shape(
     #82) against its spanned dims' current sizes, at construction time --
     the multi-dim counterpart of `_check_nondim_len`.
     """
-    raw = dict.__getitem__(coord, "values")
+    raw = dict.__getitem__(coord, "value")
     expected = tuple(shape[names.index(dim)] for dim in dims)
     if tuple(raw.shape) != expected:
         raise ValueError(
@@ -557,7 +575,7 @@ def _compact_range_slice(
 ) -> slice:
     """
     The compact-coordinate half of `_numeric_select_range` -- never
-    materialises `["values"]` (issue #110's O(1) property extends to range
+    materialises `["value"]` (issue #110's O(1) property extends to range
     selection too), sharing `_first_index_ge`/`_first_index_lt` with
     point-selection's closed-form path (`_numeric_select_compact`) rather
     than a second, independently-epsilon-tuned implementation.

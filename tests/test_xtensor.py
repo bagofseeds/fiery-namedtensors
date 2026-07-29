@@ -158,8 +158,8 @@ def test_non_dimension_numeric_coordinate():
             )
         },
     )
-    assert x.coords["wl"]["values"].tolist() == [400.0, 500.0, 600.0]
-    assert x.coords["wl"]["values"].unit == "nm"
+    assert x.coords["wl"]["value"].tolist() == [400.0, 500.0, 600.0]
+    assert x.coords["wl"]["value"].unit == "nm"
 
 
 def test_non_dimension_compact_coordinate_is_rejected():
@@ -189,8 +189,8 @@ def test_affine_coordinate_materialises_an_nd_grid():
             "lon": (["y", "x"], {"spacing": ([0.0, 2.0], "deg")}),
         },
     )
-    lat = x.coords["lat"]["values"].as_subclass(torch.Tensor)
-    lon = x.coords["lon"]["values"].as_subclass(torch.Tensor)
+    lat = x.coords["lat"]["value"].as_subclass(torch.Tensor)
+    lon = x.coords["lon"]["value"].as_subclass(torch.Tensor)
     expected_lat = (
         10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(4.0)
     )
@@ -274,7 +274,7 @@ def test_compact_coordinate_origin_only_defaults_spacing_to_one():
     # already defaults to 0 in `spacing`'s unit, an omitted `spacing`
     # defaults to 1 in `origin`'s unit.
     x = XTensor(torch.zeros(4), names=["t"], coords={"t": {"origin": 5.0}})
-    assert x.coords["t"]["values"].tolist() == [5.0, 6.0, 7.0, 8.0]
+    assert x.coords["t"]["value"].tolist() == [5.0, 6.0, 7.0, 8.0]
 
 
 def test_compact_coordinate_origin_only_default_spacing_shares_its_unit():
@@ -283,7 +283,7 @@ def test_compact_coordinate_origin_only_default_spacing_shares_its_unit():
         x = XTensor(
             torch.zeros(4), names=["t"], coords={"t": {"origin": (5.0, "mm")}}
         )
-        values = x.coords["t"]["values"]
+        values = x.coords["t"]["value"]
         assert values.unit == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             5.0,
@@ -321,7 +321,7 @@ def test_bare_numeric_tuple_coordinate_is_auto_promoted():
     # an int-only sequence keeps its int dtype (no gratuitous float upcast)
     y = XTensor(torch.arange(4.0), names=("t",), coords={"t": (0, 1, 2, 3)})
     assert (
-        y.coords["t"]["values"].as_subclass(torch.Tensor).dtype == torch.int64
+        y.coords["t"]["value"].as_subclass(torch.Tensor).dtype == torch.int64
     )
 
 
@@ -442,7 +442,7 @@ def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
             names=("t",),
             coords={"t": {"spacing": (1.0, "mm"), "origin": 5.0}},
         )
-        values = x.coords["t"]["values"]
+        values = x.coords["t"]["value"]
         assert values.unit == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             5.0,
@@ -460,7 +460,7 @@ def test_coordinate_origin_converts_into_spacings_unit_when_compatible():
             names=("t",),
             coords={"t": {"spacing": (0.5, "mm"), "origin": (1.0, "cm")}},
         )
-        values = x.coords["t"]["values"]
+        values = x.coords["t"]["value"]
         assert values.unit == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             10.0,
@@ -483,7 +483,7 @@ def test_coordinate_origin_converts_into_spacings_unit_when_compatible():
             10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(4.0)
         )
         assert torch.allclose(
-            y.coords["lat"]["values"].as_subclass(torch.Tensor), expected
+            y.coords["lat"]["value"].as_subclass(torch.Tensor), expected
         )
 
 
@@ -501,7 +501,7 @@ def test_coordinate_origin_incompatible_unit_raises():
 def test_coordinate_to_unit_carries_over_the_axis_size_binding():
     # `.to(unit)` on an already-bound coordinate (as returned by `.coords`)
     # must still materialise -- it previously dropped the binding and
-    # raised `AttributeError` on the next `["values"]` access.
+    # raised `AttributeError` on the next `["value"]` access.
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         x = XTensor(
@@ -510,8 +510,8 @@ def test_coordinate_to_unit_carries_over_the_axis_size_binding():
             coords={"t": {"spacing": (0.5, "mm")}},
         )
         converted = x.coords["t"].to("cm")
-        assert converted["values"].unit == "centimeter"
-        assert converted["values"].as_subclass(
+        assert converted["value"].unit == "centimeter"
+        assert converted["value"].as_subclass(
             torch.Tensor
         ).tolist() == pytest.approx([0.0, 0.05, 0.1, 0.15])
         # same for the multi-dim affine `_bound_axes` binding
@@ -521,9 +521,9 @@ def test_coordinate_to_unit_carries_over_the_axis_size_binding():
             coords={"lat": (("y", "x"), {"spacing": ([10.0, 5.0], "mm")})},
         )
         converted_lat = y.coords["lat"].to("cm")
-        assert converted_lat["values"].unit == "centimeter"
+        assert converted_lat["value"].unit == "centimeter"
         assert torch.allclose(
-            converted_lat["values"].as_subclass(torch.Tensor),
+            converted_lat["value"].as_subclass(torch.Tensor),
             torch.tensor(
                 [
                     [0.0, 0.5, 1.0, 1.5],
@@ -543,7 +543,7 @@ def test_multi_dim_explicit_coordinate_is_curvilinear():
         names=["y", "x"],
         coords={"lat": (["y", "x"], lat)},
     )
-    values = t.coords["lat"]["values"].as_subclass(torch.Tensor)
+    values = t.coords["lat"]["value"].as_subclass(torch.Tensor)
     assert torch.equal(values, lat)
 
 
@@ -586,7 +586,7 @@ def test_multi_dim_explicit_coordinate_follows_permute():
     permuted = t.permute(1, 0)
     expected = lat.permute(1, 0)
     assert torch.equal(
-        permuted.coords["lat"]["values"].as_subclass(torch.Tensor), expected
+        permuted.coords["lat"]["value"].as_subclass(torch.Tensor), expected
     )
 
 
@@ -723,7 +723,7 @@ def test_curvilinear_coordinate_survives_to_unit():
         ).permute(1, 0)
         bound = t.coords["lat"]
         expected = lat_raw.permute(1, 0) * 1000
-        converted = bound.to("mm")["values"].as_subclass(torch.Tensor)
+        converted = bound.to("mm")["value"].as_subclass(torch.Tensor)
         assert torch.equal(converted, expected)
 
 
@@ -836,15 +836,15 @@ def test_affine_coordinate_basic_slice_reslices_exactly():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     cropped = x[1:3, 1:4]
     assert torch.allclose(
-        cropped.coords["lat"]["values"].as_subclass(torch.Tensor),
+        cropped.coords["lat"]["value"].as_subclass(torch.Tensor),
         full[1:3, 1:4],
     )
     strided = x[::2, ::2]
     assert torch.allclose(
-        strided.coords["lat"]["values"].as_subclass(torch.Tensor),
+        strided.coords["lat"]["value"].as_subclass(torch.Tensor),
         full[::2, ::2],
     )
 
@@ -860,11 +860,11 @@ def test_affine_coordinate_integer_index_folds_a_dim_out():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     row = x[1, :]
     assert row.names == ("x",)
     assert torch.allclose(
-        row.coords["lat"]["values"].as_subclass(torch.Tensor), full[1, :]
+        row.coords["lat"]["value"].as_subclass(torch.Tensor), full[1, :]
     )
     # folding every spanned dim away leaves no axis for it to ride on
     assert "lat" not in x[1, 2].coords
@@ -884,11 +884,11 @@ def test_affine_coordinate_collapsed_to_one_dim_can_be_resliced_further():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     row = x[1, :]
     resliced = row[1:3]
     assert torch.allclose(
-        resliced.coords["lat"]["values"].as_subclass(torch.Tensor),
+        resliced.coords["lat"]["value"].as_subclass(torch.Tensor),
         full[1, 1:3],
     )
 
@@ -904,11 +904,11 @@ def test_affine_coordinate_partial_fold_and_slice_over_three_dims():
             )
         },
     )
-    full = x.coords["vol"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["vol"]["value"].as_subclass(torch.Tensor)
     sliced = x[1, 1:3, ::2]
     assert sliced.names == ("y", "x")
     assert torch.allclose(
-        sliced.coords["vol"]["values"].as_subclass(torch.Tensor),
+        sliced.coords["vol"]["value"].as_subclass(torch.Tensor),
         full[1, 1:3, ::2],
     )
 
@@ -934,10 +934,10 @@ def test_affine_coordinate_survives_rename():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     renamed = x.rename(y="row", x="col")
     assert torch.allclose(
-        renamed.coords["lat"]["values"].as_subclass(torch.Tensor), full
+        renamed.coords["lat"]["value"].as_subclass(torch.Tensor), full
     )
 
 
@@ -973,7 +973,7 @@ def test_affine_coordinate_rename_onto_one_of_its_dims_is_rejected():
 
 
 def test_affine_coordinate_grid_follows_the_tensor_axis_order():
-    # `["values"]` is a bare array with no dims of its own, so it must be laid
+    # `["value"]` is a bare array with no dims of its own, so it must be laid
     # out in the *tensor's* axis order -- otherwise transposing silently
     # misaligns the coordinate with the data (undetectably so when square).
     x = XTensor(
@@ -986,16 +986,16 @@ def test_affine_coordinate_grid_follows_the_tensor_axis_order():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     for moved in (x.permute(1, 0), x.transpose("y", "x"), x.movedim(0, 1)):
         assert moved.names == ("x", "y")
         assert torch.allclose(
-            moved.coords["lat"]["values"].as_subclass(torch.Tensor), full.T
+            moved.coords["lat"]["value"].as_subclass(torch.Tensor), full.T
         )
     # ... and it keeps following the axes through a later slice
     sliced = x.permute(1, 0)[1:4, 1:3]
     assert torch.allclose(
-        sliced.coords["lat"]["values"].as_subclass(torch.Tensor),
+        sliced.coords["lat"]["value"].as_subclass(torch.Tensor),
         full.T[1:4, 1:3],
     )
 
@@ -1013,12 +1013,12 @@ def test_affine_coordinate_dims_may_be_given_out_of_axis_order():
             )
         },
     )
-    values = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    values = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     expected = 10.0 + torch.arange(3.0).view(3, 1) + 0.5 * torch.arange(5.0)
     assert values.shape == x.shape
     assert torch.allclose(values, expected)
     assert torch.allclose(
-        x[1:3, ::2].coords["lat"]["values"].as_subclass(torch.Tensor),
+        x[1:3, ::2].coords["lat"]["value"].as_subclass(torch.Tensor),
         expected[1:3, ::2],
     )
 
@@ -1036,11 +1036,11 @@ def test_affine_coordinate_squeeze_folds_a_size_one_dim_exactly():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     for squeezed in (x.squeeze(), x.squeeze(dim="y")):
         assert squeezed.names == ("x",)
         assert torch.allclose(
-            squeezed.coords["lat"]["values"].as_subclass(torch.Tensor),
+            squeezed.coords["lat"]["value"].as_subclass(torch.Tensor),
             full[0, :],
         )
     # every spanned dim squeezed away -> no axis left, drops
@@ -1070,10 +1070,10 @@ def test_affine_coordinate_full_noop_slice_is_a_fast_path():
             )
         },
     )
-    full = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    full = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     noop = x[:, :]
     assert torch.allclose(
-        noop.coords["lat"]["values"].as_subclass(torch.Tensor), full
+        noop.coords["lat"]["value"].as_subclass(torch.Tensor), full
     )
 
 
@@ -1091,7 +1091,7 @@ def test_affine_coordinate_gradients_flow_through_spacing_and_origin():
             )
         },
     )
-    values = x.coords["lat"]["values"].as_subclass(torch.Tensor)
+    values = x.coords["lat"]["value"].as_subclass(torch.Tensor)
     values.sum().backward()
     assert sy.grad is not None
     assert sx.grad is not None
@@ -1358,8 +1358,8 @@ def test_affine_interp_many_query_produces_one_new_named_axis():
     assert out.shape == (2,)
     assert out[0].item() == field[1, 2].item()
     assert out[1].item() == field[2, 0].item()
-    assert out.coords["lat"]["values"].tolist() == [11.0, 12.0]
-    assert out.coords["lon"]["values"].tolist() == [24.0, 20.0]
+    assert out.coords["lat"]["value"].tolist() == [11.0, 12.0]
+    assert out.coords["lon"]["value"].tolist() == [24.0, 20.0]
 
 
 def test_affine_interp_new_axis_defaults_to_unnamed():
@@ -1688,9 +1688,9 @@ def test_compact_numeric_coordinate_stores_and_materialises():
     cx = x.coords["x"]
     assert cx["spacing"]["value"] == 0.5
     assert cx["spacing"].unit == "mm"  # attribute sugar for a safe key
-    # `["values"]` is a derived key: origin + i*spacing
-    assert cx["values"].tolist() == [-1.0, -0.5, 0.0, 0.5]
-    assert cx["values"].unit == "mm"  # the POSITION unit
+    # `["value"]` is a derived key: origin + i*spacing
+    assert cx["value"].tolist() == [-1.0, -0.5, 0.0, 0.5]
+    assert cx["value"].unit == "mm"  # the POSITION unit
 
 
 def test_numeric_and_categorical_coords_coexist():
@@ -1700,7 +1700,7 @@ def test_numeric_and_categorical_coords_coexist():
         coords={"c": ["r", "g", "b"], "x": {"spacing": (0.5, "mm")}},
     )
     assert x.coords["c"] == ("r", "g", "b")  # labels
-    assert x.coords["x"]["values"].tolist() == [0.0, 0.5, 1.0, 1.5]
+    assert x.coords["x"]["value"].tolist() == [0.0, 0.5, 1.0, 1.5]
 
 
 def test_numeric_coord_propagates_and_drops_with_its_axis():
@@ -1734,7 +1734,7 @@ def test_learnable_spacing_keeps_its_gradient():
         x = XTensor(
             torch.zeros(5), names=("t",), coords={"t": {"spacing": step}}
         )
-        x.coords["t"]["values"].sum().backward()
+        x.coords["t"]["value"].sum().backward()
         assert leaf.grad.item() == 10.0  # d/dstep sum(i*step) = 0+1+2+3+4
 
 
@@ -1813,7 +1813,7 @@ def test_as_xtensor_preserves_unit_names_coords_by_default():
     out = as_xtensor(x, unit="s")  # override only unit
     assert out.unit == "s"
     assert out.names == ("t",)  # preserved
-    assert out.coords["t"]["values"].tolist() == [
+    assert out.coords["t"]["value"].tolist() == [
         1.0,
         3.0,
         5.0,
@@ -1885,8 +1885,8 @@ def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
     assert out.unit == "mm"
     # the coordinate itself isn't converted -- only the data's own dtype is
     # -- so its dtype is untouched (int64), not just numerically equal.
-    assert out.coords["t"]["values"].dtype == torch.int64
-    assert out.coords["t"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert out.coords["t"]["value"].dtype == torch.int64
+    assert out.coords["t"]["value"].tolist() == [0.0, 1.0, 2.0, 3.0]
 
 
 def test_as_xtensor_device_override_actually_converts():
@@ -1980,8 +1980,131 @@ def test_spacing_unitful_converts():
 def test_explicit_numeric_coordinate_stores_positions():
     t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
     x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
-    assert x.coords["t"]["values"].tolist() == [0.0, 0.5, 2.0, 4.0]
-    assert x.coords["t"]["values"].unit == "s"  # position unit
+    assert x.coords["t"]["value"].tolist() == [0.0, 0.5, 2.0, 4.0]
+    assert x.coords["t"]["value"].unit == "s"  # position unit
+
+
+def test_explicit_dict_form_is_equivalent_to_a_bare_tensor():
+    # {"value": ...} is sugar for the same explicit coordinate a bare
+    # tensor/list produces -- not a distinct third coordinate kind.
+    bare = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")},
+    )
+    dict_form = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"value": XTensor([0.0, 0.5, 2.0, 4.0], unit="s")}},
+    )
+    assert isinstance(dict_form.coords["t"], Coordinate)
+    assert (
+        dict_form.coords["t"]["value"].tolist()
+        == bare.coords["t"]["value"].tolist()
+    )
+    assert dict_form.coords["t"]["value"].unit == "s"
+    assert dict_form.sel(t=0.5).item() == 1.0
+
+
+def test_bare_list_of_numbers_is_equivalent_to_the_explicit_dict_form():
+    from_list = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": (0.0, 0.5, 2.0, 4.0)}
+    )
+    from_dict = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"value": [0.0, 0.5, 2.0, 4.0]}},
+    )
+    assert isinstance(from_dict.coords["t"], Coordinate)
+    assert (
+        from_list.coords["t"]["value"].tolist()
+        == from_dict.coords["t"]["value"].tolist()
+    )
+    assert from_dict.coords["t"]["value"].unit == ""
+    assert (
+        from_dict.coords["t"]["value"].dtype
+        == from_list.coords["t"]["value"].dtype
+    )
+
+
+def test_explicit_dict_form_works_for_a_curvilinear_multi_dim_coordinate():
+    lat = torch.tensor([[10.0, 11.0], [12.0, 13.0]])
+    x = XTensor(
+        torch.arange(4.0).reshape(2, 2),
+        names=("y", "x"),
+        coords={
+            "lat": (("y", "x"), {"value": XTensor(lat, unit="deg")}),
+        },
+    )
+    assert isinstance(x.coords["lat"], Coordinate)
+    assert x.coords["lat"]["value"].tolist() == lat.tolist()
+    assert x.coords["lat"]["value"].unit == "deg"
+
+
+def test_coordinate_value_key_is_attribute_accessible():
+    # renamed from "values" specifically so it doesn't collide with dict's
+    # own `.values()` method -- `.value` is a real, working shortcut now,
+    # for an explicit coordinate.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": (0.0, 0.5, 2.0, 4.0)}
+    )
+    assert x.coords["t"].value.tolist() == [0.0, 0.5, 2.0, 4.0]
+
+
+def test_coordinate_value_attribute_still_raises_for_a_compact_coordinate():
+    # a known, pre-existing MagicDict limitation: "value" is a *derived* key
+    # for a compact coordinate (materialised only via bracket access), so it
+    # isn't seen by __getattr__'s "is this key actually present" check.
+    # Bracket access (["value"]) works either way.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    assert x.coords["t"]["value"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    with pytest.raises(AttributeError):
+        _ = x.coords["t"].value
+
+
+def test_mixed_compact_and_explicit_coord_spec_raises():
+    with pytest.raises(ValueError, match="cannot mix"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": {"spacing": 1.0, "value": [0.0, 1.0, 2.0, 3.0]}},
+        )
+
+
+def test_mixed_compact_and_explicit_multi_dim_coord_spec_raises():
+    with pytest.raises(ValueError, match="cannot mix"):
+        XTensor(
+            torch.arange(4.0).reshape(2, 2),
+            names=("y", "x"),
+            coords={
+                "lat": (
+                    ("y", "x"),
+                    {"spacing": [1.0, 2.0], "value": torch.zeros(2, 2)},
+                )
+            },
+        )
+
+
+def test_explicit_dict_form_length_mismatch_raises():
+    with pytest.raises(ValueError, match="has 2 values for size 4"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": {"value": [0.0, 1.0]}},
+        )
+
+
+def test_bare_tensor_length_mismatch_raises():
+    # a bare tensor used to silently drop the coordinate on a length
+    # mismatch instead of raising, unlike the label-promotion path.
+    with pytest.raises(ValueError, match="has 2 values for size 4"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": torch.tensor([0.0, 1.0])},
+        )
 
 
 def test_compact_coord_slices_affinely():
@@ -1991,18 +2114,18 @@ def test_compact_coord_slices_affinely():
         coords={"x": {"spacing": (0.5, "mm"), "origin": (0.0, "mm")}},
     )
     # an offset slice shifts origin; a strided slice scales spacing
-    off = x[2:].coords["x"]["values"].tolist()
+    off = x[2:].coords["x"]["value"].tolist()
     assert off == [1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
-    assert x[::2].coords["x"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
-    assert x[1:6:2].coords["x"]["values"].tolist() == [0.5, 1.5, 2.5]
+    assert x[::2].coords["x"]["value"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert x[1:6:2].coords["x"]["value"].tolist() == [0.5, 1.5, 2.5]
     assert "x" not in x[3].coords  # integer index drops the axis + coord
 
 
 def test_explicit_coord_slices_including_advanced():
     t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
     x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
-    assert x[1:3].coords["t"]["values"].tolist() == [0.5, 2.0]
-    assert x[[0, 2]].coords["t"]["values"].tolist() == [0.0, 2.0]
+    assert x[1:3].coords["t"]["value"].tolist() == [0.5, 2.0]
+    assert x[[0, 2]].coords["t"]["value"].tolist() == [0.0, 2.0]
 
 
 def test_compact_advanced_index_materialises_to_explicit():
@@ -2013,7 +2136,7 @@ def test_compact_advanced_index_materialises_to_explicit():
     )
     picked = x[[1, 3]].coords["x"]
     assert not picked._compact()  # became an explicit coordinate
-    assert picked["values"].tolist() == [0.5, 1.5]
+    assert picked["value"].tolist() == [0.5, 1.5]
 
 
 def test_coordinate_converts_its_position_unit():
@@ -2030,7 +2153,7 @@ def test_coordinate_converts_its_position_unit():
             names=("t",),
             coords={"t": XTensor(torch.tensor([1.0, 2.0, 3.0]), unit="mm")},
         )
-        got = explicit.coords["t"].to("um")["values"].tolist()
+        got = explicit.coords["t"].to("um")["value"].tolist()
         assert got == [1000.0, 2000.0, 3000.0]
 
 
@@ -2366,7 +2489,7 @@ def test_sel_compact_closed_form_miss_falls_back_correctly():
 
 def test_sel_compact_closed_form_miss_fallback_is_not_precision_starved():
     # the fallback must materialise at its OWN float64 precision, not go
-    # through Coordinate["values"] (which computes in the tensor's default,
+    # through Coordinate["value"] (which computes in the tensor's default,
     # float32, dtype) and upcast afterwards -- upcasting after the fact
     # cannot recover precision already lost, and in this exact regime that
     # silently turned a real tick into "no tick exists".
@@ -2770,7 +2893,7 @@ def test_interp_nearest_is_builtin_without_the_backend(monkeypatch):
     )
     got = x.interp(t=[3.0, 5.0], method="nearest")
     assert got.tolist() == [2.0, 2.0]  # round(1.5)=2, round(2.5)=2 (half-even)
-    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert got.coords["t"]["value"].as_subclass(torch.Tensor).tolist() == [
         3.0,
         5.0,
     ]
@@ -2854,7 +2977,7 @@ def test_interp_linear_computes_new_values():
     got = x.interp(t=[1.0, 3.0, 5.0])  # halfway ticks -> half-index values
     assert got.tolist() == [0.5, 1.5, 2.5]
     assert got.names == ("t",)
-    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert got.coords["t"]["value"].as_subclass(torch.Tensor).tolist() == [
         1.0,
         3.0,
         5.0,
@@ -2895,7 +3018,7 @@ def test_interp_empty_query_returns_an_empty_axis():
     got = x.interp(t=[])
     assert got.shape == (0,)
     assert got.names == ("t",)
-    assert got.coords["t"]["values"].tolist() == []
+    assert got.coords["t"]["value"].tolist() == []
 
     got_tensor_query = x.interp(t=torch.tensor([]))
     assert got_tensor_query.shape == (0,)
@@ -2970,7 +3093,7 @@ def test_interp_irregular_nearest_is_builtin_without_the_backend(monkeypatch):
     )
     got = x.interp(t=[2.5, 8.0], method="nearest")
     assert got.tolist() == [4.0, 9.0]  # nearest tick to 2.5 is 4, to 8 is 9
-    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert got.coords["t"]["value"].as_subclass(torch.Tensor).tolist() == [
         2.5,
         8.0,
     ]
@@ -2990,7 +3113,7 @@ def test_interp_irregular_linear_computes_new_values():
     # 2.5 is 1.5/3 of the way between ticks 1 and 4 (positions 1 and 2)
     got = x.interp(t=[0.5, 2.5])
     assert got.tolist() == pytest.approx([5.0, 15.0])
-    assert got.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert got.coords["t"]["value"].as_subclass(torch.Tensor).tolist() == [
         0.5,
         2.5,
     ]
@@ -3160,7 +3283,7 @@ def test_interp_irregular_is_unit_aware():
         got = x.interp(t=["500ms", "2500ms"])
         assert got.tolist() == pytest.approx([5.0, 15.0])
         # the new coordinate carries the *position* unit, not the query's
-        coord = got.coords["t"]["values"]
+        coord = got.coords["t"]["value"]
         assert coord.unit == "second"
         assert coord.as_subclass(torch.Tensor).tolist() == [0.5, 2.5]
 
@@ -3224,7 +3347,7 @@ def test_interp_irregular_on_a_sliced_coordinate():
         coords={"t": torch.tensor([0.0, 1.0, 4.0, 9.0, 25.0])},
     )
     sliced = x[::2]  # ticks 0, 4, 25 / data 3, 7, 11
-    assert sliced.coords["t"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert sliced.coords["t"]["value"].as_subclass(torch.Tensor).tolist() == [
         0.0,
         4.0,
         25.0,
@@ -3491,7 +3614,7 @@ def test_swap_dims_promotes_a_label_and_demotes_the_old_index():
     y = x.swap_dims({"time": "label"})
     assert y.names == ("label",)
     assert set(y.coords) == {"time", "label"}
-    assert y.coords["time"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert y.coords["time"]["value"].as_subclass(torch.Tensor).tolist() == [
         0.0,
         0.5,
         1.0,
@@ -3531,7 +3654,7 @@ def test_swap_dims_demotes_a_compact_coordinate_and_it_still_reslices():
     # the demoted compact coordinate keeps its old key and rides the renamed
     # axis, and still re-slices exactly (same machinery as a multi-dim affine
     # coordinate, generalised to a single dim).
-    values = y[:2].coords["t"]["values"].as_subclass(torch.Tensor)
+    values = y[:2].coords["t"]["value"].as_subclass(torch.Tensor)
     assert values.tolist() == [0.0, 1.0]
 
 
@@ -4193,8 +4316,8 @@ def test_flip_reverses_a_compact_numeric_coordinate_and_stays_compact():
     assert out.tolist() == [3.0, 2.0, 1.0, 0.0]
     coord = out.coords["t"]
     assert coord._compact()  # negating spacing keeps it exact + compact
-    assert coord["values"].tolist() == [3.0, 2.0, 1.0, 0.0]
-    assert out.flip("t").coords["t"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert coord["value"].tolist() == [3.0, 2.0, 1.0, 0.0]
+    assert out.flip("t").coords["t"]["value"].tolist() == [0.0, 1.0, 2.0, 3.0]
 
 
 def test_flip_reverses_an_explicit_numeric_coordinate():
@@ -4203,7 +4326,7 @@ def test_flip_reverses_an_explicit_numeric_coordinate():
         names=("t",),
         coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0])},
     )
-    assert x.flip("t").coords["t"]["values"].tolist() == [
+    assert x.flip("t").coords["t"]["value"].tolist() == [
         40.0,
         30.0,
         20.0,
@@ -4218,7 +4341,7 @@ def test_roll_rolls_a_compact_numeric_coordinate():
     # a right shift of 1: same cyclic convention as the label test above
     out = x.roll(1, dims="t")
     assert out.tolist() == [3.0, 0.0, 1.0, 2.0]
-    assert out.coords["t"]["values"].tolist() == [3.0, 0.0, 1.0, 2.0]
+    assert out.coords["t"]["value"].tolist() == [3.0, 0.0, 1.0, 2.0]
 
 
 def test_roll_rolls_an_explicit_numeric_coordinate():
@@ -4227,7 +4350,7 @@ def test_roll_rolls_an_explicit_numeric_coordinate():
         names=("t",),
         coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0])},
     )
-    assert x.roll(-1, dims="t").coords["t"]["values"].tolist() == [
+    assert x.roll(-1, dims="t").coords["t"]["value"].tolist() == [
         20.0,
         30.0,
         40.0,
@@ -4240,7 +4363,7 @@ def test_flip_of_a_compact_numeric_coordinate_keeps_gradients_flowing():
     x = XTensor(
         torch.arange(4.0), names=("t",), coords={"t": {"spacing": spacing}}
     )
-    x.flip("t").coords["t"]["values"].sum().backward()
+    x.flip("t").coords["t"]["value"].sum().backward()
     assert spacing.grad is not None
 
 
@@ -5111,7 +5234,7 @@ def test_axes_embeds_coordinates():
     )
     assert x.names == ("c", "x")
     assert x.coords["c"] == ("r", "g", "b")  # `labels` -> categorical coord
-    assert x.coords["x"]["values"].tolist() == [0.0, 0.5, 1.0, 1.5]  # `coord`
+    assert x.coords["x"]["value"].tolist() == [0.0, 0.5, 1.0, 1.5]  # `coord`
     assert x.axes[1] == {"name": "x", "type": "space"}  # meta kept
 
 
@@ -5732,7 +5855,7 @@ def test_deepcopy_produces_an_independent_copy_with_metadata():
     y = copy.deepcopy(x)
     assert type(y) is XTensor
     assert y.names == x.names
-    assert y.coords["t"]["values"].tolist() == x.coords["t"]["values"].tolist()
+    assert y.coords["t"]["value"].tolist() == x.coords["t"]["value"].tolist()
     y[0] = 99.0
     assert x[0].item() == 0.0  # independent storage, original untouched
 

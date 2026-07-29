@@ -133,7 +133,7 @@ def test_xmeshgrid_names_axes_and_carries_coords():
     assert gy.names == ("y", "x") and gx.names == ("y", "x")
     assert gy.shape == (3, 4)
     # each input becomes the coordinate along its own axis
-    assert gy.coords["y"]["values"].as_subclass(torch.Tensor).tolist() == [
+    assert gy.coords["y"]["value"].as_subclass(torch.Tensor).tolist() == [
         0,
         1,
         2,
