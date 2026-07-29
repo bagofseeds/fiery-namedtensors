@@ -41,6 +41,7 @@ from fiery.xtensor._options import get_option as _get_option
 from fiery.xtensor._selection import (
     _check_curvilinear_shape,
     _check_sel_tolerance,
+    _check_unambiguous_coord_spec,
     _closed_form_sel_index,
     _ClosedFormMiss,
     _compact_range_slice,
@@ -307,7 +308,16 @@ class XTensor(ExtendedTensor):
                 unified[key] = dims, coord
                 continue
             if _is_compact_coord(spec) or _is_explicit_coord(spec):
-                unified[key] = _pack_coord(key, _make_coordinate(spec))
+                coord = _make_coordinate(spec)
+                if not coord._compact():
+                    size = self.shape[names.index(key)]
+                    length = _nondim_coord_len(coord)
+                    if length != size:
+                        raise ValueError(
+                            f"coords: dim {key!r} has {length} values "
+                            f"for size {size}"
+                        )
+                unified[key] = _pack_coord(key, coord)
                 continue
             size = self.shape[names.index(key)]
             labels = tuple(spec)
@@ -1570,7 +1580,7 @@ class Coordinate(_units.MagicDict):
     def to(self, unit: tx.Any) -> "Coordinate":
         """
         Convert the coordinate's **position** unit, rescaling
-        `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
+        `spacing`/`origin` (compact) or the stored `value` (explicit). Needs a
         backend. Carries over whatever axis binding this coordinate already
         had, so `coords[name].to(unit)["value"]` still materialises
         correctly for the tensor it came from.
@@ -1779,7 +1789,9 @@ def _promote_numeric_labels(key: str, labels: tuple) -> tx.Any:
 
 
 def _make_coordinate(spec: tx.Any) -> Coordinate:
-    """Build a `Coordinate` from a compact spec or an explicit tensor."""
+    """Build a `Coordinate` from a compact spec, an explicit tensor, or a
+    `{"value": ...}` mapping wrapping one."""
+    _check_unambiguous_coord_spec(spec)
     if _is_explicit_coord(spec):
         if isinstance(spec, tx.Mapping):
             spec = spec["value"]
@@ -1824,6 +1836,7 @@ def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
     single scalar shared across them: `value[i_0,...] = origin +
     sum_d spacing[d] * i_d`.
     """
+    _check_unambiguous_coord_spec(spec)
     if "spacing" not in spec:
         raise ValueError(
             "coords: an affine (multi-dim) coordinate requires 'spacing'"
@@ -1848,11 +1861,13 @@ def _make_curvilinear_coordinate(
     slice/index through, so (per `_parse_nondim_coord`'s docstring) this
     coordinate simply drops once a spanned dim's size no longer matches.
     """
+    _check_unambiguous_coord_spec(spec)
     if not _is_explicit_coord(spec):
         raise ValueError(
             f"coords: {key!r} over several dims {dims!r} must be given as "
             "either a compact {'spacing': ...} affine map or an explicit "
-            f"tensor of values, got {spec!r}"
+            "tensor of values (or a {'value': ...} mapping wrapping one), "
+            f"got {spec!r}"
         )
     if isinstance(spec, tx.Mapping):
         spec = spec["value"]

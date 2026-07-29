@@ -82,6 +82,21 @@ def _is_explicit_coord(spec: tx.Any) -> bool:
     return isinstance(spec, tx.Mapping) and "value" in spec
 
 
+def _check_unambiguous_coord_spec(spec: tx.Any) -> None:
+    """Raise if a mapping spec mixes an explicit `value` with a compact
+    `spacing`/`origin` -- ambiguous, never silently pick one over the
+    other."""
+    if (
+        isinstance(spec, tx.Mapping)
+        and "value" in spec
+        and ("spacing" in spec or "origin" in spec)
+    ):
+        raise ValueError(
+            "coords: a spec cannot mix an explicit 'value' with a compact "
+            "'spacing'/'origin' -- give one or the other"
+        )
+
+
 def _is_pure_number(label: tx.Any) -> bool:
     """
     Whether a bare label is a **position**, not a category (issue #107) --

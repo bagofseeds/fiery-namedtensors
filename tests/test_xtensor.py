@@ -2015,9 +2015,15 @@ def test_bare_list_of_numbers_is_equivalent_to_the_explicit_dict_form():
         names=("t",),
         coords={"t": {"value": [0.0, 0.5, 2.0, 4.0]}},
     )
+    assert isinstance(from_dict.coords["t"], Coordinate)
     assert (
         from_list.coords["t"]["value"].tolist()
         == from_dict.coords["t"]["value"].tolist()
+    )
+    assert from_dict.coords["t"]["value"].unit == ""
+    assert (
+        from_dict.coords["t"]["value"].dtype
+        == from_list.coords["t"]["value"].dtype
     )
 
 
@@ -2026,18 +2032,79 @@ def test_explicit_dict_form_works_for_a_curvilinear_multi_dim_coordinate():
     x = XTensor(
         torch.arange(4.0).reshape(2, 2),
         names=("y", "x"),
-        coords={"lat": (("y", "x"), {"value": lat})},
+        coords={
+            "lat": (("y", "x"), {"value": XTensor(lat, unit="deg")}),
+        },
     )
+    assert isinstance(x.coords["lat"], Coordinate)
     assert x.coords["lat"]["value"].tolist() == lat.tolist()
+    assert x.coords["lat"]["value"].unit == "deg"
 
 
 def test_coordinate_value_key_is_attribute_accessible():
     # renamed from "values" specifically so it doesn't collide with dict's
-    # own `.values()` method -- `.value` is a real, working shortcut now.
+    # own `.values()` method -- `.value` is a real, working shortcut now,
+    # for an explicit coordinate.
     x = XTensor(
         torch.arange(4.0), names=("t",), coords={"t": (0.0, 0.5, 2.0, 4.0)}
     )
     assert x.coords["t"].value.tolist() == [0.0, 0.5, 2.0, 4.0]
+
+
+def test_coordinate_value_attribute_still_raises_for_a_compact_coordinate():
+    # a known, pre-existing MagicDict limitation: "value" is a *derived* key
+    # for a compact coordinate (materialised only via bracket access), so it
+    # isn't seen by __getattr__'s "is this key actually present" check.
+    # Bracket access (["value"]) works either way.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    assert x.coords["t"]["value"].tolist() == [0.0, 1.0, 2.0, 3.0]
+    with pytest.raises(AttributeError):
+        _ = x.coords["t"].value
+
+
+def test_mixed_compact_and_explicit_coord_spec_raises():
+    with pytest.raises(ValueError, match="cannot mix"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": {"spacing": 1.0, "value": [0.0, 1.0, 2.0, 3.0]}},
+        )
+
+
+def test_mixed_compact_and_explicit_multi_dim_coord_spec_raises():
+    with pytest.raises(ValueError, match="cannot mix"):
+        XTensor(
+            torch.arange(4.0).reshape(2, 2),
+            names=("y", "x"),
+            coords={
+                "lat": (
+                    ("y", "x"),
+                    {"spacing": [1.0, 2.0], "value": torch.zeros(2, 2)},
+                )
+            },
+        )
+
+
+def test_explicit_dict_form_length_mismatch_raises():
+    with pytest.raises(ValueError, match="has 2 values for size 4"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": {"value": [0.0, 1.0]}},
+        )
+
+
+def test_bare_tensor_length_mismatch_raises():
+    # a bare tensor used to silently drop the coordinate on a length
+    # mismatch instead of raising, unlike the label-promotion path.
+    with pytest.raises(ValueError, match="has 2 values for size 4"):
+        XTensor(
+            torch.arange(4.0),
+            names=("t",),
+            coords={"t": torch.tensor([0.0, 1.0])},
+        )
 
 
 def test_compact_coord_slices_affinely():
