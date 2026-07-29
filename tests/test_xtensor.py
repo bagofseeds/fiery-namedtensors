@@ -1143,6 +1143,16 @@ def test_affine_interp_explicit_name_overrides_and_resolves_conflicts():
     assert out2.names == ("explicit",)
 
 
+def test_affine_interp_rejects_a_non_string_name():
+    # name= binds to this parameter before a same-named indexer ever
+    # reaches **indexers_kwargs -- so a dim literally called "name" queried
+    # as interp(name=3.0) would otherwise silently do nothing at all
+    # (indexers ends up empty). A loud TypeError beats that silent no-op.
+    x = _lat_lon_tensor()
+    with pytest.raises(TypeError, match="name= must be a str or None"):
+        x.interp(lat=11.0, lon=24.0, name=3.0)
+
+
 def test_affine_interp_new_axis_lands_at_the_left_most_spanned_position():
     pytest.importorskip("fiery.interpol")
     field = torch.arange(24.0).reshape(2, 3, 4)
@@ -1249,6 +1259,20 @@ def test_affine_interp_empty_query_returns_an_empty_axis():
     out = x.interp(lat=[], lon=[], name="pts")
     assert out.shape == (0,)
     assert out.names == ("pts",)
+
+
+def test_affine_interp_empty_query_broadcasts_against_a_scalar_sibling():
+    # a length-1 (or scalar) sibling has to broadcast *down* to empty, not
+    # just up -- previously only "n > 1" expanded, so an empty query paired
+    # with a scalar/length-1 one crashed inside torch.stack instead of
+    # producing a well-formed empty axis (review finding on PR #124).
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    out = x.interp(lat=[], lon=2.0, name="pts")
+    assert out.shape == (0,)
+    assert out.names == ("pts",)
+    out2 = x.interp(lat=[], lon=[1.0], name="pts")
+    assert out2.shape == (0,)
 
 
 def test_affine_interp_nearest_works_without_the_backend(monkeypatch):
@@ -2417,6 +2441,7 @@ def test_interp_nearest_is_builtin_without_the_backend(monkeypatch):
 
 
 def test_interp_accepts_indexers_as_a_dict():
+    pytest.importorskip("fiery.interpol")
     x = XTensor(
         torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
     )
@@ -2427,6 +2452,7 @@ def test_interp_dict_escape_hatch_reaches_a_dim_named_like_a_keyword():
     # a dim literally named "method" can never be spelled as a keyword
     # argument -- interp(method=...) always binds interp's own parameter,
     # never the indexers -- so the dict form is the only way to reach it.
+    pytest.importorskip("fiery.interpol")
     x = XTensor(
         torch.arange(5.0),
         names=("method",),

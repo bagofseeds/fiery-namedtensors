@@ -1390,9 +1390,10 @@ class XTensor(ExtendedTensor):
         xarray derives the result's new dimension from the *indexer*
         arrays' own shared dim name -- else unnamed (matching
         [`xstack`][fiery.xtensor.xstack]'s convention for a brand-new axis
-        with nothing to infer from). It carries every queried name's own
-        sampled values as a riding coordinate. Only **one** joint group per
-        call is supported for now
+        with nothing to infer from). When a name *is* resolved, the axis
+        carries every queried name's own sampled values as a riding
+        coordinate -- an unnamed axis can't be keyed, so it has none. Only
+        **one** joint group per call is supported for now
         (#82 phase 2); call `interp` again for a second group.
 
         Pass `indexers` as an explicit mapping (`x.interp({"method":
@@ -1404,6 +1405,19 @@ class XTensor(ExtendedTensor):
         Passing both raises.
         """
         indexers = _either_dict_or_kwargs(indexers, indexers_kwargs, "interp")
+        if name is not None and not isinstance(name, str):
+            # `name=` binds to this parameter before a same-named indexer
+            # ever reaches `**indexers_kwargs` -- so `interp(name=3.0)` on a
+            # dim literally called "name" would otherwise silently query
+            # nothing at all (name=3.0 stored as an axis name never used,
+            # since interp is numeric-only, no query needs a string here).
+            # Catching the type mismatch turns that into a loud error;
+            # reach the dim via the indexers= dict instead.
+            raise TypeError(
+                f"interp: name= must be a str or None, got {name!r} -- "
+                "pass indexers={'name': ...} to query a dim literally "
+                "called 'name'"
+            )
         out, consumed = self._affine_interp_group(
             indexers, method, bound, extrapolate, name
         )
@@ -3408,7 +3422,10 @@ def _affine_interp_pull(
     name = name if name is not None else inferred_name
     broadcasted = []
     for nm, vec, base, query, _, unit in per_name:
-        if query.numel() == 1 and n > 1:
+        # `!= 1`, not `> 1`: an empty query (n == 0, #96's empty-axis case)
+        # still needs a length-1 sibling broadcast *down* to empty, or
+        # torch.stack sees mismatched [0]-vs-[1] rows and raises.
+        if query.numel() == 1 and n != 1:
             query = query.expand(n)
         broadcasted.append((nm, vec, base, query, unit))
     matrix = torch.stack([vec for _, vec, _, _, _ in broadcasted])  # (k, k)
