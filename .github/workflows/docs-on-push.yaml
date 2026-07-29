@@ -15,3 +15,4 @@ jobs:
     uses: ./.github/workflows/docs.yaml
     with:
       tag: ${{ github.ref }}
+      pip-install: "-e ."

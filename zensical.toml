@@ -82,6 +82,7 @@ inventories = [
 paths = ["src"]
 
 [project.plugins.mkdocstrings.handlers.python.options]
+extensions = ["docs/griffe_ext.py"]
 docstring_style = "numpy"
 inherited_members = false
 show_source = false

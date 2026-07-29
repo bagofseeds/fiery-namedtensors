@@ -1,4 +1,7 @@
 zensical >= 0.0.11
 mkdocstrings[python] >= 1.0.0
+# docs/griffe_ext.py uses the on_class/on_module post-load hooks, which are
+# griffe 2.x only -- on griffe 1.x the extension would silently do nothing.
+griffe >= 2
 markdown-grid-tables
 griffe-typing-extensions @ git+https://github.com/bagofseeds/griffe-typing-extensions.git@main
