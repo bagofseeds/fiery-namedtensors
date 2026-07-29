@@ -18,6 +18,11 @@ The `x*` factories ([`xzeros`][fiery.xtensor.xzeros],
 `XTensor` directly from the matching `torch.*` factory, naming (and labelling)
 the axes at creation time; the `x*_like` variants inherit an `XTensor` input's
 names, coordinates, and unit.
+
+[`as_xtensor`][fiery.xtensor.as_xtensor] is the `XTensor` analogue of
+`torch.as_tensor`: coerce a bare number, a plain `Tensor`, or an `XTensor`
+into an `XTensor`, graph-safely, preserving `unit`/`names`/`coords` unless a
+keyword explicitly overrides them.
 """
 
 from fiery.xtensor._factories import (
@@ -47,6 +52,7 @@ from fiery.xtensor._options import set_options
 from fiery.xtensor._tensors import (
     ExtendedTensor,
     XTensor,
+    as_xtensor,
 )
 
 #: Lowercase alias of [`XTensor`][fiery.xtensor.XTensor].
@@ -60,6 +66,7 @@ except ImportError:  # pragma: no cover - only during editable/source use
 __all__ = [
     "ExtendedTensor",
     "XTensor",
+    "as_xtensor",
     "xtensor",
     "xvector",
     "xmatrix",
