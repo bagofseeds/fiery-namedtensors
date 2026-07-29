@@ -452,7 +452,7 @@ Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
 4. **A tensor with no coordinates reports `{}`** and must still slice/select
    without error; a labelled dim must be named.
 
-## Documentation style (`docs/*.md`, tutorials, examples)
+## Documentation style (`docs/*.md`, tutorials, examples, public docstrings)
 
 Docs are for **humans who are not necessarily experts in arcane Python/PyTorch
 features**. They want to know how to call `xtensor` well — correct,
@@ -471,6 +471,29 @@ page, tutorial, and example — not just the header doc-comments:
    exists and the example should use it, or `xtensor` itself is missing
    sugar — file an `enhancement` issue for the gap rather than shipping an
    awkward example.
+
+**This applies equally to every public docstring** (any class/function/method
+without a leading underscore, reachable from `fiery.xtensor`'s public API) —
+the API reference page renders them directly via `mkdocstrings`, so a
+docstring *is* a doc page, not an implementation note. Concretely, a public
+docstring must **not**:
+
+- reference an issue/PR number (`#82`, `#97`, ...) or a review finding — that
+  context belongs in a commit message, a code comment, or this file, not in
+  front of a user trying to learn the API;
+- name an internal mechanism the reader has no reason to know about (which
+  helper function resolves it, which internal `Coordinate` form is used) —
+  say what the call does and how to use it, not how it's implemented;
+- read like a note to a fellow contributor ("kept for symmetry with X",
+  "this was previously broken", "see the other function's docstring for
+  why") — say what the reader needs, not the history of how it got that way.
+
+Internal rationale, historical context, and cross-references to *other private
+helpers* still belong somewhere — just not in a public docstring: use a code
+comment near the implementation, or one of this file's own sections, instead.
+
+Wrap this same standard when adding an entry to the API reference — see
+`docs/api/*.md` and the `mkdocstrings` config in `zensical.toml`.
 
 ## Known follow-ups (see the tracking issues)
 
