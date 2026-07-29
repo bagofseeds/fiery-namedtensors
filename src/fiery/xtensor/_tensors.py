@@ -1559,35 +1559,70 @@ class Coordinate(_units.MagicDict):
         return out
 
 
-def _coerce_unitful_tensor(value: tx.Any, unit: tx.Any) -> XTensor:
+def as_xtensor(
+    value: tx.Any,
+    *,
+    unit: tx.Any = arrayutils._UNSET,
+    names: tx.Any = arrayutils._UNSET,
+    coords: tx.Any = arrayutils._UNSET,
+) -> XTensor:
     """
-    Coerce a unitful **value** (a bare Python number, a plain `Tensor`, or an
-    `XTensor`) into a real `XTensor` carrying `unit` -- **graph-safe**: an
-    already-a-tensor `value` keeps its exact autograd history (same storage,
-    since no dtype/device conversion is ever requested here), never a
-    detaching copy.
+    Coerce `value` (a bare Python number, a plain `Tensor`, or an `XTensor`)
+    into an `XTensor` -- the `XTensor` analogue of `torch.as_tensor` (issue
+    #114, generalising #112's `_coerce_unitful_tensor`): **graph-safe**
+    (`torch.as_tensor(value)` with no `dtype=`/`device=` is a strict identity
+    passthrough for an already-a-tensor `value` -- the *same object*, never a
+    detaching copy, unlike `torch.tensor(existing_tensor)`'s well-known
+    footgun of silently returning a fresh, non-differentiable leaf), and
+    metadata-preserving: `unit`/`names`/`coords` ride through untouched
+    unless a keyword **explicitly** overrides them -- mirroring how
+    `torch.as_tensor(t, dtype=..., device=...)` only converts what you pass.
+    A given override **replaces wholesale**, never merges (`coords={...}`
+    discards whatever coordinates `value` already had, rather than combining
+    the two) -- simpler to specify and implement than a per-key merge, and
+    there's no established "merge coords" semantics to fall back on anyway.
 
-    This exists to replace `Unitful`'s bare-scalar-or-tensor storage with a
-    uniform `XTensor` representation without silently severing a learnable
-    `spacing`/`origin`'s gradient -- the classic footgun here is
-    `torch.tensor(existing_tensor)`, which PyTorch itself warns about: it
-    always **copies**, silently returning a fresh, non-differentiable leaf
-    (`requires_grad=False`, no `grad_fn`) even when the input required grad.
+    Unlike `torch.as_tensor`, this does **not** accept `dtype=`/`device=`:
+    those change what the *data* is, not what it's labelled, and mixing them
+    in here would blur `as_xtensor`'s one job (metadata coercion) with
+    `torch.as_tensor`'s (dtype/device conversion) -- call `torch.as_tensor`
+    or `.to(...)` first if you need both.
 
-    `torch.as_tensor(value)` with no `dtype=`/`device=` is a strict identity
-    passthrough for an already-a-tensor `value` -- the *same object*, subclass
-    and all (no conversion is ever requested, so there's no path where it
-    would drop `XTensor`-ness or the graph) -- and constructs a fresh tensor
-    for a bare Python scalar (which was never part of a graph to begin with).
-    Either way, wrapping the result in `XTensor(..., unit=unit)` -- itself
-    graph-safe, built on `as_subclass` -- is what actually re-establishes the
-    (possibly new) `unit`; a bare scalar's dtype is left to `as_tensor`'s own
-    inference (an `int` stays `int64`, a `float` becomes `get_default_dtype()`
-    -- both match what `Unitful`'s current do-nothing storage already leaves
-    downstream arithmetic to produce, so this doesn't change existing
-    behaviour for either).
+    `value`'s own tensor is never mutated: when nothing is overridden and
+    `value` is already an `XTensor`, it is returned as-is (the same object,
+    metadata included); otherwise the result is always a **fresh** subclass
+    view (`Tensor.as_subclass`, no data copy) before any override is
+    applied, so overriding e.g. `unit=` never reaches back and changes
+    `value`'s own unit as a side effect.
     """
-    return XTensor(torch.as_tensor(value), unit=unit)
+    base = torch.as_tensor(value)
+    if isinstance(base, XTensor) and (
+        unit is arrayutils._UNSET
+        and names is arrayutils._UNSET
+        and coords is arrayutils._UNSET
+    ):
+        return base
+    out_cls = type(base) if isinstance(base, XTensor) else XTensor
+    out = base.as_subclass(out_cls)
+    if isinstance(base, XTensor):
+        # copy the *raw* stored metadata directly, not through the
+        # `names`/`coords` property setters -- those validate against
+        # `out`'s already-current names/shape, which is premature when
+        # `names` is being overridden in the same call: a coordinate keyed
+        # by the *old* name would fail that validation outright instead of
+        # simply going stale (`.coords`'s own getter already treats a
+        # coordinate whose dim isn't a current name as invalid and silently
+        # drops it -- direct assignment to `.names` on an existing `XTensor`
+        # has exactly this same behaviour today, so this matches it rather
+        # than introducing a new failure mode).
+        out.__dict__.update(base.__dict__)
+    if names is not arrayutils._UNSET:
+        out.names = names
+    if unit is not arrayutils._UNSET:
+        out.unit = unit
+    if coords is not arrayutils._UNSET:
+        out.coords = coords
+    return out
 
 
 def _as_unitful(obj: tx.Any) -> tx.Any:
@@ -1763,9 +1798,16 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
     """Build a `Coordinate` from a compact spec or an explicit tensor."""
     if _is_explicit_coord(spec):
         if isinstance(spec, XTensor) and spec.unit is not None:
-            values = spec
+            values = as_xtensor(spec)  # preserve its own unit, graph-safe
         else:
-            values = XTensor(spec, unit=_units.normalise(""))
+            # force dimensionless -- via the override kwarg, not a post-hoc
+            # mutation, so a unit-less `spec` is never changed in place.
+            # (Benign behaviour change vs. the old `XTensor(spec, unit=...)`
+            # call this replaced: if `spec` is itself an XTensor with
+            # `unit=None`, its own `names`/`coords` now ride along instead of
+            # being silently dropped -- verified inert for every existing
+            # caller, since a bare Tensor/number spec has none to preserve.)
+            values = as_xtensor(spec, unit=_units.normalise(""))
         if values.ndim != 1:
             raise ValueError(
                 "coords: a numeric coordinate must be 1-D, got shape "

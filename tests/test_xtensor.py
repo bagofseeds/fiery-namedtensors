@@ -7,13 +7,13 @@ import torch
 
 from fiery.xtensor import (
     XTensor,
+    as_xtensor,
     set_options,
     xmatrix,
     xvector,
 )
 from fiery.xtensor._tensors import (
     Coordinate,
-    _coerce_unitful_tensor,
     _slice_labels,
     _torch_func,
 )
@@ -942,55 +942,132 @@ def test_learnable_spacing_keeps_its_gradient():
         assert leaf.grad.item() == 10.0  # d/dstep sum(i*step) = 0+1+2+3+4
 
 
-def test_coerce_unitful_tensor_from_a_bare_scalar():
-    out = _coerce_unitful_tensor(2.0, "mm")
+def test_as_xtensor_from_a_bare_scalar():
+    out = as_xtensor(2.0, unit="mm")
     assert isinstance(out, XTensor)
     assert out.item() == 2.0
     assert out.unit == "mm"
     assert not out.requires_grad
 
 
-def test_coerce_unitful_tensor_does_not_force_a_float_dtype():
+def test_as_xtensor_does_not_force_a_float_dtype():
     # must not change the input's natural dtype (review comment on #112):
-    # an int spacing/origin stays int64, matching what Unitful's current
-    # do-nothing storage already lets downstream arithmetic produce.
-    assert _coerce_unitful_tensor(2, "").dtype == torch.int64
-    assert _coerce_unitful_tensor(2.0, "").dtype == torch.get_default_dtype()
+    # an int value stays int64, matching what Unitful's old do-nothing
+    # storage already let downstream arithmetic produce.
+    assert as_xtensor(2, unit="").dtype == torch.int64
+    assert as_xtensor(2.0, unit="").dtype == torch.get_default_dtype()
 
 
-def test_coerce_unitful_tensor_preserves_the_graph_of_an_existing_tensor():
+def test_as_xtensor_preserves_the_graph_of_an_existing_tensor():
     # the torch.tensor(existing_tensor) footgun: it always copies, silently
     # returning requires_grad=False even when the input required grad. This
     # must go through the as_subclass-based (torch.as_tensor-like) path
     # instead, which never detaches.
     leaf = torch.tensor(2.0, requires_grad=True)
-    out = _coerce_unitful_tensor(leaf, "mm")
+    out = as_xtensor(leaf, unit="mm")
     assert out.requires_grad
     assert out.data_ptr() == leaf.data_ptr()  # same storage, no copy at all
     (out.as_subclass(torch.Tensor) * 3).sum().backward()
     assert leaf.grad.item() == 3.0
 
 
-def test_coerce_unitful_tensor_preserves_the_graph_across_a_dtype_conversion():
+def test_as_xtensor_preserves_the_graph_across_a_dtype_conversion():
     # a genuine dtype conversion still has to happen (float32 -> float64),
     # so it can't be the *same* tensor -- but it must stay a differentiable
     # op, not a detaching copy.
     leaf = torch.tensor(2.0, dtype=torch.float32, requires_grad=True)
-    out = _coerce_unitful_tensor(leaf.to(torch.float64), "mm")
+    out = as_xtensor(leaf.to(torch.float64), unit="mm")
     assert out.requires_grad
     assert out.dtype == torch.float64
     (out.as_subclass(torch.Tensor) * 5).sum().backward()
     assert leaf.grad.item() == 5.0
 
 
-def test_coerce_unitful_tensor_from_a_plain_non_xtensor_tensor():
+def test_as_xtensor_from_a_plain_non_xtensor_tensor():
     leaf = torch.tensor(3.0, requires_grad=True)
-    out = _coerce_unitful_tensor(leaf, "s")
+    out = as_xtensor(leaf, unit="s")
     assert isinstance(out, XTensor)
     assert out.unit == "s"
     assert out.requires_grad
     (out.as_subclass(torch.Tensor) * 2).sum().backward()
     assert leaf.grad.item() == 2.0
+
+
+def test_as_xtensor_with_no_overrides_is_a_true_passthrough():
+    # value is already an XTensor and nothing is overridden -- the exact
+    # same object comes back (metadata, graph, and identity all untouched),
+    # matching torch.as_tensor's own "no conversion requested" contract.
+    x = XTensor(
+        torch.arange(4.0, requires_grad=True),
+        names=("t",),
+        coords={"t": {"spacing": 1.0}},
+        unit="mm",
+    )
+    out = as_xtensor(x)
+    assert out is x
+
+
+def test_as_xtensor_preserves_unit_names_coords_by_default():
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 1.0}},
+        unit="mm",
+    )
+    out = as_xtensor(x, unit="s")  # override only unit
+    assert out.unit == "s"
+    assert out.names == ("t",)  # preserved
+    assert out.coords["t"]["values"].tolist() == [
+        1.0,
+        3.0,
+        5.0,
+        7.0,
+    ]  # preserved
+
+
+def test_as_xtensor_renaming_goes_stale_the_same_way_a_direct_rename_does():
+    # overriding `names` while a coordinate is keyed by the *old* name isn't
+    # a rename-and-follow -- it goes stale (filtered out by `.coords`'s own
+    # getter), exactly like reassigning `.names` directly on an existing
+    # `XTensor` already does; pass `coords=` explicitly to set up a
+    # coordinate under the new name instead.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    out = as_xtensor(x, names=("u",))
+    assert out.coords == {}
+    # matches: a plain rename on the original already drops it this way too
+    x.names = ("u",)
+    assert x.coords == {}
+
+
+def test_as_xtensor_override_replaces_wholesale_not_merge():
+    x = XTensor(torch.arange(3.0), names=("c",), coords={"c": ("r", "g", "b")})
+    out = as_xtensor(x, coords={"c": ("x", "y", "z")})
+    assert out.coords["c"] == ("x", "y", "z")  # replaced, not merged/appended
+
+
+def test_as_xtensor_never_mutates_the_original_when_overriding():
+    x = XTensor(torch.arange(3.0), names=("c",), unit="mm")
+    out = as_xtensor(x, unit="s")
+    assert out.unit == "s"
+    assert x.unit == "mm"  # the original is untouched
+    assert out is not x
+
+
+def test_as_xtensor_preserves_axis_descriptors_when_overriding_the_unit():
+    x = XTensor(
+        torch.arange(2.0),
+        axes=[{"name": "x", "type": "space", "unit": "mm"}],
+    )
+    out = as_xtensor(x, unit="s")  # override unrelated metadata
+    assert out.axes[0]["type"] == "space"  # descriptor still rides through
+
+
+def test_as_xtensor_explicit_none_clears_the_unit():
+    x = XTensor(torch.arange(3.0), unit="mm")
+    out = as_xtensor(x, unit=None)
+    assert out.unit is None
 
 
 def test_spacing_unitful_converts():
