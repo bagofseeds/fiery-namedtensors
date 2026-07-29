@@ -158,6 +158,67 @@ of the coordinate's own direction — `slice(lo, hi)` and `slice(hi, lo)`
 select the same range. An out-of-range or empty result is a well-formed
 empty axis, not an error.
 
+### Selecting near a value
+
+A bare `.sel(t=v)` (no `mode`) is **exact** — it raises if `v` isn't an
+existing tick. Pass `mode` to snap to a nearby one instead:
+
+=== "Nearest (round)"
+
+    ```python
+    sig.sel(t=1.2, mode="round")   # the nearest tick by value
+    ```
+
+=== "Floor / ceil"
+
+    ```python
+    sig.sel(t=1.2, mode="floor")   # largest tick <= 1.2
+    sig.sel(t=1.2, mode="ceil")    # smallest tick >= 1.2
+    ```
+
+=== "Prev / next"
+
+    ```python
+    sig.sel(t=1.2, mode="prev")   # neighbouring tick at the lower index
+    sig.sel(t=1.2, mode="next")   # neighbouring tick at the higher index
+    ```
+
+A `mode` alone snaps with no limit on the distance; add `tolerance` to cap
+how far it's allowed to go:
+
+```python
+sig.sel(t=1.2, mode="round", tolerance=0.1)   # raises: nearest tick is farther away than 0.1
+```
+
+## Interpolating between ticks
+
+Where `.sel` picks an existing position, `.interp` computes a value at an
+arbitrary one:
+
+```python
+sig.interp(t=1.25)               # one point -> drops the axis
+sig.interp(t=[1.0, 1.25, 1.5])   # several   -> keeps the axis, the queried
+                                  # values becoming its new coordinate
+```
+
+`method` picks the interpolation order: `"nearest"` works out of the box;
+anything higher (`"linear"` *(default)*, `"quadratic"`, `"cubic"`, or a plain
+integer order) needs the optional interpolation extra,
+`pip install fiery-xtensor[interp]`. A **regular** coordinate (`spacing`/
+`origin`) supports every order; an **irregular** one only `"nearest"`/
+`"linear"`.
+
+An out-of-range query is governed by `bound` (default `"replicate"`, which
+clamps to the edge value) and `extrapolate`, settable per call or as a
+standing default with [`set_options`][fiery.xtensor.set_options]:
+
+```python
+sig.interp(t=10.0, bound="replicate")   # clamps to the last tick
+
+with set_options(interp_bound="replicate"):
+    sig.interp(t=10.0)   # every call in this block clamps too
+```
+
 ## Multiple coordinates per axis
 
 An axis can carry more than one coordinate at once — its own index, plus any
