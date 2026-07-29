@@ -2482,6 +2482,7 @@ def test_interp_indexers_is_captured_positionally_not_by_keyword():
     # dim literally named "indexers" still has to work as an ordinary
     # keyword argument, since the positional mapping is captured via
     # *args, never a named `indexers=` parameter.
+    pytest.importorskip("fiery.interpol")
     x = XTensor(
         torch.arange(5.0),
         names=("indexers",),
