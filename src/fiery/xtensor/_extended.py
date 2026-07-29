@@ -42,10 +42,10 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         """
         Decorator to register a function override.
 
-        `func` may be `None` (e.g. when resolved through `torch_func` for an
-        op that does not exist in the running PyTorch version); in that case
-        the override is silently skipped so that we never overload a
-        function that is missing from this PyTorch build.
+        `func` may be `None` (an op that does not exist in the running
+        PyTorch version); in that case the override is silently skipped so
+        that we never overload a function that is missing from this
+        PyTorch build.
         """
 
         def decorator(newfunc: tx.Callable) -> tx.Callable:

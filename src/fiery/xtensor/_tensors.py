@@ -217,25 +217,23 @@ class XTensor(ExtendedTensor):
     def coords(self) -> dict[str, LabelsT]:
         """
         The coordinates, as a `{dim name: coordinate}` dict. A coordinate is a
-        tuple of **labels**, or a compact numeric `Coordinate`
-        (`{spacing[, origin]}`, whose `["values"]` key materialises the
-        positions; Proposal 0001).
+        tuple of **labels**, or a compact numeric coordinate (`{spacing[,
+        origin]}`, whose `["values"]` key materialises the positions).
 
-        Only entries that are still valid are returned -- every dim in their
-        `dims` must still be named on this tensor (and, for labels, its size
-        must match the label count) -- so stale metadata propagated onto a
-        shape-changing op is hidden.
+        Only entries that are still valid are returned -- every dim a
+        coordinate spans must still be named on this tensor (and, for
+        labels, its size must match the label count) -- so stale metadata
+        propagated onto a shape-changing op is hidden.
 
-        Stored internally as `{name: (dims, coord)}` (Proposal 0005): a
-        **dimension** coordinate has `dims == (name,)` (it *is* the dim's
-        index, so `.sel(name=...)` works); a **non-dimension** coordinate
-        (disambiguated by key: `name` is not itself a dim) rides along some
-        other dim(s), and is not an index. A non-dimension coordinate may span
-        **several** dims: a compact **affine** map (Proposal 0005 step 3 --
-        `spacing` is a vector, one component per dim in `dims`, `origin` a
-        single scalar shared across them), or an explicit **curvilinear**
-        array of values with no analytic form (issue #82, e.g. `lat(y, x)`),
-        one tensor axis per dim in `dims`.
+        A **dimension** coordinate spans just the dim it is keyed under (it
+        *is* that dim's index, so `.sel(name=...)` works); a
+        **non-dimension** coordinate (its key is not itself a dim name)
+        rides along some other dim(s) instead, and is not an index. A
+        non-dimension coordinate may span **several** dims at once: a
+        compact **affine** map (`spacing` is a vector, one component per
+        spanned dim, `origin` a single scalar shared across them), or an
+        explicit **grid** of values with no regular spacing (e.g. `lat(y,
+        x)`), one tensor axis per spanned dim.
         """
         names = self.names
         valid = {}
@@ -375,10 +373,10 @@ class XTensor(ExtendedTensor):
     @property
     def magnitude(self) -> tx.Self:
         """
-        The tensor with its **data unit dropped** (Proposal 0003 §7) -- the
-        bare values, still an `XTensor` with the same names and coordinates.
-        A view (no data copy); the original is unchanged. `x.magnitude.unit`
-        is always `None`. (To get a plain `torch.Tensor`, use
+        The tensor with its **data unit dropped** -- the bare values, still
+        an `XTensor` with the same names and coordinates. A view (no data
+        copy); the original is unchanged. `x.magnitude.unit` is always
+        `None`. (To get a plain `torch.Tensor`, use
         `x.as_subclass(torch.Tensor)`.)
         """
         return _carry(self, self.as_subclass(type(self)), _data_unit=None)
@@ -849,9 +847,8 @@ class XTensor(ExtendedTensor):
         fields (`x.sel(channel={"type": "signal"})`), keeping the axis and
         selecting every match.
 
-        On a **numeric** coordinate (Proposal 0001), the selector is a value
-        (`x.sel(t="2s")`, Proposal 0004). `mode` chooses which tick an inexact
-        value snaps to:
+        On a **numeric** coordinate, the selector is a value (`x.sel(t="2s")`).
+        `mode` chooses which tick an inexact value snaps to:
 
         - `"round"` *(default)* — the nearest tick by value;
         - `"floor"` / `"ceil"` — the largest tick `<=` / smallest tick `>=`
@@ -863,56 +860,49 @@ class XTensor(ExtendedTensor):
         **bare** `.sel(t=v)` is **exact** (`tolerance=0`); passing a `mode`
         implies an unbounded snap unless a `tolerance` is given.
 
-        A **`slice(lo, hi)`** on a numeric coordinate is a **value range**
-        (issue #109), unit-aware, resolving to a contiguous integer `slice` —
-        half-open like ordinary Python indexing (`lo <= value < hi`), **not**
-        xarray's inclusive-both-ends convention (see the "Differences from
-        xarray" guide). Bounds are compared numerically regardless of order
-        or of the coordinate's own direction: `t=slice(1, 5)` and
-        `t=slice(5, 1)` select the same range. A one-sided range keeps the
-        bound in the slot it was given (`slice(1, None)` -> `value >= 1`;
-        `slice(None, 5)` -> `value < 5`); an out-of-range or empty result
-        is a well-formed empty axis, not an error. `slice.step` is not
-        supported (`mode`/`tolerance` don't apply to a range either).
+        A **`slice(lo, hi)`** on a numeric coordinate is a **value range**,
+        unit-aware, resolving to a contiguous integer `slice` — half-open
+        like ordinary Python indexing (`lo <= value < hi`), **not** xarray's
+        inclusive-both-ends convention (see the "Differences from xarray"
+        guide). Bounds are compared numerically regardless of order or of
+        the coordinate's own direction: `t=slice(1, 5)` and `t=slice(5, 1)`
+        select the same range. A one-sided range keeps the bound in the
+        slot it was given (`slice(1, None)` -> `value >= 1`; `slice(None,
+        5)` -> `value < 5`); an out-of-range or empty result is a
+        well-formed empty axis, not an error. `slice.step` is not supported
+        (`mode`/`tolerance` don't apply to a range either).
 
-        A **joint query over an affine coordinate** (Proposal 0005 step 3 --
-        `lat`/`lon`-style, spanning several dims at once) picks the dims'
-        integer positions in one shot from a closed-form inverse (issue
-        #82 phase 1): pass a value for *every* coordinate name that spans
-        the same `dims` (e.g. `x.sel(lat=52.1, lon=4.3)` for a 2-D affine
-        `lat`/`lon`) -- no dedicated syntax, ordinary keyword arguments that
+        A **joint query over several dims sharing one coordinate** (e.g. a
+        `lat`/`lon` pair that together locate a point on a 2-D grid) picks
+        all of those dims' positions in one shot: pass a value for *every*
+        coordinate name that spans the same `dims` (`x.sel(lat=52.1,
+        lon=4.3)`) — no dedicated syntax, ordinary keyword arguments that
         happen to share `dims` are recognised as one joint system. Only a
-        **square, invertible** map is supported (exactly one coordinate
-        value per spanned dim); an under- or over-determined query raises
-        rather than falling back to a least-squares fit. Only `mode="round"`
-        (the default) applies -- `floor`/`ceil`/`prev`/`next` have no
-        well-defined meaning jointly across several coupled dims. `tolerance`
-        applies per queried coordinate name, same as a 1-D numeric `.sel`
-        (a bare query is exact by default) -- checked against the *rounded*
-        position's own value, since a joint query never has one "the" gap
-        the way a single coordinate does.
+        **square** query is supported (exactly one coordinate value per
+        spanned dim); an under- or over-determined query raises rather than
+        guessing. Only `mode="round"` (the default) applies to a joint
+        query — `floor`/`ceil`/`prev`/`next` have no well-defined meaning
+        across several coupled dims at once. `tolerance` still applies, per
+        queried coordinate name (a bare query is exact by default), checked
+        against the chosen position's own value.
 
-        A **joint query over a curvilinear coordinate** (issue #82 phase 2
-        -- an explicit multi-dim array with no analytic form, e.g. an
-        irregular satellite-swath `lat`/`lon`) works the same way as the
-        affine case above -- one value per coordinate name spanning the
-        same `dims` -- but resolves to the single **nearest** grid point by
-        squared Euclidean distance across the queried coordinates' raw
-        magnitudes (brute force; there is no closed-form inverse for an
-        arbitrary grid). Mixing coordinates with very different units
-        (degrees and metres, say) weights the nearer one more heavily,
-        same as an un-normalised distance always does. Only a single point
-        is supported per call, not a vectorized query over many points at
-        once -- see `vs-xarray.md` for why. `tolerance` and `mode`/`method`
-        behave the same as the affine case -- checked per queried
-        coordinate name against its own gap to the chosen point, not
-        against the joint distance -- (only the default "nearest" mode
-        applies; a gap over `tolerance` raises).
+        On an **irregular** grid coordinate (an explicit multi-dim array
+        with no regular spacing, e.g. an irregular satellite-swath
+        `lat`/`lon`), a joint query works the same way — one value per
+        coordinate name spanning the same `dims` — but resolves to the
+        single **nearest** grid point across the queried coordinates' raw
+        magnitudes. Mixing coordinates with very different units (degrees
+        and metres, say) weighs the nearer one more heavily, same as any
+        unnormalised distance always does. Only a single point is
+        supported per call, not a vectorized query over many points at
+        once. `tolerance`/`mode`/`method` behave the same as the joint case
+        above (only the default "nearest" mode applies; a gap over
+        `tolerance` raises).
 
         Pass `indexers` as an explicit mapping (`x.sel({"mode": "red"})`)
         instead of keyword arguments when a dim's name collides with one
         of `sel`'s own keyword parameters (`mode`, `tolerance`, `method`)
-        -- xarray's own escape hatch for exactly this, since a keyword
+        — xarray's own escape hatch for exactly this, since a keyword
         argument matching one of those names is always bound to the
         parameter, never reaching the indexers. Passing both raises.
         """
@@ -1129,7 +1119,7 @@ class XTensor(ExtendedTensor):
         **indexers_kwargs: tx.Any,
     ) -> tx.Self:
         """
-        Interpolate onto new coordinate values along named dims (Prop. 0004).
+        Interpolate onto new coordinate values along named dims.
 
         Where [`sel`][fiery.xtensor.XTensor.sel] *picks* existing positions,
         `interp` *computes* values at arbitrary positions of a **numeric**
@@ -1153,25 +1143,22 @@ class XTensor(ExtendedTensor):
 
         A **scalar** query drops the axis (like `sel`); a **list**/tensor keeps
         it, its coordinate becoming the queried positions. A **regular**
-        (compact `spacing`/`origin`) coordinate supports every `method`; an
-        **irregular** (explicit values) one only supports `"nearest"`/
-        `"linear"` (issue #73, via a monotonic `searchsorted` inversion) --
-        both are exact because the map between value space and index space is
-        locally affine between two bracketing ticks. A higher order needs a
-        true non-uniform spline in *value* space, which this architecture
-        cannot provide (see issue #81); it is not a currently-missing
-        feature.
+        (evenly-spaced) coordinate supports every `method`; an **irregular**
+        (explicit values) one only supports `"nearest"`/`"linear"`, both
+        exact, since the map between value space and index space is locally
+        linear between two bracketing ticks. A higher order needs a true
+        non-uniform spline in *value* space, which isn't currently supported
+        for an irregular coordinate.
 
-        A **joint query over an affine coordinate** (Proposal 0005 step 3 --
-        `lat`/`lon`-style, spanning several dims at once) inverts the affine
-        once (same closed-form `A⁻¹` as `.sel`'s joint query, issue #82
-        phase 1) to a **fractional** index -- never rounded -- then pulls a
-        genuine N-D interpolation via `fiery.interpol.grid_pull` (or a
-        built-in separable nearest gather for `method="nearest"`, no backend
-        needed). A query with every name given as a **scalar** is a single
-        point: all the spanned dims drop, like the 1-D scalar case above.
-        Any name given as a **list**/tensor makes it "many": every name's
-        query broadcasts to a common length `N`, and the spanned dims
+        A **joint query over several dims that share one coordinate** (e.g. a
+        `lat`/`lon` pair spanning several dims at once) resolves to a
+        **fractional** position -- never rounded -- across all of them at
+        once, then interpolates in that many dimensions together (falling
+        back to a built-in nearest gather for `method="nearest"`, no extra
+        backend needed). A query with every name given as a **scalar** is a
+        single point: all the spanned dims drop, like the 1-D scalar case
+        above. Any name given as a **list**/tensor makes it "many": every
+        name's query broadcasts to a common length `N`, and the spanned dims
         collapse into **one new axis** of `N` sampled points -- not an
         outer-product grid, since the dims are coupled and you can't vary
         one queried name without moving through every spanned dim at once
@@ -1186,8 +1173,8 @@ class XTensor(ExtendedTensor):
         with nothing to infer from). When a name *is* resolved, the axis
         carries every queried name's own sampled values as a riding
         coordinate -- an unnamed axis can't be keyed, so it has none. Only
-        **one** joint group per call is supported for now
-        (#82 phase 2); call `interp` again for a second group.
+        **one** such joint group is supported per call; call `interp`
+        again for a second group.
 
         Pass `indexers` as an explicit mapping (`x.interp({"method":
         5.0})`) instead of keyword arguments when a dim's name collides
@@ -1472,8 +1459,7 @@ class XTensor(ExtendedTensor):
 
 class Coordinate(_units.MagicDict):
     """
-    A **numeric coordinate** (Proposal 0001) -- a magic dict in one of two
-    forms:
+    A **numeric coordinate** -- a magic dict in one of two forms:
 
     - **compact / regular** -- `{spacing[, origin]}` (each a
       [`Unitful`][fiery.xtensor._units.Unitful]); `["values"]` is a **derived**
@@ -1483,7 +1469,7 @@ class Coordinate(_units.MagicDict):
       `["values"]` returns the stored array.
 
     The **position** unit (`["values"].unit`) is distinct from the tensor's
-    data unit (Proposal 0003).
+    own data unit.
     """
 
     def _compact(self) -> bool:
@@ -1584,11 +1570,9 @@ class Coordinate(_units.MagicDict):
         """
         Convert the coordinate's **position** unit, rescaling
         `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
-        backend. Carries over the axis binding (`_bound`/`_bound_axes`/
-        `_bound_curvilinear`) if this coordinate already had one, so
-        `coords[name].to(unit)["values"]` still materialises correctly
-        instead of raising for lack of a bound size, or (for a curvilinear
-        coordinate) silently reverting to its construction-order shape.
+        backend. Carries over whatever axis binding this coordinate already
+        had, so `coords[name].to(unit)["values"]` still materialises
+        correctly for the tensor it came from.
         """
         if self._compact():
             out = Coordinate()
@@ -1619,49 +1603,35 @@ def as_xtensor(
 ) -> XTensor:
     """
     Coerce `value` (a bare Python number, a plain `Tensor`, or an `XTensor`)
-    into an `XTensor` -- the `XTensor` analogue of `torch.as_tensor` (issue
-    #114, generalising #112's `_coerce_unitful_tensor`): **graph-safe**
-    (`torch.as_tensor(value)` with no `dtype=`/`device=` is a strict identity
-    passthrough for an already-a-tensor `value` -- the *same object*, never a
-    detaching copy, unlike `torch.tensor(existing_tensor)`'s well-known
-    footgun of silently returning a fresh, non-differentiable leaf), and
-    metadata-preserving: `unit`/`names`/`coords` ride through untouched
-    unless a keyword **explicitly** overrides them -- mirroring how
+    into an `XTensor` -- the `XTensor` analogue of `torch.as_tensor`:
+    **graph-safe** (`torch.as_tensor(value)` with no `dtype=`/`device=` is a
+    strict identity passthrough for an already-a-tensor `value` -- the *same
+    object*, never a detaching copy, unlike `torch.tensor(existing_tensor)`'s
+    well-known footgun of silently returning a fresh, non-differentiable
+    leaf), and metadata-preserving: `unit`/`names`/`coords` ride through
+    untouched unless a keyword **explicitly** overrides them -- mirroring how
     `torch.as_tensor(t, dtype=..., device=...)` only converts what you pass.
     A given override **replaces wholesale**, never merges (`coords={...}`
     discards whatever coordinates `value` already had, rather than combining
-    the two) -- simpler to specify and implement than a per-key merge, and
-    there's no established "merge coords" semantics to fall back on anyway.
+    the two).
 
     `dtype=`/`device=` extend `torch.as_tensor`'s own conversion, applied
     *before* the metadata is settled (so e.g. an axis-typed vs. numeric
     dtype affects nothing about the labels themselves). `None` (the default
     for both) means "leave as is" -- the same convention `torch.as_tensor`
-    and `.to()` use -- so, unlike `unit`/`names`/`coords`, there's no
-    separate "not overridden" sentinel needed here: a dtype/device override
-    has no meaningful "clear" value the way `unit=None` does.
+    and `.to()` use.
 
-    A genuine dtype/device conversion is applied via `base.to(dtype=...,
-    device=...)`, *not* by forwarding `dtype=`/`device=` straight to
-    `torch.as_tensor` itself: `torch.as_tensor(an_xtensor, dtype=...)`
-    silently degrades to a **plain `Tensor`** whenever it actually has to
-    convert something (verified empirically -- a genuine PyTorch quirk, not
-    a hypothetical), stripping every bit of metadata in the process. `.to()`
-    on the subclass instead goes through its own `__torch_function__` (which
-    already carries the axis names/coords/unit onto ops it doesn't otherwise
-    special-case). `.to()` isn't called at all when `dtype`/`device` already
-    match `value`'s own -- rather than relying on `.to()`'s own no-op-
-    returns-self behaviour, which isn't consistent across the range of
-    torch versions this library supports (verified: old torch does *not*
-    short-circuit when `device=` is passed explicitly alongside `dtype=`,
-    even when both already match).
+    A genuine dtype/device conversion always keeps the result's metadata:
+    plain `torch.as_tensor(an_xtensor, dtype=...)` silently degrades to a
+    **plain `Tensor`** whenever it actually has to convert something,
+    stripping every bit of metadata in the process -- `as_xtensor` avoids
+    that pitfall.
 
     `value`'s own tensor is never mutated: when nothing is overridden and
     `value` is already an `XTensor`, it is returned as-is (the same object,
-    metadata included); otherwise the result is always a **fresh** subclass
-    view (`Tensor.as_subclass`, no data copy) before any override is
-    applied, so overriding e.g. `unit=` never reaches back and changes
-    `value`'s own unit as a side effect.
+    metadata included); otherwise the result is always a **fresh** view (no
+    data copy) before any override is applied, so overriding e.g. `unit=`
+    never reaches back and changes `value`'s own unit as a side effect.
     """
     base = torch.as_tensor(value)
     # Skip `.to()` entirely when neither actually changes anything, rather
