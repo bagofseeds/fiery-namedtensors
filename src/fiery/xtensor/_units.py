@@ -38,11 +38,6 @@ def active() -> tx.Optional[str]:
     return get_option("unit_backend")
 
 
-def units_available() -> bool:
-    """Whether a real (non-`None`) unit backend is active."""
-    return active() is not None
-
-
 def normalise(unit: tx.Any) -> tx.Any:
     """
     Canonical string form of `unit`; raise `ValueError` if it cannot be parsed.

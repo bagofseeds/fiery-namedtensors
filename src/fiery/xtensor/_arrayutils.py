@@ -28,10 +28,6 @@ SmartSlicerT = tx.Union[_SmartSlicerT, tx.Tuple[_SmartSlicerT, ...]]
 _UNSET: tx.Final[object] = object()
 
 
-def _is_basic_index(value: tx.Any) -> bool:
-    return isinstance(value, (int, slice, type(...), type(None)))
-
-
 def _is_boolean_index(value: tx.Any) -> bool:
     if torch.is_tensor(value):
         return value.dtype == torch.bool
@@ -46,14 +42,6 @@ def _is_advanced_index(value: tx.Any) -> bool:
     elif isinstance(value, tx.Sequence) and not isinstance(value, str):
         return all(isinstance(v, int) for v in value)
     return False
-
-
-def _is_valid_index(value: tx.Any) -> bool:
-    return (
-        _is_basic_index(value)
-        or _is_boolean_index(value)
-        or _is_advanced_index(value)
-    )
 
 
 def _normalize_scalar_tensor_index(slicer: SmartSlicerT) -> SmartSlicerT:
@@ -538,28 +526,6 @@ def _map_axes_inverse(
                     input_axes[input_axis] += (output_axis,)
 
     return tuple(input_axes)
-
-
-def _map_axis_index(
-    axis: int, slicer: SmartSlicerT, ndim: int | None = None
-) -> int | None:
-    """
-    Map an axis index in the input array to an axis index in the output
-    array, given a slicer.
-
-    If the output axis is dropped by the slicer (either because it has
-    been indexed by an integer, or because it has been masked by a
-    boolean tensor), return `None` instead.
-
-    If the number of input dimensions `ndim` is not provided, the slicer
-    must have been unrolled first, and the axis index must be non-negative.
-    """
-    if ndim is not None:
-        slicer = _unroll_slicer(slicer, ndim)
-        if axis < 0:
-            axis += ndim
-
-    return _map_axes_inverse(slicer, ndim)[axis]
 
 
 def _get_slicer_by_index(
