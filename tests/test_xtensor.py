@@ -535,15 +535,286 @@ def test_coordinate_to_unit_carries_over_the_axis_size_binding():
         )
 
 
-def test_multi_dim_explicit_coordinate_is_not_implemented():
-    # only the compact affine form is implemented (step 3); a general
-    # curvilinear array of explicit values is future work (#82).
-    with pytest.raises(NotImplementedError, match="curvilinear"):
+def test_multi_dim_explicit_coordinate_is_curvilinear():
+    # a general curvilinear array of explicit values over several dims is
+    # supported (issue #82 phase 2), not just the compact affine form.
+    lat = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat)},
+    )
+    values = t.coords["lat"]["values"].as_subclass(torch.Tensor)
+    assert torch.equal(values, lat)
+
+
+def test_multi_dim_explicit_coordinate_rejects_bad_shape():
+    with pytest.raises(ValueError, match="spans dims"):
         XTensor(
             torch.zeros(3, 4),
             names=["y", "x"],
-            coords={"lat": (["y", "x"], torch.zeros(3, 4))},
+            coords={"lat": (["y", "x"], torch.zeros(3, 5))},
         )
+
+
+def test_multi_dim_explicit_coordinate_rejects_non_tensor():
+    with pytest.raises(ValueError, match="explicit tensor"):
+        XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "x"], 5.0)},
+        )
+
+
+def test_multi_dim_explicit_coordinate_drops_on_slice():
+    lat = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat)},
+    )
+    sliced = t[:, :2]
+    assert "lat" not in sliced.coords
+
+
+def test_multi_dim_explicit_coordinate_follows_permute():
+    lat = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat)},
+    )
+    permuted = t.permute(1, 0)
+    expected = lat.permute(1, 0)
+    assert torch.equal(
+        permuted.coords["lat"]["values"].as_subclass(torch.Tensor), expected
+    )
+
+
+def _curvilinear_demo():
+    y = torch.linspace(0, 1, 4).unsqueeze(1)
+    x = torch.linspace(0, 1, 5).unsqueeze(0)
+    lat = (10 + 5 * y + 0.1 * x**2).expand(4, 5).contiguous()
+    lon = (100 + 2 * x + 0.05 * y**2).expand(4, 5).contiguous()
+    data = torch.arange(20.0).reshape(4, 5)
+    t = XTensor(
+        data,
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    return t, lat, lon, data
+
+
+def test_curvilinear_sel_nearest_neighbor():
+    t, lat, lon, data = _curvilinear_demo()
+    target_lat = float(lat[2, 3])
+    target_lon = float(lon[2, 3])
+    picked = t.sel(lat=target_lat, lon=target_lon)
+    assert picked.item() == data[2, 3].item()
+
+
+def test_curvilinear_sel_nearest_snaps_off_grid_value():
+    t, lat, lon, data = _curvilinear_demo()
+    target_lat = float(lat[2, 3])
+    target_lon = float(lon[2, 3])
+    picked = t.sel(
+        lat=target_lat + 1e-3, lon=target_lon + 1e-3, method="nearest"
+    )
+    assert picked.item() == data[2, 3].item()
+
+
+def test_curvilinear_sel_respects_permute():
+    t, lat, lon, data = _curvilinear_demo()
+    t = t.permute(1, 0)
+    target_lat = float(lat[2, 3])
+    target_lon = float(lon[2, 3])
+    picked = t.sel(lat=target_lat, lon=target_lon)
+    assert picked.item() == data[2, 3].item()
+
+
+def test_curvilinear_sel_tolerance_raises_when_exceeded():
+    t, lat, lon, data = _curvilinear_demo()
+    target_lat = float(lat[2, 3])
+    target_lon = float(lon[2, 3])
+    with pytest.raises(ValueError, match="over tolerance"):
+        t.sel(
+            lat=target_lat + 5.0,
+            lon=target_lon,
+            method="nearest",
+            tolerance=0.01,
+        )
+
+
+def test_curvilinear_sel_unbalanced_group_raises():
+    lat = torch.arange(12.0).reshape(3, 4)
+    lon = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    with pytest.raises(ValueError, match="needs exactly 2"):
+        t.sel(lat=5.0)
+
+
+def test_curvilinear_sel_unsupported_mode_raises():
+    lat = torch.arange(12.0).reshape(3, 4)
+    lon = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    with pytest.raises(NotImplementedError, match="curvilinear"):
+        t.sel(lat=5.0, lon=5.0, mode="floor")
+
+
+def test_curvilinear_sel_size_guard(monkeypatch):
+    import fiery.xtensor._tensors as _tensors_mod
+
+    monkeypatch.setattr(_tensors_mod, "_CURVILINEAR_SEL_MAX_BYTES", 10)
+    lat = torch.zeros(4, 5)
+    lon = torch.zeros(4, 5)
+    t = XTensor(
+        torch.zeros(4, 5),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    with pytest.raises(ValueError, match="too large"):
+        t.sel(lat=0.0, lon=0.0)
+
+
+def test_curvilinear_sel_correct_on_large_float32_grid():
+    # regression test (review finding #1): torch.cdist's default compute
+    # mode switches to a matrix-multiply identity above 25 points, which
+    # catastrophically cancels in float32 for realistic coordinate
+    # magnitudes -- silently picking the wrong nearest neighbor. A 6x6 grid
+    # crosses that threshold; realistic lat/lon magnitudes (~52 degrees)
+    # trigger the cancellation.
+    y = torch.linspace(0, 1, 6).unsqueeze(1)
+    x = torch.linspace(0, 1, 6).unsqueeze(0)
+    lat = (52.0 + 0.01 * y + 0.0001 * x**2).expand(6, 6).contiguous()
+    lon = (4.0 + 0.01 * x + 0.0001 * y**2).expand(6, 6).contiguous()
+    data = torch.arange(36.0).reshape(6, 6)
+    t = XTensor(
+        data,
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    for row in range(6):
+        for col in range(6):
+            target_lat = float(lat[row, col])
+            target_lon = float(lon[row, col])
+            picked = t.sel(lat=target_lat, lon=target_lon)
+            assert picked.item() == data[row, col].item()
+
+
+def test_curvilinear_coordinate_survives_to_unit():
+    # regression test (review finding #2): Coordinate.to() must carry over
+    # the curvilinear axis-order binding, or a unit conversion after a
+    # permute silently reverts to the construction-order (transposed) shape.
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        lat_raw = torch.arange(12.0).reshape(3, 4)
+        lat = as_xtensor(lat_raw, unit="m")
+        t = XTensor(
+            torch.zeros(3, 4),
+            names=["y", "x"],
+            coords={"lat": (["y", "x"], lat)},
+        ).permute(1, 0)
+        bound = t.coords["lat"]
+        expected = lat_raw.permute(1, 0) * 1000
+        converted = bound.to("mm")["values"].as_subclass(torch.Tensor)
+        assert torch.equal(converted, expected)
+
+
+def test_curvilinear_sel_after_slice_raises_has_no_coordinates():
+    # regression test (review finding #3): a curvilinear coordinate dropped
+    # by a slice on one of its spanned dims must raise the usual "has no
+    # coordinates" error, not a bare KeyError.
+    lat = torch.arange(12.0).reshape(3, 4)
+    lon = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    sliced = t[:, :2]
+    with pytest.raises(ValueError, match="has no coordinates"):
+        sliced.sel(lat=1.0, lon=1.0)
+
+
+def test_curvilinear_sel_ignores_nan_grid_point():
+    # regression test (review finding #4): a NaN grid point (a masked/fill
+    # swath cell) must not win nearest-neighbor argmin by NaN-propagation,
+    # and must not defeat the tolerance check either.
+    t, lat, lon, data = _curvilinear_demo()
+    target_lat = float(lat[2, 3])
+    target_lon = float(lon[2, 3])
+    lat = lat.clone()
+    lon = lon.clone()
+    lat[2, 3] = float("nan")
+    lon[2, 3] = float("nan")
+    t = XTensor(
+        data,
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    # the NaN cell is exactly the query target, but it must be excluded --
+    # some *other* (non-NaN) cell, farther away, is chosen instead.
+    picked = t.sel(lat=target_lat, lon=target_lon, method="nearest")
+    assert picked.item() != data[2, 3].item()
+    with pytest.raises(ValueError, match="over tolerance"):
+        t.sel(
+            lat=target_lat,
+            lon=target_lon,
+            method="nearest",
+            tolerance=1e-9,
+        )
+
+
+def test_curvilinear_sel_works_on_integer_dtype_grid():
+    # regression test (review finding #5): an integer-dtype curvilinear
+    # grid must not raise a raw torch dtype error.
+    lat = torch.arange(12).reshape(3, 4)
+    lon = torch.arange(12).reshape(3, 4)
+    data = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        data,
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    picked = t.sel(lat=5, lon=5)
+    assert picked.item() == data[1, 1].item()
+
+
+def test_curvilinear_sel_rejects_multi_point_query():
+    # regression test (review finding #6): the deliberately-unsupported
+    # vectorized/slice query forms must raise a clear error pointing at the
+    # single-point-only restriction, not an internal TypeError/ValueError.
+    lat = torch.arange(12.0).reshape(3, 4)
+    lon = torch.arange(12.0).reshape(3, 4)
+    t = XTensor(
+        torch.zeros(3, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    with pytest.raises(TypeError, match="single point"):
+        t.sel(lat=[1.0, 2.0], lon=[3.0, 4.0])
+    with pytest.raises(TypeError, match="single point"):
+        t.sel(lat=slice(1.0, 2.0), lon=3.0)
+
+
+def test_curvilinear_sel_empty_grid_raises():
+    lat = torch.zeros(0, 4)
+    lon = torch.zeros(0, 4)
+    t = XTensor(
+        torch.zeros(0, 4),
+        names=["y", "x"],
+        coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
+    )
+    with pytest.raises(ValueError, match="empty grid"):
+        t.sel(lat=1.0, lon=1.0)
 
 
 def test_affine_coordinate_repeated_dim_is_rejected():
@@ -1674,9 +1945,7 @@ def test_as_xtensor_device_override_is_a_noop_on_the_same_device():
 
 
 def test_as_xtensor_dtype_override_composes_with_metadata_override():
-    x = XTensor(
-        torch.arange(3, dtype=torch.int64), names=("c",), unit="mm"
-    )
+    x = XTensor(torch.arange(3, dtype=torch.int64), names=("c",), unit="mm")
     out = as_xtensor(x, dtype=torch.float64, unit="s")
     assert out.dtype == torch.float64
     assert out.unit == "s"

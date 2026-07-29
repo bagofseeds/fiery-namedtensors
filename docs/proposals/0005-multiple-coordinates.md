@@ -2,11 +2,11 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — steps 1–4 implemented; step 5 (`.sel`/`.interp`) fully landed (#82 phases 1 and 2) |
+| **Status** | Draft — steps 1–5 implemented (#82 phase 1, affine); step 6 (#82 phase 2, curvilinear) storage + `.sel` landed, `.interp` not yet |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-29 — affine joint `.interp` (step 5, #82 phase 2) implemented |
-| **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
+| **Updated** | 2026-07-29 — curvilinear coordinate storage + nearest-neighbor `.sel` (step 6, #82 phase 2) implemented |
+| **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (affine + curvilinear) |
 
 ## Abstract
 
@@ -154,18 +154,30 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
    `dims` tuple: materialisation, exact per-component affine slicing,
    learnable. *(No `.sel` yet — that's step 5.)*
 4. ✅ **`swap_dims`** — promote a non-dimension coordinate to the index.
-5. ✅ **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
-   N-D `grid_pull`, joint query over the coupled dims (ties off
-   [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)).
-   - ✅ `.sel` half (phase 1) — a joint query (`x.sel(lat=…, lon=…)`) over a
-     square, invertible affine solves `index = A⁻¹(world − origin)` and
-     snaps to the nearest position; under/over-determined and non-invertible
-     queries raise rather than approximating.
-   - ✅ `.interp` half (phase 2) — the same closed-form inverse, kept
-     **fractional**, feeds a genuine N-D `grid_pull` (or a built-in
-     separable nearest gather); a multi-valued joint query collapses the
-     spanned dims into one new axis, point-wise.
-6. **Non-dim coordinate slice-tracking** — carry non-dim coords through slicing
+5. ✅ **Affine `.sel` / `.interp`** ([#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)
+   phase 1) — closed-form `A⁻¹` inverse + (for interp) N-D `grid_pull`, joint
+   query over the coupled dims.
+   - ✅ `.sel` — a joint query (`x.sel(lat=…, lon=…)`) over a square,
+     invertible affine solves `index = A⁻¹(world − origin)` and snaps to the
+     nearest position; under/over-determined and non-invertible queries
+     raise rather than approximating.
+   - ✅ `.interp` — the same closed-form inverse, kept **fractional**, feeds
+     a genuine N-D `grid_pull` (or a built-in separable nearest gather); a
+     multi-valued joint query collapses the spanned dims into one new axis,
+     point-wise.
+6. ✅ **Curvilinear coordinate storage + `.sel`** ([#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)
+   phase 2) — a general multi-dim explicit coordinate (no analytic form,
+   e.g. `lat(y, x)` on an irregular grid).
+   - ✅ Storage — an N-D tensor spanning several dims, materialising in the
+     host tensor's own axis order; drops (rather than rebinding wrong) once
+     a spanned dim's slice moves its size on without it.
+   - ✅ `.sel` — a joint query resolves to the single **nearest** grid point
+     by squared Euclidean distance over the queried coordinates' raw
+     magnitudes (brute force, torch-native, unit-blind). Single point only,
+     with a size guard against a runaway distance computation — see
+     `vs-xarray.md` for why bulk regridding isn't in scope.
+   - `.interp` over a curvilinear coordinate is not implemented.
+7. **Non-dim coordinate slice-tracking** — carry non-dim coords through slicing
    instead of dropping on resize.
 
 Each PR is independently reviewable/mergeable; (3) and (5) are the headline
@@ -229,11 +241,10 @@ affine feature.
   but now also refuses to rename an axis *onto* a multi-dim coordinate's key
   — that would leave a key which is a dim yet isn't that dim's index, which
   `.sel` and the dimension-coordinate slicing pass would then misread.
-- A general multi-dim **explicit** coordinate (arbitrary curvilinear
-  `lat(y,x)` values, not a compact affine map) is **not** implemented —
-  raises `NotImplementedError`, pointing at the compact form. That's separate,
-  harder work (nonlinear inverse for `.sel`/`.interp`, [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)),
-  not a natural extension of this slice.
+- A general multi-dim **explicit** (curvilinear) coordinate — arbitrary
+  `lat(y,x)` values, not a compact affine map — is a separate follow-on
+  ([#82](https://github.com/bagofseeds/fiery-xtensor/issues/82) phase 2, see
+  below), not a natural extension of this slice.
 - `.to(unit)` (position-unit conversion) needed no changes — it already
   rescales `spacing["value"]` elementwise, which works the same whether that
   value is a scalar or a vector.
@@ -305,7 +316,7 @@ affine feature.
   sampling, not the axis-by-axis separable interpolation `.interp` already
   does for 1-D coordinates.
 
-## What step 5's `.interp` half implements (#82 phase 2)
+## What step 5's `.interp` half implements (#82 phase 1)
 
 - Groups `.interp`'s indexers the same way `.sel` does; the square-system
   requirement is identical, and only **one** joint group per call is
@@ -364,6 +375,59 @@ affine feature.
   keyword argument always binds to the parameter, never reaching the
   indexers, so the dict form is the only way to query such a dim. Passing
   both raises.
+
+## What step 6 implements (#82 phase 2)
+
+- **Storage.** A `coords` value keyed by a non-axis name whose spec is
+  `(dims, values)` with `len(dims) > 1` and `values` an explicit tensor (not
+  a compact `{"spacing": ...}` map) is a **curvilinear** coordinate: an N-D
+  array with one axis per spanned dim, no analytic form. Validated at
+  construction (`values.ndim == len(dims)`, and its shape matches each
+  spanned dim's current size). Materialises reordered to the *host tensor's*
+  own axis order (like the affine form), so it survives `permute`/
+  `transpose`/`movedim` regardless of the order `dims` was given in.
+- **No re-slicing formula.** Unlike the affine form (which updates its
+  `spacing`/`origin` exactly through any basic slice), an explicit
+  curvilinear array has no formula to fold a slice through — it rides
+  through a slice on one of its spanned dims unchanged, the same way a 1-D
+  explicit non-dimension coordinate already does, and is dropped (not
+  rebound to a mismatched shape) once a spanned dim's size no longer
+  matches. Re-slicing it exactly is a possible future refinement, not
+  implemented here.
+- **`.sel` — brute-force nearest neighbor.** Grouped the same way as the
+  affine joint query: every coordinate name queried that spans the same
+  `dims` is one group, one value per dim. Stacks the group's coordinate
+  arrays into a `(*grid_shape, k)` point cloud (promoted to float64,
+  regardless of the grid's own dtype, matching `.sel`'s affine-path
+  convention) and finds the closest grid point by direct squared distance
+  — no scipy/sklearn KD-tree, so it stays GPU-capable, but brute force
+  (`O(grid size)` memory/time) and unit-blind (mixing e.g. degrees and
+  metres weights the nearer-magnitude one more heavily), since an arbitrary
+  grid has no closed-form inverse. `torch.cdist` was considered and
+  rejected: its default compute mode switches to a `‖a‖²+‖b‖²−2a·b`
+  matrix-multiply identity above 25 points, which catastrophically cancels
+  in float32 for realistic coordinate magnitudes (found in review — silently
+  wrong nearest neighbor on real-sized grids). A NaN grid point (a masked/
+  fill swath cell) is excluded from the search rather than winning by
+  NaN-propagation. Only `mode="round"`/`method="nearest"` (the default) is
+  supported; `tolerance` is enforced **per queried coordinate name** against
+  its own gap to the chosen point (not the joint distance), same convention
+  as every other `.sel` path.
+- **Single point only, by design.** A query vectorized over many points at
+  once (the shape a bulk regrid needs) is not supported: the distance
+  matrix's cost is the *product* of the grid size and the query count, and
+  that product is exactly what motivates every tree-index library in this
+  space (xarray's `NDPointIndex`, `xoak`, `pyresample`) to exist rather than
+  brute-forcing it — see `vs-xarray.md`. A size guard rejects a query whose
+  distance-matrix estimate crosses a byte threshold, as a backstop against a
+  pathologically large single grid rather than a routine limit (a
+  single-point query's distance matrix is only one column wide).
+- **`.interp` over a curvilinear coordinate is not implemented.** There is
+  no gradient/interpolation-weight analogue of the nearest-neighbor lookup
+  here; unlike the affine case, a curvilinear `.interp` would need genuine
+  scattered-data interpolation (e.g. inverse-distance weighting or a local
+  gradient search, the approach `pyresample`'s gradient-search resampler
+  takes) — a separate, harder piece of future work.
 
 ## Open questions — resolved
 
