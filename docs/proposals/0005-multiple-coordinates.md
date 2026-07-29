@@ -284,12 +284,19 @@ affine feature.
   rounded to the nearest integer per dim. A singular (non-invertible) `A`
   raises, naming the offending coordinates.
 - Never materialises the affine grid — the raw `spacing`/`origin` alone are
-  enough, mirroring the 1-D compact `.sel` fast path (#110).
+  enough, mirroring the 1-D compact `.sel` fast path (#110). Solved in
+  float64 regardless of the spacing's own or default dtype, matching the
+  1-D closed-form path's convention — a spacing difference near float32
+  epsilon must not be silently rounded away into a near-singular system.
 - Only `mode="round"` (the default) is supported; `floor`/`ceil`/`prev`/
   `next` have no well-defined meaning jointly across several coupled dims
-  and raise `NotImplementedError`.
+  and raise `NotImplementedError`. `tolerance` applies per queried
+  coordinate name against the rounded position's own value, same as a 1-D
+  numeric `.sel` — a bare joint query is exact by default too.
 - A joint affine query composes with ordinary 1-D `.sel` indexers in the
-  same call (`x.sel(t=1.0, lat=52.1, lon=4.3)`).
+  same call (`x.sel(t=1.0, lat=52.1, lon=4.3)`) — but a dim resolved by the
+  joint solve can't *also* be queried directly in the same call (raises,
+  rather than silently letting one overwrite the other).
 - `.interp`'s N-D `grid_pull` half is separate, follow-up work (not
   implemented here) — the pull itself needs genuine multi-axis simultaneous
   sampling, not the axis-by-axis separable interpolation `.interp` already

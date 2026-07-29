@@ -1171,7 +1171,11 @@ class XTensor(ExtendedTensor):
         value per spanned dim); an under- or over-determined query raises
         rather than falling back to a least-squares fit. Only `mode="round"`
         (the default) applies -- `floor`/`ceil`/`prev`/`next` have no
-        well-defined meaning jointly across several coupled dims.
+        well-defined meaning jointly across several coupled dims. `tolerance`
+        applies per queried coordinate name, same as a 1-D numeric `.sel`
+        (a bare query is exact by default) -- checked against the *rounded*
+        position's own value, since a joint query never has one "the" gap
+        the way a single coordinate does.
         """
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
@@ -1182,11 +1186,25 @@ class XTensor(ExtendedTensor):
             tolerance = 0 if raw is None else None
         elif isinstance(tolerance, float) and tolerance == float("inf"):
             tolerance = None  # explicit unbounded
-        positional, consumed = self._affine_sel_groups(indexers, sel_mode)
+        positional, consumed = self._affine_sel_groups(
+            indexers, sel_mode, tolerance
+        )
         coords = self.coords
         for name, label in indexers.items():
             if name in consumed:
                 continue
+            if name in positional:
+                # `name` is itself a dim already resolved by a joint affine
+                # query over a *different* coordinate group spanning it --
+                # e.g. `x.sel(lat=.., lon=.., y=..)` where `lat`/`lon` span
+                # `y` too. Silently letting this loop overwrite that result
+                # would discard the joint solve without any signal (#82
+                # phase 1 review); pick one or the other instead.
+                raise ValueError(
+                    f"sel: dim {name!r} is set both by a joint affine "
+                    "query over its coordinate group and directly in the "
+                    "same call -- pass one or the other"
+                )
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
             if name not in self.names:
@@ -1235,7 +1253,10 @@ class XTensor(ExtendedTensor):
         return self.isel(**positional)
 
     def _affine_sel_groups(
-        self, indexers: tx.Mapping[str, tx.Any], sel_mode: str
+        self,
+        indexers: tx.Mapping[str, tx.Any],
+        sel_mode: str,
+        tolerance: tx.Optional[float],
     ) -> tuple:
         """
         Resolve every **joint affine query** among `.sel`'s `indexers` --
@@ -1272,7 +1293,12 @@ class XTensor(ExtendedTensor):
                 )
             positional.update(
                 _affine_sel_indices(
-                    self, dims, names_in_group, indexers, sel_mode
+                    self,
+                    dims,
+                    names_in_group,
+                    indexers,
+                    sel_mode,
+                    tolerance,
                 )
             )
             consumed.update(names_in_group)
@@ -1915,6 +1941,7 @@ def _affine_sel_indices(
     names_in_group: list,
     indexers: tx.Mapping[str, tx.Any],
     sel_mode: str,
+    tolerance: tx.Optional[float],
 ) -> dict:
     """
     Solve the closed-form affine inverse for one joint `.sel` query (issue
@@ -1937,24 +1964,40 @@ def _affine_sel_indices(
             "well-defined meaning jointly across several dims"
         )
     stored = tensor.__dict__.get("_coords") or {}
-    rows = []
-    rhs = []
+    per_name = []
     for name in names_in_group:
         _, coord = stored[name]
         spacing = dict.__getitem__(coord, "spacing")
         origin = dict.get(coord, "origin")
         vec = spacing["value"]
-        if not isinstance(vec, Tensor):
-            vec = torch.as_tensor(vec, dtype=torch.get_default_dtype())
+        # solved in float64 regardless of the spacing's own/default dtype --
+        # matching `_numeric_select_compact`'s closed-form convention -- so a
+        # genuinely float64-precision-dependent spacing (or an int one) isn't
+        # silently downcast to float32 and solved wrong (review finding #3).
+        if isinstance(vec, Tensor):
+            vec = vec.to(torch.float64)
+        else:
+            vec = torch.as_tensor(vec, dtype=torch.float64)
         base = float(origin["value"]) if origin is not None else 0.0
         target = _selector_value(indexers[name], spacing["unit"])
-        rows.append(vec.to(torch.get_default_dtype()))
-        rhs.append(target - base)
-    matrix = torch.stack(rows)
-    vector = torch.tensor(rhs, dtype=matrix.dtype)
+        per_name.append((name, vec, base, target, spacing["unit"]))
+    matrix = torch.stack([vec for _, vec, _, _, _ in per_name])
+    # built on `matrix`'s own device (not implicitly CPU): a spacing tensor
+    # that lives off-CPU must not force a cross-device op here (review
+    # finding #2).
+    vector = torch.tensor(
+        [target - base for _, _, base, target, _ in per_name],
+        dtype=matrix.dtype,
+        device=matrix.device,
+    )
     try:
         index = torch.inverse(matrix) @ vector
     except RuntimeError as exc:
+        # narrowed to the actual singular-matrix message, so an unrelated
+        # failure (e.g. a device mismatch) isn't misattributed as "not
+        # invertible" (review finding #2).
+        if "singular" not in str(exc).lower():
+            raise
         raise ValueError(
             f"sel: the affine map over {dims!r} ({sorted(names_in_group)!r}) "
             f"isn't invertible: {exc}"
@@ -1969,6 +2012,16 @@ def _affine_sel_indices(
                 f"index {position}, out of range for size {size}"
             )
         result[dim] = position
+    # `tolerance` was silently ignored for a joint query (review finding #4)
+    # -- re-evaluate the forward map at the rounded index for each queried
+    # coordinate NAME (not dim: the gap is meaningful per coordinate, since
+    # several can share the same dims) and enforce it the same way the 1-D
+    # path does, so a bare `.sel(lat=.., lon=..)` stays exact by default too.
+    for name, vec, base, target, unit in per_name:
+        predicted = base + float(vec @ torch.tensor(rounded, dtype=vec.dtype))
+        gap = abs(predicted - target)
+        tol = None if tolerance is None else _selector_value(tolerance, unit)
+        _check_sel_tolerance(gap, tol, target, sel_mode, indexers[name], name)
     return result
 
 

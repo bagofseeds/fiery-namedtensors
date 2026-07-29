@@ -860,8 +860,23 @@ def test_affine_sel_joint_query_picks_the_right_position():
 
 def test_affine_sel_joint_query_rounds_to_the_nearest_position():
     x = _lat_lon_tensor()
-    out = x.sel(lat=11.4, lon=23.6)  # nearest is still (1, 2)
+    # a bare joint query is exact-by-default (tolerance=0), matching the 1-D
+    # path's contract -- an inexact target needs an explicit mode to snap.
+    out = x.sel(mode="round", lat=11.4, lon=23.6)  # nearest is still (1, 2)
     assert out.item() == x.as_subclass(torch.Tensor)[1, 2].item()
+
+
+def test_affine_sel_bare_joint_query_is_exact_by_default():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(lat=11.4, lon=23.6)  # no mode -- tolerance=0, and 11.4 is off
+
+
+def test_affine_sel_joint_query_respects_an_explicit_tolerance():
+    x = _lat_lon_tensor()
+    x.sel(mode="round", tolerance=0.5, lat=11.4, lon=23.6)  # within 0.5
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(mode="round", tolerance=0.1, lat=11.4, lon=23.6)  # not within
 
 
 def test_affine_sel_joint_query_mixes_with_an_ordinary_indexer():
@@ -883,6 +898,30 @@ def test_affine_sel_joint_query_mixes_with_an_ordinary_indexer():
     )
     out = x.sel(t=1.0, lat=11.0, lon=24.0)
     assert out.item() == field[1, 1, 2].item()
+
+
+def test_affine_sel_dim_set_both_jointly_and_directly_raises():
+    # a dim resolved by the joint solve must not be silently overwritten by
+    # an ordinary indexer on that same dim in the same call -- previously
+    # this discarded the joint result with no error.
+    field = torch.arange(12.0).reshape(3, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+            "y": {"spacing": 1.0},
+        },
+    )
+    with pytest.raises(ValueError, match="set both by a joint affine"):
+        x.sel(lat=11.0, lon=24.0, y=2.0)
 
 
 def test_affine_sel_three_way_joint_query():
@@ -930,6 +969,26 @@ def test_affine_sel_singular_map_raises():
     )
     with pytest.raises(ValueError, match="isn't invertible"):
         x.sel(a=1.0, b=2.0)
+
+
+def test_affine_sel_solves_in_float64_precision():
+    # a spacing difference near float32 epsilon (1e-7) must not be silently
+    # downcast away -- solving in float32 would make the system near-
+    # singular and resolve to the wrong index (review finding #3).
+    field = torch.arange(16.0).reshape(4, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "p": (("y", "x"), {"spacing": ([1.0, 1.0], "")}),
+            "q": (("y", "x"), {"spacing": ([1.0, 1.0 + 1e-7], "")}),
+        },
+    )
+    i, j = 1, 2
+    p_target = i * 1.0 + j * 1.0
+    q_target = i * 1.0 + j * (1.0 + 1e-7)
+    out = x.sel(p=p_target, q=q_target)
+    assert out.item() == field[i, j].item()
 
 
 def test_affine_sel_ordinary_non_dimension_coordinate_still_raises():
