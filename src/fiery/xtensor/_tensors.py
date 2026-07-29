@@ -1155,10 +1155,11 @@ class XTensor(ExtendedTensor):
 
     def sel(
         self,
+        *indexers_positional: tx.Mapping,
         mode: tx.Optional[str] = None,
         tolerance: tx.Any = None,
         method: tx.Optional[str] = None,
-        **indexers: tx.Any,
+        **indexers_kwargs: tx.Any,
     ) -> tx.Self:
         """
         Select by coordinate **label** (or numeric value) along named dims.
@@ -1211,7 +1212,17 @@ class XTensor(ExtendedTensor):
         (a bare query is exact by default) -- checked against the *rounded*
         position's own value, since a joint query never has one "the" gap
         the way a single coordinate does.
+
+        Pass `indexers` as an explicit mapping (`x.sel({"mode": "red"})`)
+        instead of keyword arguments when a dim's name collides with one
+        of `sel`'s own keyword parameters (`mode`, `tolerance`, `method`)
+        -- xarray's own escape hatch for exactly this, since a keyword
+        argument matching one of those names is always bound to the
+        parameter, never reaching the indexers. Passing both raises.
         """
+        indexers = _either_dict_or_kwargs(
+            indexers_positional, indexers_kwargs, "sel"
+        )
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
         raw = mode if mode is not None else method
@@ -1588,7 +1599,9 @@ class XTensor(ExtendedTensor):
             raise AttributeError(name)
         hits = self._dims_with_label(name)
         if len(hits) == 1:
-            return self.sel(**{hits[0]: name})
+            # positional (not **kwargs): `x.<label>` must still resolve a
+            # dim literally named "mode"/"tolerance"/"method".
+            return self.sel({hits[0]: name})
         if len(hits) > 1:
             raise AttributeError(
                 f"label {name!r} is ambiguous across dims {hits}"
