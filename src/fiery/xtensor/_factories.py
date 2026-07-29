@@ -87,7 +87,7 @@ def _make_like_factory(name: str) -> tx.Optional[tx.Callable]:
     factory.__doc__ = (
         f"Like `torch.{name}`, but returns an `XTensor`.\n\n"
         f"When `input` is an `XTensor`, the result **inherits** its names, "
-        f"coordinates, descriptors, and unit; pass `names=` / `axes=` / "
+        f"coordinates, descriptors, and units; pass `names=` / `axes=` / "
         f"`coords=` / `units=` to override any of them."
     )
     return factory

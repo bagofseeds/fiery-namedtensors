@@ -16,11 +16,11 @@ spirit of [xarray](https://docs.xarray.dev):
 The `x*` factories (`xzeros`, `xones`, `xfill`, ...) build an `XTensor`
 directly from the matching `torch.*` factory, naming (and labelling) the axes
 at creation time; the `x*_like` variants inherit an `XTensor` input's names,
-coordinates, and unit.
+coordinates, and units.
 
 [`as_xtensor`][fiery.xtensor.as_xtensor] is the `XTensor` analogue of
 `torch.as_tensor`: coerce a bare number, a plain `Tensor`, or an `XTensor`
-into an `XTensor`, graph-safely, preserving `unit`/`names`/`coords` unless a
+into an `XTensor`, graph-safely, preserving `units`/`names`/`coords` unless a
 keyword explicitly overrides them. Like `torch.as_tensor`, it also accepts
 `dtype=`/`device=` to convert the underlying data.
 
