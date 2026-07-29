@@ -75,7 +75,7 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   validated `{name: coord}` view everything else reads (filters stale entries
   — dim gone, resized, or a non-dim coordinate's dim renamed away — and binds
   the axis size); `_pack_coord`/`_pack_coords` wrap a flat value/dict back
-  into the unified storage shape when writing `_coords`. `coords[dim]["values"]`
+  into the unified storage shape when writing `_coords`. `coords[dim]["value"]`
   is a **derived** key materialising `origin + i*spacing` fresh each access
   (no cache) as a 1-D unitful `XTensor` — differentiable when `spacing` is a
   0-rank tensor. `spacing`/`origin` are `Unitful` **magic dicts** (`{value,
@@ -85,7 +85,7 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   `_units.as_unitful` ingests tuple/dict/pint/str/number; the family is
   internal (no export → no `pint.Quantity` clash). The **position** unit (a
   coordinate's values) is distinct from the **data** unit (0003, the tensor
-  values). A `Coordinate` may also be **explicit** (`{"values": <unitful 1-D
+  values). A `Coordinate` may also be **explicit** (`{"value": <unitful 1-D
   tensor>}`, from `coords={dim: tensor}`); `__getitem__` slices a *dimension*
   coordinate **affinely** (`_slice_coordinate`: compact updates
   `spacing*=step`/`origin+=start*spacing`, explicit slices the array, advanced
@@ -102,7 +102,7 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   broadcast `arange` per dim (`origin + Σ_d spacing[d]*index_d`, still
   differentiable) — laid out in the **host tensor's axis order**, not in
   `dims` order (`_bound_axes` takes `((spacing component, axis size), …)`
-  already sorted by axis: `["values"]` is a bare array with no dims of its
+  already sorted by axis: `["value"]` is a bare array with no dims of its
   own, and `dims` may be given out of order or permuted later) — and
   `_slice_affine_coordinate` re-slices it component-wise
   in `__getitem__` — a basic slice updates that dim's component like 0001's
@@ -185,7 +185,7 @@ pattern is worth internalising rather than re-discovering.
    coordinates are **not** re-sliced (step 6 isn't built yet) — so accepting
    a compact one and letting it "just ride along" produces a coordinate that
    silently reports the *wrong* values after its dim is sliced (verified:
-   `x[1:3].coords["wl"]["values"]` gave the pre-slice window, not the correct
+   `x[1:3].coords["wl"]["value"]` gave the pre-slice window, not the correct
    one — no error, just wrong numbers). The fix was **not** to accept the
    input more permissively; it was to make `_parse_nondim_coord` explicitly
    raise `NotImplementedError` for a compact non-dim spec until slice-tracking
@@ -222,7 +222,7 @@ pattern is worth internalising rather than re-discovering.
    back with the names stripped off.** The affine coordinate materialised its
    grid in `dims` order, which matches the tensor only until something
    reorders the axes — `permute`/`transpose`/`movedim` carry the coordinate
-   through untouched (all its dims survive), so `x.T.coords["lat"]["values"]`
+   through untouched (all its dims survive), so `x.T.coords["lat"]["value"]`
    came back transposed relative to `x.T`, *undetectably* on a square tensor.
    The fix binds the grid to `((spacing component, size), …)` sorted by the
    host tensor's axis index, so the layout follows the data. **Rule**: any

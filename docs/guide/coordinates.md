@@ -108,7 +108,7 @@ img = xtensor(data, names=("y", "x"),
               coords={"x": {"spacing": (0.5, "mm"), "origin": (-16, "mm")}})
 
 img.coords["x"]["spacing"].unit   # "mm"  — the position unit
-img.coords["x"]["values"]         # tensor([-16, -15.5, …]) with .unit == "mm"
+img.coords["x"]["value"]          # tensor([-16, -15.5, …]) with .unit == "mm"
 ```
 
 Only one of `spacing`/`origin` needs to be given — the other defaults, and the
@@ -122,22 +122,31 @@ xtensor(data, names=("x",), coords={"x": {"origin": (-16, "mm")}})
 # spacing defaults to 1 mm -> positions -16, -15, -14, …
 ```
 
-`["values"]` materializes `origin + i·spacing` on demand (differentiable — a
+`["value"]` materializes `origin + i·spacing` on demand (differentiable — a
 learnable `spacing` tensor keeps its gradient). An **irregular** axis instead
-takes an explicit unitful tensor of positions:
+takes an explicit unitful tensor of positions — three equivalent spellings:
 
-```python
-sig = xtensor(trace, names=("t",),
-              coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
-```
+=== "Bare tensor"
 
-A bare tuple/list of plain numbers is sugar for the same thing (dimensionless,
-unless you use one of the forms above) — it is a numeric coordinate, not a set
-of labels that happen to be numbers:
+    ```python
+    sig = xtensor(trace, names=("t",),
+                  coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
+    ```
 
-```python
-xtensor(trace, names=("t",), coords={"t": (0., 0.5, 2., 4.)})
-```
+=== "Dict form"
+
+    ```python
+    sig = xtensor(trace, names=("t",),
+                  coords={"t": {"value": xtensor([0., 0.5, 2., 4.], unit="s")}})
+    ```
+
+=== "Bare list of numbers"
+
+    ```python
+    # dimensionless, unless you use one of the unitful forms above -- this
+    # is a numeric coordinate, not a set of labels that happen to be numbers
+    sig = xtensor(trace, names=("t",), coords={"t": (0., 0.5, 2., 4.)})
+    ```
 
 Numeric coordinates slice **affinely** (`img[..., 2:]` shifts the origin,
 `img[..., ::2]` scales the spacing) and convert with `img.coords["x"].to("um")`.

@@ -218,7 +218,7 @@ class XTensor(ExtendedTensor):
         """
         The coordinates, as a `{dim name: coordinate}` dict. A coordinate is a
         tuple of **labels**, or a compact numeric coordinate (`{spacing[,
-        origin]}`, whose `["values"]` key materialises the positions).
+        origin]}`, whose `["value"]` key materialises the positions).
 
         Only entries that are still valid are returned -- every dim a
         coordinate spans must still be named on this tensor (and, for
@@ -245,7 +245,7 @@ class XTensor(ExtendedTensor):
                 # The grid is laid out in **this tensor's** axis order, not in
                 # `dims` order: the two differ when `dims` was given in
                 # another order, or once an axis-reordering op (`permute` /
-                # `transpose` / `movedim`) has moved them, and `["values"]` is
+                # `transpose` / `movedim`) has moved them, and `["value"]` is
                 # a bare array with no dims of its own -- so materialising in
                 # `dims` order would silently misalign it with the data.
                 axes = [names.index(dim) for dim in dims]
@@ -264,7 +264,7 @@ class XTensor(ExtendedTensor):
                     # slice unchanged and is only kept here if its shape still
                     # matches) -- so it is dropped, not resliced, once any
                     # spanned dim's size has moved on without it.
-                    raw = dict.__getitem__(coord, "values")
+                    raw = dict.__getitem__(coord, "value")
                     if tuple(raw.shape) == tuple(
                         self.shape[axes[i]] for i in range(len(dims))
                     ):
@@ -274,7 +274,7 @@ class XTensor(ExtendedTensor):
             if isinstance(coord, Coordinate):
                 if coord._compact():
                     valid[name] = coord._bound(size)
-                elif len(dict.__getitem__(coord, "values")) == size:
+                elif len(dict.__getitem__(coord, "value")) == size:
                     valid[name] = coord  # explicit: kept if length matches
             elif len(coord) == size:
                 valid[name] = coord
@@ -1241,7 +1241,7 @@ class XTensor(ExtendedTensor):
                     "architecture cannot provide (not a missing feature, "
                     "see #81)"
                 )
-            stored_values = dict.__getitem__(coord, "values")
+            stored_values = dict.__getitem__(coord, "value")
             unit = stored_values.unit
             query, is_many = _query_values(target, unit)
             frac = _irregular_frac(
@@ -1274,7 +1274,7 @@ class XTensor(ExtendedTensor):
         # or numeric -- plus any non-dimension coordinate riding on it, since
         # neither corresponds to the new positions; Proposal 0005).
         new_coords = _coords_dropping(self, name)
-        explicit = Coordinate(values=XTensor(query, unit=unit))
+        explicit = Coordinate(value=XTensor(query, unit=unit))
         new_coords[name] = (name,), explicit
         out._coords = new_coords
         if not is_many:
@@ -1462,13 +1462,14 @@ class Coordinate(_units.MagicDict):
     A **numeric coordinate** -- a magic dict in one of two forms:
 
     - **compact / regular** -- `{spacing[, origin]}` (each a
-      [`Unitful`][fiery.xtensor._units.Unitful]); `["values"]` is a **derived**
+      [`Unitful`][fiery.xtensor._units.Unitful]); `["value"]` is a **derived**
       key materialising `origin + i * spacing` **fresh each access** (no cache,
       so a learnable spacing never goes stale and gradients flow back);
-    - **explicit / irregular** -- `{"values": <unitful 1-D tensor>}`;
-      `["values"]` returns the stored array.
+    - **explicit / irregular** -- `{"value": <unitful 1-D tensor>}` (a bare
+      tensor is equivalent sugar for the same thing); `["value"]` returns
+      the stored array.
 
-    The **position** unit (`["values"].unit`) is distinct from the tensor's
+    The **position** unit (`["value"].unit`) is distinct from the tensor's
     own data unit.
     """
 
@@ -1477,7 +1478,7 @@ class Coordinate(_units.MagicDict):
         return "spacing" in self or "origin" in self
 
     def _bound(self, size: int) -> "Coordinate":
-        """A copy that knows its axis `size`, so `["values"]` materialises."""
+        """A copy that knows its axis `size`, so `["value"]` materialises."""
         out = Coordinate(self)
         out._size = size
         return out
@@ -1485,7 +1486,7 @@ class Coordinate(_units.MagicDict):
     def _bound_axes(self, axes: tuple) -> "Coordinate":
         """
         A copy bound to several axes -- `((spacing component, axis size),
-        ...)`, **in the host tensor's axis order** -- so `["values"]`
+        ...)`, **in the host tensor's axis order** -- so `["value"]`
         materialises an N-D **affine** grid laid out like the tensor
         (Proposal 0005 step 3: `spacing` is a vector with one component per
         spanned dim, but `dims` need not be in the tensor's own axis order).
@@ -1497,7 +1498,7 @@ class Coordinate(_units.MagicDict):
     def _bound_curvilinear(self, order: tuple) -> "Coordinate":
         """
         A copy bound to a permutation (one raw-tensor axis index per host
-        axis, ascending) so `["values"]` returns an explicit **curvilinear**
+        axis, ascending) so `["value"]` returns an explicit **curvilinear**
         coordinate's stored array reordered to the host tensor's own axis
         order (issue #82) -- the same "laid out like the tensor, not like
         `dims`" rule `_bound_axes` follows for the compact affine form.
@@ -1507,11 +1508,11 @@ class Coordinate(_units.MagicDict):
         return out
 
     def __getitem__(self, key: tx.Any) -> tx.Any:
-        if key == "values" and self._compact():
+        if key == "value" and self._compact():
             if "_axes" in self.__dict__:
                 return self._materialise_axes()
             return self._materialise()
-        if key == "values" and "_curv_order" in self.__dict__:
+        if key == "value" and "_curv_order" in self.__dict__:
             return self._materialise_curvilinear()
         return dict.__getitem__(self, key)
 
@@ -1560,7 +1561,7 @@ class Coordinate(_units.MagicDict):
         interpolation or recomputation, since (unlike the affine form) there
         is no formula to re-derive from.
         """
-        raw = dict.__getitem__(self, "values")
+        raw = dict.__getitem__(self, "value")
         order = self._curv_order
         if order == tuple(range(len(order))):
             return raw
@@ -1571,7 +1572,7 @@ class Coordinate(_units.MagicDict):
         Convert the coordinate's **position** unit, rescaling
         `spacing`/`origin` (compact) or the stored `values` (explicit). Needs a
         backend. Carries over whatever axis binding this coordinate already
-        had, so `coords[name].to(unit)["values"]` still materialises
+        had, so `coords[name].to(unit)["value"]` still materialises
         correctly for the tensor it came from.
         """
         if self._compact():
@@ -1581,7 +1582,7 @@ class Coordinate(_units.MagicDict):
                 out["origin"] = dict.__getitem__(self, "origin").to(unit)
         else:
             out = Coordinate(
-                values=dict.__getitem__(self, "values").to_unit(unit)
+                value=dict.__getitem__(self, "value").to_unit(unit)
             )
         if "_size" in self.__dict__:
             out._size = self._size
@@ -1780,6 +1781,8 @@ def _promote_numeric_labels(key: str, labels: tuple) -> tx.Any:
 def _make_coordinate(spec: tx.Any) -> Coordinate:
     """Build a `Coordinate` from a compact spec or an explicit tensor."""
     if _is_explicit_coord(spec):
+        if isinstance(spec, tx.Mapping):
+            spec = spec["value"]
         if isinstance(spec, XTensor) and spec.unit is not None:
             values = as_xtensor(spec)  # preserve its own unit, graph-safe
         else:
@@ -1796,7 +1799,7 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
                 "coords: a numeric coordinate must be 1-D, got shape "
                 f"{tuple(values.shape)}"
             )
-        return Coordinate(values=values)
+        return Coordinate(value=values)
     coord = Coordinate()
     if "origin" in spec:
         coord["origin"] = _as_unitful_origin(spec["origin"])
@@ -1851,6 +1854,8 @@ def _make_curvilinear_coordinate(
             "either a compact {'spacing': ...} affine map or an explicit "
             f"tensor of values, got {spec!r}"
         )
+    if isinstance(spec, tx.Mapping):
+        spec = spec["value"]
     if isinstance(spec, XTensor) and spec.unit is not None:
         values = as_xtensor(spec)
     else:
@@ -1861,7 +1866,7 @@ def _make_curvilinear_coordinate(
             f"values must be {len(dims)}-D (one axis per dim), got shape "
             f"{tuple(values.shape)}"
         )
-    return Coordinate(values=values)
+    return Coordinate(value=values)
 
 
 def _affine_sel_indices(
@@ -2019,7 +2024,7 @@ def _curvilinear_sel_indices(
                 "multi-element tensor; there is no vectorized multi-point "
                 "form yet, see vs-xarray.md"
             )
-    # `coords_bound[name]["values"]` materialises in **ascending host axis
+    # `coords_bound[name]["value"]` materialises in **ascending host axis
     # order** among `dims` (see `_bound_curvilinear`), which need not be
     # `dims`'s own given order -- `sorted_dims` matches that same order, so
     # unraveling the flat argmin index below lines up with the grid's actual
@@ -2033,7 +2038,7 @@ def _curvilinear_sel_indices(
     units = []
     grid_shape = None
     for name in names_in_group:
-        grid = coords_bound[name]["values"]
+        grid = coords_bound[name]["value"]
         if grid_shape is None:
             grid_shape = tuple(grid.shape)
         grids.append(grid.as_subclass(Tensor))
@@ -2098,7 +2103,7 @@ def _curvilinear_sel_indices(
 def _nondim_coord_len(coord: tx.Any) -> int:
     """The number of positions in a non-dimension coordinate's values."""
     if isinstance(coord, Coordinate):
-        return len(dict.__getitem__(coord, "values"))
+        return len(dict.__getitem__(coord, "value"))
     return len(coord)
 
 
@@ -2259,7 +2264,7 @@ def _numeric_select_compact(
     """
     `_numeric_select` for a **compact** coordinate: `origin`/`spacing` give an
     O(1) closed-form inverse (`index = (value - origin) / spacing`), so this
-    never materialises `["values"]` or searches it (issue #110) -- the whole
+    never materialises `["value"]` or searches it (issue #110) -- the whole
     point of the compact representation is to avoid exactly that for a large
     regular grid. `coord` must already be size-bound (`coord._bound(size)`,
     what `.coords` always returns), so `coord._size` is available. Falls back
@@ -2316,7 +2321,7 @@ def _numeric_select_compact(
                 if materialised_values is None:
                     # built directly in float64 -- matching the closed-form
                     # walk's own arithmetic -- rather than materialising
-                    # via `coord["values"]` (which computes in the tensor's
+                    # via `coord["value"]` (which computes in the tensor's
                     # default, float32, dtype: `torch.arange(size)*step`
                     # already loses precision there) and upcasting
                     # afterwards, which cannot recover what's already lost.
@@ -2354,7 +2359,7 @@ def _numeric_select(
     """
     if coord._compact():
         return _numeric_select_compact(coord, selector, mode, tolerance, name)
-    materialised = coord["values"]
+    materialised = coord["value"]
     values = materialised.as_subclass(Tensor)
     unit = materialised.unit
     # a `list` selects several positions; a `tuple` is a unitful (value, unit)
@@ -2413,7 +2418,7 @@ def _numeric_select_range(
         unit = spacing["unit"]
         size = coord._size
     else:
-        materialised = coord["values"]
+        materialised = coord["value"]
         values = materialised.as_subclass(Tensor)
         unit = materialised.unit
         size = values.numel()
@@ -2845,7 +2850,7 @@ def _affine_interp_pull(
             values = query.to(torch.get_default_dtype())
             new_coords[nm] = (
                 (name,),
-                Coordinate(values=XTensor(values, unit=unit)),
+                Coordinate(value=XTensor(values, unit=unit)),
             )
     out._coords = new_coords
     return out
@@ -2878,15 +2883,15 @@ def _slice_coordinate(
                 value=base + start * spacing["value"], unit=spacing["unit"]
             )
             return out
-        return Coordinate(values=dict.__getitem__(coord, "values")[slicer])
+        return Coordinate(value=dict.__getitem__(coord, "value")[slicer])
     if arrayutils._is_boolean_index(slicer) or arrayutils._is_advanced_index(
         slicer
     ):
         if coord._compact():
-            values = coord._bound(size)["values"]
+            values = coord._bound(size)["value"]
         else:
-            values = dict.__getitem__(coord, "values")
-        return Coordinate(values=values[slicer])
+            values = dict.__getitem__(coord, "value")
+        return Coordinate(value=values[slicer])
     return None
 
 
