@@ -4677,6 +4677,53 @@ def test_deepcopy_preserves_requires_grad_as_a_fresh_leaf():
     assert copied.is_leaf
 
 
+def test_repr_of_an_int_dtype_tensor_does_not_recurse():
+    # issue #118: torch.Tensor.__format__ checks `type(self) is Tensor` and
+    # falls back to `object.__format__` (== str(self)) for any subclass --
+    # fatal specifically for a non-float (int/bool) dtype tensor, whose repr
+    # formats each element via f"{value}" on a 0-dim slice of the same
+    # subclass, which then recurses back into the very same tensor-printing
+    # machinery forever. A float-dtype tensor's repr instead computes its
+    # display width from `torch.masked_select(...)`'s output -- a *non-view*
+    # op, so the result is a plain `Tensor`, not this subclass, and torch's
+    # own `.item()` fast path is taken instead of recursing. The
+    # `XTensor(...)` wrapper prefix itself is torch's own subclass-aware
+    # repr, only present on torch versions that added it -- older torch
+    # (this package's floor is 1.7) just prints `tensor(...)` for any
+    # subclass, so only check the data renders and nothing raises, not the
+    # exact prefix.
+    x = XTensor(torch.arange(3))
+    assert "0, 1, 2" in repr(x)
+    assert "0, 1, 2" in str(x)
+    b = XTensor(torch.tensor([True, False]))
+    assert "True" in repr(b)
+
+
+def test_repr_of_an_int_dtype_coordinate_does_not_recurse():
+    # the actual reported entry point (#118's title): a numeric coordinate
+    # promoted to int dtype (#107) is exactly the shape that made this easy
+    # to hit by accident.
+    x = XTensor(torch.arange(3), names=("t",), coords={"t": (10, 20, 30)})
+    assert "0, 1, 2" in repr(x)
+    assert "10, 20, 30" in repr(x.coords)
+
+
+def test_format_of_a_zero_dim_tensor_extracts_the_scalar():
+    s_int = XTensor(torch.tensor(3))
+    assert f"{s_int}" == "3"
+    s_float = XTensor(torch.tensor(3.0))
+    assert f"{s_float}" == "3.0"
+    # a format spec should still apply to the extracted scalar, not to the
+    # tensor's own repr
+    assert f"{s_float:.2f}" == "3.00"
+
+
+def test_repr_of_a_multi_dim_int_tensor_with_names_does_not_recurse():
+    m = XTensor(torch.arange(6).reshape(2, 3), names=("row", "col"))
+    assert "0, 1, 2" in repr(m)
+    assert "3, 4, 5" in repr(m)
+
+
 def test_zero_dim_tensor_index_behaves_like_the_equivalent_int():
     x = XTensor(
         torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}

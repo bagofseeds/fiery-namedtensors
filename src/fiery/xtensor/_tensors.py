@@ -335,6 +335,25 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
             out.grad = copy.deepcopy(self.grad, memo)
         return out
 
+    def __format__(self, format_spec: str) -> str:
+        # `Tensor.__format__`'s own body checks `type(self) is Tensor` and
+        # falls back to `object.__format__` (== `str(self)`) for any
+        # subclass -- including this one. That's silently fine for most
+        # calls, but fatal for a 0-dim tensor specifically: an int-dtype
+        # tensor's `repr` (`torch._tensor_str._Formatter`) formats each
+        # element via `f"{value}"`, where `value` is itself a 0-dim slice
+        # of this subclass -- so `str(self)` on THAT slice re-enters the
+        # very same tensor-printing machinery, on a tensor that is still
+        # 0-dim and still this subclass, forever (issue #118). A plain
+        # `Tensor` never hits this because its `__format__` extracts
+        # `.item()` directly instead of recursing back into `repr`.
+        # Defined as a plain method (not a registered override, matching
+        # `__deepcopy__` above) so Python's normal dunder lookup finds
+        # this directly, without going through `__torch_function__`.
+        if self.dim() == 0 and not self.is_meta:
+            return self.as_subclass(Tensor).item().__format__(format_spec)
+        return object.__format__(self, format_spec)
+
 
 # ======================================================================
 #
