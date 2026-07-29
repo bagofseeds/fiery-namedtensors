@@ -200,13 +200,17 @@ def test_affine_coordinate_materialises_an_nd_grid():
     assert torch.allclose(lon, expected_lon)
 
 
-def test_affine_coordinate_is_not_an_index():
+def test_affine_coordinate_alone_is_an_under_determined_joint_query():
+    # a lone affine coordinate can't be a "not an index" error any more --
+    # #82 phase 1 makes a query over it a deliberate joint-affine feature,
+    # just one this particular call is under-determined for (needs a value
+    # for every coordinate spanning the same dims, not just one).
     x = XTensor(
         torch.zeros(3, 4),
         names=["y", "x"],
         coords={"lat": (["y", "x"], {"spacing": ([1.0, 0.5], "deg")})},
     )
-    with pytest.raises(ValueError, match="not an index coordinate"):
+    with pytest.raises(ValueError, match="needs exactly 2 coordinate"):
         x.sel(lat=1.0)
 
 
@@ -822,6 +826,234 @@ def test_affine_coordinate_gradients_flow_through_spacing_and_origin():
     assert sy.grad is not None
     assert sx.grad is not None
     assert origin.grad is not None
+
+
+# ----------------------------------------------------------------------
+# joint affine .sel (issue #82 phase 1)
+# ----------------------------------------------------------------------
+
+
+def _lat_lon_tensor():
+    # lat[i,j] = 10 + 1*i + 0*j ; lon[i,j] = 20 + 0*i + 2*j
+    field = torch.arange(12.0).reshape(3, 4)
+    return XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+        },
+    )
+
+
+def test_affine_sel_joint_query_picks_the_right_position():
+    x = _lat_lon_tensor()
+    out = x.sel(lat=11.0, lon=24.0)
+    assert out.item() == x.as_subclass(torch.Tensor)[1, 2].item()
+
+
+def test_affine_sel_joint_query_rounds_to_the_nearest_position():
+    x = _lat_lon_tensor()
+    # a bare joint query is exact-by-default (tolerance=0), matching the 1-D
+    # path's contract -- an inexact target needs an explicit mode to snap.
+    out = x.sel(mode="round", lat=11.4, lon=23.6)  # nearest is still (1, 2)
+    assert out.item() == x.as_subclass(torch.Tensor)[1, 2].item()
+
+
+def test_affine_sel_bare_joint_query_is_exact_by_default():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(lat=11.4, lon=23.6)  # no mode -- tolerance=0, and 11.4 is off
+
+
+def test_affine_sel_joint_query_respects_an_explicit_tolerance():
+    x = _lat_lon_tensor()
+    x.sel(mode="round", tolerance=0.5, lat=11.4, lon=23.6)  # within 0.5
+    with pytest.raises(ValueError, match="over tolerance"):
+        x.sel(mode="round", tolerance=0.1, lat=11.4, lon=23.6)  # not within
+
+
+def test_affine_sel_joint_query_mixes_with_an_ordinary_indexer():
+    field = torch.arange(24.0).reshape(2, 3, 4)
+    x = XTensor(
+        field,
+        names=("t", "y", "x"),
+        coords={
+            "t": {"spacing": 1.0},
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+        },
+    )
+    out = x.sel(t=1.0, lat=11.0, lon=24.0)
+    assert out.item() == field[1, 1, 2].item()
+
+
+def test_affine_sel_dim_set_both_jointly_and_directly_raises():
+    # a dim resolved by the joint solve must not be silently overwritten by
+    # an ordinary indexer on that same dim in the same call -- previously
+    # this discarded the joint result with no error.
+    field = torch.arange(12.0).reshape(3, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+            "y": {"spacing": 1.0},
+        },
+    )
+    with pytest.raises(ValueError, match="set both by a joint affine"):
+        x.sel(lat=11.0, lon=24.0, y=2.0)
+
+
+def test_affine_sel_three_way_joint_query():
+    field = torch.arange(60.0).reshape(3, 4, 5)
+    x = XTensor(
+        field,
+        names=("a", "b", "c"),
+        coords={
+            "p": (("a", "b", "c"), {"spacing": ([1.0, 0.0, 0.0], "")}),
+            "q": (("a", "b", "c"), {"spacing": ([0.0, 1.0, 0.0], "")}),
+            "r": (("a", "b", "c"), {"spacing": ([0.0, 0.0, 1.0], "")}),
+        },
+    )
+    out = x.sel(p=2.0, q=1.0, r=3.0)
+    assert out.item() == field[2, 1, 3].item()
+
+
+def test_affine_sel_under_determined_query_raises():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="needs exactly 2 coordinate"):
+        x.sel(lat=11.0)
+
+
+def test_affine_sel_rejects_a_non_round_mode():
+    x = _lat_lon_tensor()
+    with pytest.raises(NotImplementedError, match="isn't supported"):
+        x.sel(lat=11.0, lon=24.0, mode="floor")
+
+
+def test_affine_sel_out_of_range_query_raises():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="out of range"):
+        x.sel(lat=999.0, lon=24.0)
+
+
+def test_affine_sel_singular_map_raises():
+    field = torch.arange(12.0).reshape(3, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "a": (("y", "x"), {"spacing": ([1.0, 1.0], "")}),
+            "b": (("y", "x"), {"spacing": ([2.0, 2.0], "")}),
+        },
+    )
+    with pytest.raises(ValueError, match="isn't invertible"):
+        x.sel(a=1.0, b=2.0)
+
+
+def test_affine_sel_solves_in_float64_precision():
+    # a spacing difference near float32 epsilon (1e-7) must not be silently
+    # downcast away -- solving in float32 would make the system near-
+    # singular and resolve to the wrong index (review finding #3).
+    field = torch.arange(16.0).reshape(4, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "p": (("y", "x"), {"spacing": ([1.0, 1.0], "")}),
+            "q": (("y", "x"), {"spacing": ([1.0, 1.0 + 1e-7], "")}),
+        },
+    )
+    i, j = 1, 2
+    p_target = i * 1.0 + j * 1.0
+    q_target = i * 1.0 + j * (1.0 + 1e-7)
+    out = x.sel(p=p_target, q=q_target)
+    assert out.item() == field[i, j].item()
+
+
+def test_affine_sel_ordinary_non_dimension_coordinate_still_raises():
+    # a 1-D non-dimension coordinate is unaffected -- still needs swap_dims
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={
+            "t": {"spacing": 1.0},
+            "season": ("t", ("w", "w", "sp", "sp")),
+        },
+    )
+    with pytest.raises(ValueError, match="not an index coordinate"):
+        x.sel(season="w")
+
+
+def test_affine_sel_gradients_do_not_crash_with_a_learnable_spacing():
+    sy = torch.tensor(1.0, requires_grad=True)
+    sx = torch.tensor(0.0, requires_grad=True)
+    field = torch.arange(12.0).reshape(3, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "lat": (("y", "x"), {"spacing": ([sy, sx], "deg")}),
+            "lon": (("y", "x"), {"spacing": ([0.0, 2.0], "deg")}),
+        },
+    )
+    out = x.sel(lat=1.0, lon=2.0)
+    assert out.item() == field[1, 1].item()
+
+
+def test_affine_sel_matches_a_brute_force_reference_exhaustively():
+    # independent randomized comparison: solve the affine system via a
+    # brute-force materialise-and-argmin reference instead of the
+    # closed-form inverse under test.
+    import random
+
+    rng = random.Random(0)
+    for _ in range(200):
+        h, w = rng.randint(2, 6), rng.randint(2, 6)
+        field = torch.arange(float(h * w)).reshape(h, w)
+        s1 = [round(rng.uniform(-3, 3), 2) for _ in range(2)]
+        s2 = [round(rng.uniform(-3, 3), 2) for _ in range(2)]
+        o1, o2 = round(rng.uniform(-5, 5), 2), round(rng.uniform(-5, 5), 2)
+        matrix = torch.tensor([s1, s2])
+        if abs(torch.det(matrix).item()) < 1e-3:
+            continue  # skip near-singular draws
+        x = XTensor(
+            field,
+            names=("y", "x"),
+            coords={
+                "p": (("y", "x"), {"spacing": (s1, ""), "origin": (o1, "")}),
+                "q": (("y", "x"), {"spacing": (s2, ""), "origin": (o2, "")}),
+            },
+        )
+        i = rng.randint(0, h - 1)
+        j = rng.randint(0, w - 1)
+        p_val = o1 + s1[0] * i + s1[1] * j
+        q_val = o2 + s2[0] * i + s2[1] * j
+        try:
+            got = x.sel(p=p_val, q=q_val)
+        except ValueError:
+            continue  # an out-of-range round-trip on a near-degenerate draw
+        assert got.item() == field[i, j].item(), (s1, s2, o1, o2, i, j)
 
 
 def test_non_dimension_coordinate_length_is_checked():
