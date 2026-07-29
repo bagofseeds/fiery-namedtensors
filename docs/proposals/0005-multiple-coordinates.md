@@ -50,8 +50,8 @@ first-class feature for medical / neuro imaging, not just parity.
 All coordinates live in one map keyed by coordinate name, each entry a
 `(dims, coord)` pair —
 
-```
-_coords = { name: (dims_tuple, coord) }
+```python
+_coords = {name: (dims_tuple, coord)}
 ```
 
 where `coord` is any of the existing kinds (categorical labels; a numeric
@@ -251,14 +251,15 @@ affine feature.
 
 ## What step 4 implements
 
-- `swap_dims({old_dim: new_name})` (positional dict, or `swap_dims(old_dim=
-  new_name)` as keywords): `new_name` must already be a **non-dimension**
-  coordinate riding `old_dim` **alone** (`dims == (old_dim,)`) — the same
-  restriction xarray's `swap_dims` has (it needs a coordinate that is a
-  function of exactly that one dim). Renames the axis `old_dim -> new_name`
-  (so `.names` and any axis descriptor follow, exactly like `rename`), and
-  demotes `old_dim`'s previous dimension coordinate to a non-dimension
-  coordinate riding the renamed axis, **under its old key** — matching
+- `swap_dims({old_dim: new_name})` (positional dict, or
+  `swap_dims(old_dim=new_name)` as keywords): `new_name` must already be a
+  **non-dimension** coordinate riding `old_dim` **alone**
+  (`dims == (old_dim,)`) — the same restriction xarray's `swap_dims` has (it
+  needs a coordinate that is a function of exactly that one dim). Renames the
+  axis `old_dim -> new_name` (so `.names` and any axis descriptor follow,
+  exactly like `rename`), and demotes `old_dim`'s previous dimension
+  coordinate to a non-dimension coordinate riding the renamed axis, **under
+  its old key** — matching
   xarray's own behaviour (`da.swap_dims({"time": "label"})` keeps a `"time"`
   coordinate around, now riding the `"label"` axis).
 - Not a thin wrapper over `rename`: renaming `old_dim` onto `new_name` would

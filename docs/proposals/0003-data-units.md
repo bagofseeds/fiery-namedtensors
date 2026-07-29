@@ -93,7 +93,7 @@ algebra by feeding it `Unit` objects, never the data. Best of both.
 Every element's unit is a product of a whole-tensor **base unit** and one factor
 per axis that carries per-position units:
 
-```
+```text
 unit(x[i₀, i₁, …]) = base_unit · Π_k  unit_k(i_k)
 ```
 
@@ -313,7 +313,7 @@ not restricting the model:
      unchanged). For a plain `torch.Tensor`, `x.as_subclass(torch.Tensor)`.
    - **implicit conversion** — `add`/`sub`/compare of **compatible** units
      (`V` + `mV`) convert the right operand to the left's unit before the op;
-     only dimensionally **incompatible** units drop/raise (§7.2).
+     only dimensionally **incompatible** units drop/raise (§7).
 
 ## 7. Open questions
 

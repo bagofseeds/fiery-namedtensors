@@ -254,12 +254,13 @@ class ExtendedTensorMeta(type(Tensor)):
 
 class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
     """
-    A tensor with extended functionality, represented as a PyTorch
-    tensor subclass.
+    A `torch.Tensor` subclass with extended, name-aware behaviour.
 
-    This tensor overrides some PyTorch builtin functions using the
-    `__torch_function__` protocol. Function overrides are saved in a
-    registry.
+    Selected torch functions are overridden through the `__torch_function__`
+    protocol; the overrides live in a per-subclass registry, populated by the
+    [`overrides`][fiery.xtensor.ExtendedTensor.overrides] decorator. Any op
+    without an override still propagates the subclass's own metadata
+    attributes from its first tensor argument onto the result.
     """
 
     @classmethod
@@ -267,9 +268,8 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
         """
         Decorator to register a function override.
 
-        `func` may be `None` (e.g. when resolved through
-        [`torch_func`][fiery.xtensor._compat.torch_func] for an op
-        that does not exist in the running PyTorch version); in that case
+        `func` may be `None` (e.g. when resolved through `torch_func` for an
+        op that does not exist in the running PyTorch version); in that case
         the override is silently skipped so that we never overload a
         function that is missing from this PyTorch build.
         """
@@ -552,9 +552,9 @@ class XTensor(ExtendedTensor):
     def coords(self) -> dict[str, LabelsT]:
         """
         The coordinates, as a `{dim name: coordinate}` dict. A coordinate is a
-        tuple of **labels**, or a compact numeric [`Coordinate`][fiery.xtensor.
-        _tensors.Coordinate] (`{spacing[, origin]}`, whose `["values"]` key
-        materialises the positions; Proposal 0001).
+        tuple of **labels**, or a compact numeric `Coordinate`
+        (`{spacing[, origin]}`, whose `["values"]` key materialises the
+        positions; Proposal 0001).
 
         Only entries that are still valid are returned -- every dim in their
         `dims` must still be named on this tensor (and, for labels, its size
@@ -710,7 +710,7 @@ class XTensor(ExtendedTensor):
     @property
     def magnitude(self) -> tx.Self:
         """
-        The tensor with its **data unit dropped** (Proposal 0003 §7.1) -- the
+        The tensor with its **data unit dropped** (Proposal 0003 §7) -- the
         bare values, still an `XTensor` with the same names and coordinates.
         A view (no data copy); the original is unchanged. `x.magnitude.unit`
         is always `None`. (To get a plain `torch.Tensor`, use
@@ -1201,11 +1201,12 @@ class XTensor(ExtendedTensor):
         A **`slice(lo, hi)`** on a numeric coordinate is a **value range**
         (issue #109), unit-aware, resolving to a contiguous integer `slice` —
         half-open like ordinary Python indexing (`lo <= value < hi`), **not**
-        xarray's inclusive-both-ends convention (see `vs-xarray.md`). Bounds
-        are compared numerically regardless of order or of the coordinate's
-        own direction: `t=slice(1, 5)` and `t=slice(5, 1)` select the same
-        range. A single bound is positional (`slice(1, None)` -> `value >=
-        1`; `slice(None, 5)` -> `value < 5`); an out-of-range or empty result
+        xarray's inclusive-both-ends convention (see the "Differences from
+        xarray" guide). Bounds are compared numerically regardless of order
+        or of the coordinate's own direction: `t=slice(1, 5)` and
+        `t=slice(5, 1)` select the same range. A one-sided range keeps the
+        bound in the slot it was given (`slice(1, None)` -> `value >= 1`;
+        `slice(None, 5)` -> `value < 5`); an out-of-range or empty result
         is a well-formed empty axis, not an error. `slice.step` is not
         supported (`mode`/`tolerance` don't apply to a range either).
 
@@ -1467,18 +1468,20 @@ class XTensor(ExtendedTensor):
 
         Where [`sel`][fiery.xtensor.XTensor.sel] *picks* existing positions,
         `interp` *computes* values at arbitrary positions of a **numeric**
-        coordinate, the xarray way::
+        coordinate, the xarray way:
 
-            x.interp(t=2.5)                   # one point -> drops the axis
-            x.interp(t=[0.0, 0.5, 1.0])       # several  -> keeps the axis
-            x.interp(t="2.5s")                # unitful (backend converts)
-            x.interp(t=q, method="cubic")     # a query tensor (grads flow)
+        ```python
+        x.interp(t=2.5)                   # one point -> drops the axis
+        x.interp(t=[0.0, 0.5, 1.0])       # several  -> keeps the axis
+        x.interp(t="2.5s")                # unitful (backend converts)
+        x.interp(t=q, method="cubic")     # a query tensor (grads flow)
+        ```
 
-        `method` is the interpolation order -- ``"nearest"`` (built in) or a
-        higher order (``"linear"`` *(default)*, ``"quadratic"``, ``"cubic"``,
-        or an int), which needs the optional `fiery.interpol` backend
-        (``pip install fiery-xtensor[interp]``). An out-of-range query follows
-        `bound` (default: the `interp_bound` option -- ``"replicate"`` clamps
+        `method` is the interpolation order -- `"nearest"` (built in) or a
+        higher order (`"linear"` *(default)*, `"quadratic"`, `"cubic"`, or an
+        int), which needs the optional `fiery.interpol` backend
+        (`pip install fiery-xtensor[interp]`). An out-of-range query follows
+        `bound` (default: the `interp_bound` option -- `"replicate"` clamps
         to the edge) and `extrapolate` (default: the `interp_extrapolate`
         option); both can be set with
         [`set_options`][fiery.xtensor.set_options].
@@ -5679,7 +5682,7 @@ def _reconcile_units(
     """
     Apply the data-unit algebra to a pointwise op's operands. For `add`/`cmp`
     of **compatible-but-different** units (e.g. `V` and `mV`), implicitly
-    convert the *right* operand to the left's unit (Proposal 0003 §7.2) so the
+    convert the *right* operand to the left's unit (Proposal 0003 §7) so the
     values line up before the op; then compute the result unit per `rule` and
     policy. Returns the (possibly rescaled) operands and the `_data_unit`
     override for `_carry`. Inert with no backend / no unit rule.

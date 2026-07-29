@@ -166,15 +166,6 @@ class set_options:
         - `"override"` -- keep the left operand's value;
         - `"drop"` -- always drop the field.
 
-    Used as a permanent setter or a scoped context manager::
-
-        set_options(combine_axes="strict")                    # until changed
-        with set_options(combine_axes="strict"):              # for this block
-            ...
-        # per-field: drop everything, but a clashing `type` is an error
-        with set_options(combine_axes={"*": "drop", "type": "raise"}):
-            ...
-
     - **`unit_backend`** -- the physical-unit engine for **data units**
       (Proposal 0003): `None` *(default)* means units are inert opaque strings;
       `"pint"` enables validation/algebra/conversion (and is rejected at set
@@ -189,6 +180,17 @@ class set_options:
     - **`interp_extrapolate`** -- whether `interp` extrapolates past the ends
       (`True` *(default)*; with `interp_bound="replicate"` this is the clamp).
       A per-call `extrapolate=` overrides it.
+
+    Any option can be set permanently or only for a `with` block:
+
+    ```python
+    set_options(combine_axes="strict")                    # until changed
+    with set_options(combine_axes="strict"):              # for this block
+        ...
+    # per-field: drop everything, but a clashing `type` is an error
+    with set_options(combine_axes={"*": "drop", "type": "raise"}):
+        ...
+    ```
     """
 
     def __init__(self, **options: tx.Any) -> None:

@@ -86,9 +86,10 @@ not both. xarray's fill methods are *positional*, so they map to the tick-order
 family; on the usual ascending coordinate they coincide with `floor`/`ceil`.
 
 `.sel` reserves the keyword arguments `mode`, `tolerance`, and `method`; every
-other keyword is a `dim=selector`. (A dim literally named one of those
-is unreachable through kwargs — the same limitation xarray has; a dict form can
-be added if needed.)
+other keyword is a `dim=selector`. A dim literally named one of those cannot
+be reached through keywords — the same limitation xarray has — so `.sel` also
+takes the indexers as an explicit mapping (`x.sel({"mode": "red"})`), xarray's
+own escape hatch. Passing both a mapping and keyword indexers raises.
 
 ## `.interp` — interpolation
 
@@ -122,7 +123,7 @@ x.interp(t=q, method="cubic")      # a query tensor; gradients flow to q
 with no extra dependency for the common case. Every higher order needs the
 optional backend:
 
-```
+```sh
 pip install fiery-xtensor[interp]
 ```
 
@@ -135,7 +136,7 @@ and both exposed as **`fiery` options** with per-call overrides:
 
 - **`bound`** — the boundary condition: `"replicate"` *(default)* clamps to the
   edge value, `"wrap"` wraps, `"reflect"`/`"mirror"` fold, `"zero"` pads with
-  zeros, … .
+  zeros, and so on.
 - **`extrapolate`** — whether to sample past the ends at all (`True` by
   default; with `"replicate"` this is exactly the clamp).
 
@@ -226,8 +227,8 @@ supported on an irregular coordinate.
    the inversion and the pull are locally affine between the same two
    ticks), not a stopgap awaiting a future spline.
 2. ~~**Range selection**~~ — landed, see
-   [#109](https://github.com/bagofseeds/fiery-xtensor/issues/109): `.sel(t=
-   slice("1s", "5s"))` resolves to a contiguous position `slice`,
+   [#109](https://github.com/bagofseeds/fiery-xtensor/issues/109):
+   `.sel(t=slice("1s", "5s"))` resolves to a contiguous position `slice`,
    **half-open** (`lo <= value < hi`, not xarray's inclusive-both-ends),
    unit-aware, on both compact and explicit coordinates. Bounds are ordered
    numerically regardless of the order given or of the coordinate's own

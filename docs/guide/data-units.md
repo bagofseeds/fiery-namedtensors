@@ -22,7 +22,8 @@ from fiery.xtensor import set_options
 with set_options(unit_backend="pint"):     # needs fiery-xtensor[units]
     volts = xtensor(v, unit="V")
     amps  = xtensor(a, unit="A")
-    volts.to_unit("mV")            # converts: rescales the data ×1000
+    secs  = xtensor(t, unit="s")
+    volts.to_unit("mV")           # converts: rescales the data ×1000
     (volts * amps).unit           # "ampere * volt"  — units multiply
     (volts / secs).unit           # "volt / second"
     (volts ** 2).unit             # "volt ** 2"
@@ -85,8 +86,14 @@ with set_options(unit_backend="pint"):
     x.unit                     # None    — no single base unit (heterogeneous)
     x.sel(q="voltage").unit    # "V"     — selecting one position folds its unit in
     x.sum(dim="q").unit        # None    — V/A/W incompatible -> dropped
-    # a *uniform* axis (all positions same unit) folds cleanly on reduction:
-    y.sum(dim="q").unit        # "V"
+
+    # a *uniform* axis (every position in the same unit) folds cleanly instead:
+    uniform = xtensor(data, names=("q", "t"), coords={"q": [
+        {"name": "vx", "unit": "V"},
+        {"name": "vy", "unit": "V"},
+        {"name": "vz", "unit": "V"},
+    ]})
+    uniform.sum(dim="q").unit  # "V"     — the shared unit folds into the base
 ```
 
 Reducing over such an axis folds a uniform unit into the base or, on

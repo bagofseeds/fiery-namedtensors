@@ -92,11 +92,10 @@ A **query** (a dict where a coordinate label is expected) selects every
     img.sel(c={"type": "signal"})
     ```
 
-The matches become a `slice` when contiguous, else an index list, and always
-the matches become a `slice` when contiguous, else an index list — and always
-keeps the axis. It mirrors the descriptor query for *axes*: a `{"type": ...}`
-dict picks **axes** in a `dim=`/`movedim` slot and **positions** in a `[]`/`sel`
-slot, so the two never collide.
+The matches become a `slice` when they are contiguous and an index list when
+they are not; either way the axis is kept. This mirrors the descriptor query
+for *axes*: a `{"type": ...}` dict picks **axes** in a `dim=`/`movedim` slot and
+**positions** in a `[]`/`sel` slot, so the two never collide.
 
 ## Numeric coordinates
 
