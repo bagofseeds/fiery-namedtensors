@@ -12,11 +12,9 @@ from fiery.xtensor import (
     xmatrix,
     xvector,
 )
-from fiery.xtensor._tensors import (
-    Coordinate,
-    _slice_labels,
-    _torch_func,
-)
+from fiery.xtensor._compat import torch_func as _torch_func
+from fiery.xtensor._selection import _slice_labels
+from fiery.xtensor._tensors import Coordinate
 
 # Ops added in torch 1.8; the package registers them only when present, so on
 # an older torch (the 1.7 floor) the corresponding tests are skipped.
@@ -2304,7 +2302,7 @@ def test_sel_compact_matches_the_search_path_exhaustively():
     # version, see the two tests above for the specific counterexamples).
     import random
 
-    from fiery.xtensor._tensors import (
+    from fiery.xtensor._selection import (
         _closed_form_sel_index,
         _ClosedFormMiss,
         _pick_sel_index,
@@ -2378,7 +2376,7 @@ def test_sel_compact_closed_form_miss_forced_matches_the_search_path(
     # zero step budget) and confirm it still matches the search-based
     # reference for every mode -- the fallback path itself is new code, not
     # just a call-through to already-tested logic.
-    import fiery.xtensor._tensors as tensors_mod
+    import fiery.xtensor._selection as tensors_mod
 
     monkeypatch.setattr(tensors_mod, "_CLOSED_FORM_MAX_STEPS", 0)
     x = XTensor(

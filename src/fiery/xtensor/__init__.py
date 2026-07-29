@@ -25,6 +25,18 @@ keyword explicitly overrides them. Like `torch.as_tensor`, it also accepts
 `dtype=`/`device=` to convert the underlying data.
 """
 
+# Each of these registers its overrides onto XTensor as an import side
+# effect (see CLAUDE.md, "How the subclassing works"); imported here so
+# that importing fiery.xtensor is enough to populate the full registry.
+from fiery.xtensor import (
+    _combine,  # noqa: F401
+    _gather,  # noqa: F401
+    _pointwise,  # noqa: F401
+    _reduce,  # noqa: F401
+    _shape,  # noqa: F401
+    _slice,  # noqa: F401
+)
+from fiery.xtensor._extended import ExtendedTensor
 from fiery.xtensor._factories import (
     xarange,
     xempty,
@@ -49,11 +61,7 @@ from fiery.xtensor._factories import (
     xzeros_like,
 )
 from fiery.xtensor._options import set_options
-from fiery.xtensor._tensors import (
-    ExtendedTensor,
-    XTensor,
-    as_xtensor,
-)
+from fiery.xtensor._tensors import XTensor, as_xtensor
 
 #: Lowercase alias of [`XTensor`][fiery.xtensor.XTensor].
 xtensor = XTensor

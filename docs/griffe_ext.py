@@ -149,7 +149,13 @@ class RuntimeMembersExtension(griffe.Extension):
         if cls.path != "fiery.xtensor._tensors.XTensor":
             return
         try:
-            real = importlib.import_module("fiery.xtensor._tensors").XTensor
+            # Import the top-level package, not `_tensors` directly: the
+            # override registry is only fully populated once all six leaf
+            # operator modules (`_combine`, `_gather`, `_pointwise`,
+            # `_reduce`, `_shape`, `_slice`) have run their
+            # `XTensor.overrides(...)`-decorated registrations, which
+            # `fiery.xtensor.__init__` triggers as an import side effect.
+            real = importlib.import_module("fiery.xtensor").XTensor
         except ImportError:
             # `fiery.xtensor` (and its `torch` dependency) isn't installed
             # in this docs-build environment -- fall back to whatever
