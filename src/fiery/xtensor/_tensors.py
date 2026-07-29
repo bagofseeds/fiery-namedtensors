@@ -1159,6 +1159,19 @@ class XTensor(ExtendedTensor):
         1`; `slice(None, 5)` -> `value < 5`); an out-of-range or empty result
         is a well-formed empty axis, not an error. `slice.step` is not
         supported (`mode`/`tolerance` don't apply to a range either).
+
+        A **joint query over an affine coordinate** (Proposal 0005 step 3 --
+        `lat`/`lon`-style, spanning several dims at once) picks the dims'
+        integer positions in one shot from a closed-form inverse (issue
+        #82 phase 1): pass a value for *every* coordinate name that spans
+        the same `dims` (e.g. `x.sel(lat=52.1, lon=4.3)` for a 2-D affine
+        `lat`/`lon`) -- no dedicated syntax, ordinary keyword arguments that
+        happen to share `dims` are recognised as one joint system. Only a
+        **square, invertible** map is supported (exactly one coordinate
+        value per spanned dim); an under- or over-determined query raises
+        rather than falling back to a least-squares fit. Only `mode="round"`
+        (the default) applies -- `floor`/`ceil`/`prev`/`next` have no
+        well-defined meaning jointly across several coupled dims.
         """
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
@@ -1169,9 +1182,11 @@ class XTensor(ExtendedTensor):
             tolerance = 0 if raw is None else None
         elif isinstance(tolerance, float) and tolerance == float("inf"):
             tolerance = None  # explicit unbounded
+        positional, consumed = self._affine_sel_groups(indexers, sel_mode)
         coords = self.coords
-        positional = {}
         for name, label in indexers.items():
+            if name in consumed:
+                continue
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
             if name not in self.names:
@@ -1218,6 +1233,50 @@ class XTensor(ExtendedTensor):
                     ) from None
             positional[name] = positions if is_many else positions[0]
         return self.isel(**positional)
+
+    def _affine_sel_groups(
+        self, indexers: tx.Mapping[str, tx.Any], sel_mode: str
+    ) -> tuple:
+        """
+        Resolve every **joint affine query** among `.sel`'s `indexers` --
+        `{dim: integer position}` for each spanned dim, plus the set of
+        indexer names consumed this way (issue #82 phase 1). A coordinate
+        NAME present in `indexers` that spans several dims at once
+        (Proposal 0005 step 3) is grouped with every other queried name
+        sharing the exact same `dims`; each group must supply exactly
+        `len(dims)` values (one per dim) to be square and invertible.
+        """
+        stored = self.__dict__.get("_coords") or {}
+        groups: dict = {}
+        for name in indexers:
+            entry = stored.get(name)
+            if entry is None:
+                continue
+            dims, coord = entry
+            if (
+                len(dims) > 1
+                and isinstance(coord, Coordinate)
+                and coord._compact()
+            ):
+                groups.setdefault(dims, []).append(name)
+        positional: dict = {}
+        consumed: set = set()
+        for dims, names_in_group in groups.items():
+            if len(names_in_group) != len(dims):
+                raise ValueError(
+                    f"sel: a joint affine query over {dims!r} needs "
+                    f"exactly {len(dims)} coordinate value(s) (one per "
+                    f"dim), got {len(names_in_group)} "
+                    f"({sorted(names_in_group)!r}) -- square systems only "
+                    "(#82 phase 1), no least-squares fallback"
+                )
+            positional.update(
+                _affine_sel_indices(
+                    self, dims, names_in_group, indexers, sel_mode
+                )
+            )
+            consumed.update(names_in_group)
+        return positional, consumed
 
     def interp(
         self,
@@ -1848,6 +1907,69 @@ def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
         coord["origin"] = _as_unitful_origin(spec["origin"])
     _reconcile_origin_unit(coord)
     return coord
+
+
+def _affine_sel_indices(
+    tensor: "XTensor",
+    dims: tuple,
+    names_in_group: list,
+    indexers: tx.Mapping[str, tx.Any],
+    sel_mode: str,
+) -> dict:
+    """
+    Solve the closed-form affine inverse for one joint `.sel` query (issue
+    #82 phase 1): given a target world value for each of `len(dims)`
+    coordinate names spanning the same `dims`, `index = A^-1 (world -
+    origin)`, then snap to the nearest integer position along each dim --
+    never materialising the affine grid (`spacing`/`origin` alone are
+    enough, mirroring the 1-D compact `.sel` fast path, #110).
+
+    `A`'s rows are each queried coordinate's `spacing` vector (already
+    ordered along `dims`, Proposal 0005 step 3); `names_in_group`'s order
+    only has to line up between `A`'s rows and the right-hand side, not
+    match any particular canonical order.
+    """
+    if sel_mode != "round":
+        raise NotImplementedError(
+            f"sel: mode={sel_mode!r} isn't supported for a joint affine "
+            "query over several coupled dims (#82 phase 1) -- only the "
+            "default 'round' is; floor/ceil/prev/next don't have a "
+            "well-defined meaning jointly across several dims"
+        )
+    stored = tensor.__dict__.get("_coords") or {}
+    rows = []
+    rhs = []
+    for name in names_in_group:
+        _, coord = stored[name]
+        spacing = dict.__getitem__(coord, "spacing")
+        origin = dict.get(coord, "origin")
+        vec = spacing["value"]
+        if not isinstance(vec, Tensor):
+            vec = torch.as_tensor(vec, dtype=torch.get_default_dtype())
+        base = float(origin["value"]) if origin is not None else 0.0
+        target = _selector_value(indexers[name], spacing["unit"])
+        rows.append(vec.to(torch.get_default_dtype()))
+        rhs.append(target - base)
+    matrix = torch.stack(rows)
+    vector = torch.tensor(rhs, dtype=matrix.dtype)
+    try:
+        index = torch.inverse(matrix) @ vector
+    except RuntimeError as exc:
+        raise ValueError(
+            f"sel: the affine map over {dims!r} ({sorted(names_in_group)!r}) "
+            f"isn't invertible: {exc}"
+        ) from None
+    rounded = index.round().long().tolist()
+    result = {}
+    for dim, position in zip(dims, rounded):
+        size = tensor.shape[_resolve_axis(tensor.names, dim)]
+        if not 0 <= position < size:
+            raise ValueError(
+                f"sel: the joint affine query resolves dim {dim!r} to "
+                f"index {position}, out of range for size {size}"
+            )
+        result[dim] = position
+    return result
 
 
 # ---- non-dimension coordinates (Proposal 0005) -----------------------------

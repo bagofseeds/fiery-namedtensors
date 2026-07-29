@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — steps 1–4 implemented; step 5 (affine `.sel`/`.interp`) design-approved, tracked at [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82), not yet started |
+| **Status** | Draft — steps 1–4 implemented; step 5's `.sel` half landed (#82 phase 1); step 5's `.interp` half (N-D `grid_pull`) not yet started |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-28 — `swap_dims` (step 4) implemented; remaining open questions resolved |
+| **Updated** | 2026-07-29 — affine joint `.sel` (step 5, #82 phase 1) implemented |
 | **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
 
 ## Abstract
@@ -157,6 +157,11 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
 5. **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
    N-D `grid_pull`, joint query over the coupled dims (ties off
    [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82) phase 1).
+   - ✅ `.sel` half landed — a joint query (`x.sel(lat=…, lon=…)`) over a
+     square, invertible affine solves `index = A⁻¹(world − origin)` and
+     snaps to the nearest position; under/over-determined and non-invertible
+     queries raise rather than approximating.
+   - ⬜ `.interp` half (N-D `grid_pull` over the coupled dims) — not started.
 6. **Non-dim coordinate slice-tracking** — carry non-dim coords through slicing
    instead of dropping on resize.
 
@@ -262,6 +267,33 @@ affine feature.
   **not** implemented — there's no `MultiIndex` analogue planned here, and
   `swap_dims` already covers every case this model can express (promoting a
   single existing non-dimension coordinate to be the index).
+
+## What step 5's `.sel` half implements (#82 phase 1)
+
+- `.sel`'s indexer loop groups every queried coordinate **name** that spans
+  more than one dim (a compact affine `Coordinate`, step 3) by its `dims`
+  tuple. A group must supply exactly `len(dims)` values (one per spanned
+  dim) — a square system — or it raises rather than falling back to a
+  least-squares fit; a lone affine coordinate queried by itself is
+  under-determined this way, not "not an index" (that error is now reserved
+  for an ordinary, non-affine non-dimension coordinate).
+- Each queried coordinate name in a group contributes one row of `A`
+  (its `spacing` vector, already ordered along `dims`) and one entry of `b`
+  (`target − origin`); `index = A⁻¹ b` (`torch.inverse`, chosen over
+  `torch.linalg.solve` for wider old-torch support — the floor is 1.7),
+  rounded to the nearest integer per dim. A singular (non-invertible) `A`
+  raises, naming the offending coordinates.
+- Never materialises the affine grid — the raw `spacing`/`origin` alone are
+  enough, mirroring the 1-D compact `.sel` fast path (#110).
+- Only `mode="round"` (the default) is supported; `floor`/`ceil`/`prev`/
+  `next` have no well-defined meaning jointly across several coupled dims
+  and raise `NotImplementedError`.
+- A joint affine query composes with ordinary 1-D `.sel` indexers in the
+  same call (`x.sel(t=1.0, lat=52.1, lon=4.3)`).
+- `.interp`'s N-D `grid_pull` half is separate, follow-up work (not
+  implemented here) — the pull itself needs genuine multi-axis simultaneous
+  sampling, not the axis-by-axis separable interpolation `.interp` already
+  does for 1-D coordinates.
 
 ## Open questions — resolved
 
