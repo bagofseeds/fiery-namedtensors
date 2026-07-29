@@ -10,7 +10,15 @@ optionally, per-dimension coordinate **labels** through operations — so you ca
 refer to a dimension by name and a position along it by label, without leaving
 torch (autograd, device, and `__torch_function__` all keep working).
 
-## The class
+**This is an xarray-like package**, and it deliberately follows xarray's
+conventions — named dimensions, `coords` keyed by dimension name, `.sel` /
+`.isel`, alignment by name — so xarray users feel at home. The headline
+difference is that an `XTensor` *is* a `torch.Tensor` rather than a wrapper
+around an array. For what it adds, what it is still missing, and where
+behaviour or vocabulary differ, see [Differences from
+xarray](https://github.com/bagofseeds/fiery-xtensor/blob/main/docs/guide/vs-xarray.md).
+
+## Quickstart
 
 `XTensor` (lowercase alias `xtensor`) adds named **dimensions** (`names`) and
 coordinate **labels** (`coords`, a `{dim name: labels}` mapping), both
@@ -75,12 +83,15 @@ Full docs — with examples for each topic — live at
   free-form fields (a `type`, an `orientation`, or any custom key).
 - **Data units** — physical units on a tensor's values, with dimensional algebra
   and per-axis units.
+- **Differences from xarray** — what `xtensor` adds, what it is still missing,
+  and where behaviour or vocabulary differ.
 
 ## Design goals
 
 - **Names are first class.** Every operation that can use, manipulate, or
-  preserve names should do so. Coverage is tracked in the
-  [name-related method survey](../../issues) (one sub-issue per function).
+  preserve names should do so. Coverage is tracked in the [name-related
+  method survey](https://github.com/bagofseeds/fiery-xtensor/issues) (one
+  sub-issue per function).
 - **Wide Python support** (3.7+): the runtime uses only old-compatible syntax
   plus `typing_extensions`; modern typing lives in lazy annotations via
   `from __future__ import annotations`.
@@ -100,4 +111,5 @@ Alpha — ported from a work-in-progress in
 [`balbasty/magnetix`](https://github.com/balbasty/magnetix). Names and
 coordinates are **self-managed**, independent of PyTorch's experimental builtin
 named tensors (which have been dropped in some torch builds), so the package
-spans a wide torch range. See the tracking issues for the roadmap.
+spans a wide torch range. See the [tracking
+issues](https://github.com/bagofseeds/fiery-xtensor/issues) for the roadmap.
