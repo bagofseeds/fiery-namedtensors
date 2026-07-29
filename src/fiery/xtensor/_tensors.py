@@ -1562,6 +1562,8 @@ class Coordinate(_units.MagicDict):
 def as_xtensor(
     value: tx.Any,
     *,
+    dtype: tx.Any = None,
+    device: tx.Any = None,
     unit: tx.Any = arrayutils._UNSET,
     names: tx.Any = arrayutils._UNSET,
     coords: tx.Any = arrayutils._UNSET,
@@ -1582,11 +1584,24 @@ def as_xtensor(
     the two) -- simpler to specify and implement than a per-key merge, and
     there's no established "merge coords" semantics to fall back on anyway.
 
-    Unlike `torch.as_tensor`, this does **not** accept `dtype=`/`device=`:
-    those change what the *data* is, not what it's labelled, and mixing them
-    in here would blur `as_xtensor`'s one job (metadata coercion) with
-    `torch.as_tensor`'s (dtype/device conversion) -- call `torch.as_tensor`
-    or `.to(...)` first if you need both.
+    `dtype=`/`device=` extend `torch.as_tensor`'s own conversion, applied
+    *before* the metadata is settled (so e.g. an axis-typed vs. numeric
+    dtype affects nothing about the labels themselves). `None` (the default
+    for both) means "leave as is" -- the same convention `torch.as_tensor`
+    and `.to()` use -- so, unlike `unit`/`names`/`coords`, there's no
+    separate "not overridden" sentinel needed here: a dtype/device override
+    has no meaningful "clear" value the way `unit=None` does.
+
+    A genuine dtype/device conversion is applied via `base.to(dtype=...,
+    device=...)`, *not* by forwarding `dtype=`/`device=` straight to
+    `torch.as_tensor` itself: `torch.as_tensor(an_xtensor, dtype=...)`
+    silently degrades to a **plain `Tensor`** whenever it actually has to
+    convert something (verified empirically -- a genuine PyTorch quirk, not
+    a hypothetical), stripping every bit of metadata in the process. `.to()`
+    on the subclass instead goes through its own `__torch_function__` (which
+    already carries the axis names/coords/unit onto ops it doesn't otherwise
+    special-case), and is itself just as much a true identity passthrough
+    for a no-op conversion (`x.to(dtype=x.dtype) is x`).
 
     `value`'s own tensor is never mutated: when nothing is overridden and
     `value` is already an `XTensor`, it is returned as-is (the same object,
@@ -1596,6 +1611,8 @@ def as_xtensor(
     `value`'s own unit as a side effect.
     """
     base = torch.as_tensor(value)
+    if dtype is not None or device is not None:
+        base = base.to(dtype=dtype, device=device)
     if isinstance(base, XTensor) and (
         unit is arrayutils._UNSET
         and names is arrayutils._UNSET
