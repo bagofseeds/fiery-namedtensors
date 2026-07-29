@@ -46,13 +46,20 @@ This page lists where the two diverge, in both directions.
   and the rest of that suite are not implemented.
 - **No IO / plotting / pandas bridge.** No NetCDF/Zarr readers, no `.plot`, no
   `.to_pandas()` / `MultiIndex`.
-- **General curvilinear (arbitrary multi-dim) coordinates aren't implemented
-  yet.** A dim can already carry several coordinates — a **non-dimension**
-  coordinate rides along it, and a compact **affine** coordinate can span
-  several dims at once, queryable by value with a joint `.sel`/`.interp`
-  ([Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82) —
-  but a general `lat(y, x)`-style array of *arbitrary* values over multiple
-  dims (not expressible as an affine map) is not yet landed.
+- **Curvilinear `.sel` is single-point and brute force; `.interp` isn't there
+  yet.** A dim can carry a general `lat(y, x)`-style array of arbitrary
+  values over multiple dims — a **curvilinear** coordinate, alongside the
+  compact **affine** form
+  ([Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82).
+  `.sel(lat=.., lon=..)` finds the single nearest grid point by exact
+  Euclidean distance (`torch.cdist`, no scipy/sklearn dependency, so it
+  stays GPU-capable) — but brute force, with no tree index behind it. Fine
+  for a one-off lookup against even a large grid; it does **not** scale to
+  *bulk regridding* (querying a whole new grid's worth of points at once),
+  where the distance-matrix cost grows with the *product* of the source
+  grid size and the query count — the reason every tree-based library in
+  this space (xarray's `NDPointIndex`, `xoak`, `pyresample`) exists in the
+  first place. Curvilinear `.interp` isn't implemented at all yet.
 - **Alignment is inner-join only.** There is no `join="outer"/"left"/"right"`
   (which would need NaN fill); operands align to the **intersection** of their
   labels. (xarray's *default* `arithmetic_join` is also `"inner"`, so the

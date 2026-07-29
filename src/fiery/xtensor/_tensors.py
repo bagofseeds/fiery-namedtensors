@@ -566,10 +566,11 @@ class XTensor(ExtendedTensor):
         index, so `.sel(name=...)` works); a **non-dimension** coordinate
         (disambiguated by key: `name` is not itself a dim) rides along some
         other dim(s), and is not an index. A non-dimension coordinate may span
-        **several** dims (a compact **affine** coordinate, Proposal 0005 step
-        3 -- `spacing` is a vector, one component per dim in `dims`, `origin`
-        a single scalar shared across them); a general multi-dim *explicit*
-        (curvilinear) coordinate isn't implemented yet.
+        **several** dims: a compact **affine** map (Proposal 0005 step 3 --
+        `spacing` is a vector, one component per dim in `dims`, `origin` a
+        single scalar shared across them), or an explicit **curvilinear**
+        array of values with no analytic form (issue #82, e.g. `lat(y, x)`),
+        one tensor axis per dim in `dims`.
         """
         names = self.names
         valid = {}
@@ -578,25 +579,33 @@ class XTensor(ExtendedTensor):
             if any(dim not in names for dim in dims):
                 continue
             if len(dims) > 1:
-                # multi-dim / affine coordinate (Proposal 0005 step 3) -- only
-                # the compact form is implemented; anything else is unreachable
-                # (rejected at input time) so it is simply skipped here.
                 # The grid is laid out in **this tensor's** axis order, not in
                 # `dims` order: the two differ when `dims` was given in
                 # another order, or once an axis-reordering op (`permute` /
                 # `transpose` / `movedim`) has moved them, and `["values"]` is
                 # a bare array with no dims of its own -- so materialising in
                 # `dims` order would silently misalign it with the data.
+                axes = [names.index(dim) for dim in dims]
+                order = sorted(range(len(dims)), key=axes.__getitem__)
                 if isinstance(coord, Coordinate) and coord._compact():
-                    axes = [names.index(dim) for dim in dims]
                     valid[name] = coord._bound_axes(
                         tuple(
                             (component, self.shape[axes[component]])
-                            for component in sorted(
-                                range(len(dims)), key=axes.__getitem__
-                            )
+                            for component in order
                         )
                     )
+                elif isinstance(coord, Coordinate):
+                    # explicit curvilinear array: it does not itself update
+                    # when a spanned dim is sliced/narrowed (like a 1-D
+                    # explicit non-dimension coordinate, it rides through a
+                    # slice unchanged and is only kept here if its shape still
+                    # matches) -- so it is dropped, not resliced, once any
+                    # spanned dim's size has moved on without it.
+                    raw = dict.__getitem__(coord, "values")
+                    if tuple(raw.shape) == tuple(
+                        self.shape[axes[i]] for i in range(len(dims))
+                    ):
+                        valid[name] = coord._bound_curvilinear(order)
                 continue
             size = self.shape[names.index(dims[0])]
             if isinstance(coord, Coordinate):
@@ -628,6 +637,10 @@ class XTensor(ExtendedTensor):
                 if len(dims) == 1:
                     size = self.shape[names.index(dims[0])]
                     _check_nondim_len(key, dims[0], coord, size)
+                elif isinstance(coord, Coordinate) and not coord._compact():
+                    _check_curvilinear_shape(
+                        key, coord, dims, self.shape, names
+                    )
                 unified[key] = dims, coord
                 continue
             if _is_compact_coord(spec) or _is_explicit_coord(spec):
@@ -1213,6 +1226,18 @@ class XTensor(ExtendedTensor):
         position's own value, since a joint query never has one "the" gap
         the way a single coordinate does.
 
+        A **joint query over a curvilinear coordinate** (issue #82 phase 2
+        -- an explicit multi-dim array with no analytic form, e.g. an
+        irregular satellite-swath `lat`/`lon`) works the same way as the
+        affine case above -- one value per coordinate name spanning the
+        same `dims` -- but resolves to the single **nearest** grid point by
+        Euclidean distance (`torch.cdist`, brute force; there is no
+        closed-form inverse for an arbitrary grid). Only a single point is
+        supported per call, not a vectorized query over many points at
+        once -- see `vs-xarray.md` for why. `tolerance` and `mode`/`method`
+        behave the same as the affine case (only the default "nearest"
+        mode applies; a distance over `tolerance` raises).
+
         Pass `indexers` as an explicit mapping (`x.sel({"mode": "red"})`)
         instead of keyword arguments when a dim's name collides with one
         of `sel`'s own keyword parameters (`mode`, `tolerance`, `method`)
@@ -1235,21 +1260,34 @@ class XTensor(ExtendedTensor):
         positional, consumed = self._affine_sel_groups(
             indexers, sel_mode, tolerance
         )
+        curv_positional, curv_consumed = self._curvilinear_sel_groups(
+            indexers, sel_mode, tolerance
+        )
+        for dim in curv_positional:
+            if dim in positional:
+                raise ValueError(
+                    f"sel: dim {dim!r} is set by both a joint affine and a "
+                    "joint curvilinear query in the same call -- pass one "
+                    "or the other"
+                )
+        positional.update(curv_positional)
+        consumed.update(curv_consumed)
         coords = self.coords
         for name, label in indexers.items():
             if name in consumed:
                 continue
             if name in positional:
                 # `name` is itself a dim already resolved by a joint affine
-                # query over a *different* coordinate group spanning it --
-                # e.g. `x.sel(lat=.., lon=.., y=..)` where `lat`/`lon` span
-                # `y` too. Silently letting this loop overwrite that result
-                # would discard the joint solve without any signal (#82
-                # phase 1 review); pick one or the other instead.
+                # or curvilinear query over a *different* coordinate group
+                # spanning it -- e.g. `x.sel(lat=.., lon=.., y=..)` where
+                # `lat`/`lon` span `y` too. Silently letting this loop
+                # overwrite that result would discard the joint solve
+                # without any signal (#82 phase 1 review); pick one or the
+                # other instead.
                 raise ValueError(
-                    f"sel: dim {name!r} is set both by a joint affine "
-                    "query over its coordinate group and directly in the "
-                    "same call -- pass one or the other"
+                    f"sel: dim {name!r} is set both by a joint affine or "
+                    "curvilinear query over its coordinate group and "
+                    "directly in the same call -- pass one or the other"
                 )
             if name not in coords:
                 raise ValueError(f"sel: dim {name!r} has no coordinates")
@@ -1339,6 +1377,58 @@ class XTensor(ExtendedTensor):
                 )
             positional.update(
                 _affine_sel_indices(
+                    self,
+                    dims,
+                    names_in_group,
+                    indexers,
+                    sel_mode,
+                    tolerance,
+                )
+            )
+            consumed.update(names_in_group)
+        return positional, consumed
+
+    def _curvilinear_sel_groups(
+        self,
+        indexers: tx.Mapping[str, tx.Any],
+        sel_mode: str,
+        tolerance: tx.Optional[float],
+    ) -> tuple:
+        """
+        Resolve every **joint curvilinear query** among `.sel`'s `indexers` --
+        nearest-neighbor lookup over a general (non-affine) multi-dim
+        explicit coordinate (issue #82 phase 2, e.g. `x.sel(lat=52.1,
+        lon=4.3)` for a 2-D curvilinear `lat`/`lon`). Grouped exactly like
+        `_affine_sel_groups`: every coordinate NAME queried that spans the
+        same `dims` is one group, and each group must supply exactly one
+        value per spanned dim (a single point -- there is no vectorized
+        "many points" form here, see `_curvilinear_sel_indices`).
+        """
+        stored = self.__dict__.get("_coords") or {}
+        groups: dict = {}
+        for name in indexers:
+            entry = stored.get(name)
+            if entry is None:
+                continue
+            dims, coord = entry
+            if (
+                len(dims) > 1
+                and isinstance(coord, Coordinate)
+                and not coord._compact()
+            ):
+                groups.setdefault(dims, []).append(name)
+        positional: dict = {}
+        consumed: set = set()
+        for dims, names_in_group in groups.items():
+            if len(names_in_group) != len(dims):
+                raise ValueError(
+                    f"sel: a joint curvilinear query over {dims!r} needs "
+                    f"exactly {len(dims)} coordinate value(s) (one per "
+                    f"dim), got {len(names_in_group)} "
+                    f"({sorted(names_in_group)!r})"
+                )
+            positional.update(
+                _curvilinear_sel_indices(
                     self,
                     dims,
                     names_in_group,
@@ -1740,11 +1830,25 @@ class Coordinate(_units.MagicDict):
         out._axes = tuple(axes)
         return out
 
+    def _bound_curvilinear(self, order: tuple) -> "Coordinate":
+        """
+        A copy bound to a permutation (one raw-tensor axis index per host
+        axis, ascending) so `["values"]` returns an explicit **curvilinear**
+        coordinate's stored array reordered to the host tensor's own axis
+        order (issue #82) -- the same "laid out like the tensor, not like
+        `dims`" rule `_bound_axes` follows for the compact affine form.
+        """
+        out = Coordinate(self)
+        out._curv_order = tuple(order)
+        return out
+
     def __getitem__(self, key: tx.Any) -> tx.Any:
         if key == "values" and self._compact():
             if "_axes" in self.__dict__:
                 return self._materialise_axes()
             return self._materialise()
+        if key == "values" and "_curv_order" in self.__dict__:
+            return self._materialise_curvilinear()
         return dict.__getitem__(self, key)
 
     def _materialise(self) -> "XTensor":
@@ -1783,6 +1887,20 @@ class Coordinate(_units.MagicDict):
             shape[axis] = size
             total = total + index.view(shape) * component
         return XTensor(total, unit=spacing["unit"])
+
+    def _materialise_curvilinear(self) -> "XTensor":
+        """
+        Reorder an explicit **curvilinear** coordinate's stored array (issue
+        #82) from its construction axis order to the host tensor's own axis
+        order (see `_bound_curvilinear`) -- a data-preserving permutation, no
+        interpolation or recomputation, since (unlike the affine form) there
+        is no formula to re-derive from.
+        """
+        raw = dict.__getitem__(self, "values")
+        order = self._curv_order
+        if order == tuple(range(len(order))):
+            return raw
+        return raw.permute(*order)
 
     def to(self, unit: tx.Any) -> "Coordinate":
         """
@@ -2129,6 +2247,37 @@ def _make_affine_coordinate(spec: tx.Mapping, ndims: int) -> Coordinate:
     return coord
 
 
+def _make_curvilinear_coordinate(
+    key: str, spec: tx.Any, dims: tuple
+) -> Coordinate:
+    """
+    Build an explicit **curvilinear** `Coordinate` spanning `dims` (issue
+    #82) -- the general counterpart of `_make_affine_coordinate` for a
+    multi-dim non-dimension coordinate with no analytic form: an N-D tensor
+    of values, one axis per dim in `dims` order, e.g. `lat(y, x)` on an
+    irregular grid. Unlike the affine form there is no formula to fold a
+    slice/index through, so (per `_parse_nondim_coord`'s docstring) this
+    coordinate simply drops once a spanned dim's size no longer matches.
+    """
+    if not _is_explicit_coord(spec):
+        raise ValueError(
+            f"coords: {key!r} over several dims {dims!r} must be given as "
+            "either a compact {'spacing': ...} affine map or an explicit "
+            f"tensor of values, got {spec!r}"
+        )
+    if isinstance(spec, XTensor) and spec.unit is not None:
+        values = as_xtensor(spec)
+    else:
+        values = as_xtensor(spec, unit=_units.normalise(""))
+    if values.ndim != len(dims):
+        raise ValueError(
+            f"coords: {key!r} spans {len(dims)} dims {dims!r}, so its "
+            f"values must be {len(dims)}-D (one axis per dim), got shape "
+            f"{tuple(values.shape)}"
+        )
+    return Coordinate(values=values)
+
+
 def _affine_sel_indices(
     tensor: "XTensor",
     dims: tuple,
@@ -2223,6 +2372,105 @@ def _affine_sel_indices(
     return result
 
 
+#: Distance-matrix size guard for `_curvilinear_sel_indices` (issue #82
+#: phase 2) -- `torch.cdist` is brute force (no tree index), so a query
+#: against a grid this large is rejected rather than left to run for a long
+#: time or exhaust memory. A single query point only ever needs one column
+#: of the distance matrix (`grid_size * itemsize` bytes), so this is far
+#: above what any realistic single-point lookup needs; it exists as a
+#: backstop against a pathologically large grid, not a routine limit.
+_CURVILINEAR_SEL_MAX_BYTES = 2 * 1024**3
+
+
+def _curvilinear_sel_indices(
+    tensor: "XTensor",
+    dims: tuple,
+    names_in_group: list,
+    indexers: tx.Mapping[str, tx.Any],
+    sel_mode: str,
+    tolerance: tx.Optional[float],
+) -> dict:
+    """
+    Exact nearest-neighbor lookup for one joint `.sel` query over a general
+    **curvilinear** coordinate (issue #82 phase 2): stack the queried
+    coordinates' values into one `(*grid_shape, k)` point cloud and find the
+    grid point closest to the target, via `torch.cdist` -- brute force
+    (`O(grid size)` memory/time), since an arbitrary curvilinear grid has no
+    closed-form inverse the way the affine case does. Deliberately
+    torch-native (no scipy/sklearn KD-tree dependency, so it stays
+    GPU-capable) and deliberately single-point only: a query vectorized over
+    many points at once (the shape a bulk regrid needs) would multiply the
+    distance matrix by the query count, which stops being brute-forceable
+    well before a tree index would even notice -- see `vs-xarray.md`.
+    """
+    if sel_mode != "round":
+        raise NotImplementedError(
+            f"sel: mode={sel_mode!r} isn't supported for a joint "
+            "curvilinear query (#82 phase 2) -- only nearest-neighbor "
+            "(the default, or method='nearest') is"
+        )
+    # `coords_bound[name]["values"]` materialises in **ascending host axis
+    # order** among `dims` (see `_bound_curvilinear`), which need not be
+    # `dims`'s own given order -- `sorted_dims` matches that same order, so
+    # unraveling the flat argmin index below lines up with the grid's actual
+    # axes instead of silently transposing two same-size spanned dims.
+    axes = [_resolve_axis(tensor.names, dim) for dim in dims]
+    sorted_dims = tuple(
+        dims[i] for i in sorted(range(len(dims)), key=axes.__getitem__)
+    )
+    coords_bound = tensor.coords
+    grids = []
+    units = []
+    grid_shape = None
+    for name in names_in_group:
+        grid = coords_bound[name]["values"]
+        if grid_shape is None:
+            grid_shape = tuple(grid.shape)
+        elif tuple(grid.shape) != grid_shape:
+            raise ValueError(
+                f"sel: curvilinear coordinates {sorted(names_in_group)!r} "
+                f"over {dims!r} must share one shape, got {name!r} with "
+                f"shape {tuple(grid.shape)} vs {grid_shape}"
+            )
+        grids.append(grid.as_subclass(Tensor))
+        units.append(grid.unit)
+    n = 1
+    for size in grid_shape:
+        n *= size
+    itemsize = grids[0].element_size()
+    if n * itemsize > _CURVILINEAR_SEL_MAX_BYTES:
+        raise ValueError(
+            f"sel: a joint curvilinear query over {dims!r} needs a "
+            f"brute-force nearest-neighbor search over {n} grid points "
+            f"(~{n * itemsize / 1e9:.2f} GB) -- too large for torch.cdist; "
+            "see vs-xarray.md for the general-curvilinear scaling limit"
+        )
+    points = torch.stack([g.reshape(-1) for g in grids], dim=-1)
+    targets = torch.tensor(
+        [
+            _selector_value(indexers[name], unit)
+            for name, unit in zip(names_in_group, units)
+        ],
+        dtype=points.dtype,
+        device=points.device,
+    ).unsqueeze(0)
+    flat_index = int(torch.cdist(targets, points).argmin())
+    unraveled = []
+    remaining = flat_index
+    for size in reversed(grid_shape):
+        unraveled.append(remaining % size)
+        remaining //= size
+    unraveled.reverse()
+    result = dict(zip(sorted_dims, unraveled))
+    for name, unit in zip(names_in_group, units):
+        predicted = float(points[flat_index, names_in_group.index(name)])
+        target = _selector_value(indexers[name], unit)
+        gap = abs(predicted - target)
+        tol = None if tolerance is None else _selector_value(tolerance, unit)
+        _check_sel_tolerance(gap, tol, target, sel_mode, indexers[name], name)
+    return result
+
+
 # ---- non-dimension coordinates (Proposal 0005) -----------------------------
 
 
@@ -2237,22 +2485,23 @@ def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
     """
     Parse a `(dim(s), values)` non-dimension coordinate spec into `(dims,
     coord)`. `dim(s)` is a single dim name (1-D, rides along that one dim), or
-    a sequence of several dim names -- only supported for a **compact**
-    (`spacing`/`origin`) coordinate: a multi-dim **affine** coordinate
-    (Proposal 0005 step 3, `spacing` a vector, one component per dim).
+    a sequence of several dim names for a coordinate spanning **several**
+    dims at once: a compact **affine** map (Proposal 0005 step 3, `spacing` a
+    vector, one component per dim) or an explicit **curvilinear** array with
+    one tensor axis per dim (issue #82, e.g. arbitrary `lat(y, x)` values).
 
     A **1-D compact** spec isn't supported: unlike a dimension coordinate, a
     single-dim non-dimension one isn't re-sliced when its dim is (there is no
     per-component affine to update against just one dim's slicer the way
-    step 3's multi-dim form is) -- for an explicit or label coordinate
-    that's caught by the length check on resize, but a compact coordinate
-    binds to *any* size, so it would silently rebind to the wrong affine
-    after a non-trivial slice instead of raising or dropping. Rejecting it
-    here avoids that silent-wrong-values trap.
-
-    A **multi-dim explicit** (general curvilinear, e.g. arbitrary `lat(y,x)`
-    values) spec isn't implemented yet either -- only the compact affine form
-    is (step 3); curvilinear arrays are future work (#82).
+    the multi-dim form is) -- for an explicit or label coordinate that's
+    caught by the length check on resize, but a compact coordinate binds to
+    *any* size, so it would silently rebind to the wrong affine after a
+    non-trivial slice instead of raising or dropping. Rejecting it here
+    avoids that silent-wrong-values trap. A multi-dim explicit (curvilinear)
+    coordinate has the same "rides through a slice unchanged" behaviour, but
+    is fine with it: it is simply dropped (not rebound) once a spanned dim's
+    size moves on without it, the same rule an ordinary 1-D explicit
+    non-dimension coordinate already follows.
     """
     if not (isinstance(spec, tuple) and len(spec) == 2):
         raise ValueError(
@@ -2291,12 +2540,7 @@ def _parse_nondim_coord(key: str, spec: tx.Any, names: tuple) -> tuple:
             )
         return dims, _make_affine_coordinate(raw, len(dims))
     if len(dims) > 1:
-        raise NotImplementedError(
-            f"coords: {key!r} -- a multi-dim non-dimension coordinate is "
-            "only supported in compact (spacing/origin) affine form for "
-            "now; explicit per-position values over several dims "
-            "(curvilinear) isn't implemented yet"
-        )
+        return dims, _make_curvilinear_coordinate(key, raw, dims)
     if _is_explicit_coord(raw):
         coord = _make_coordinate(raw)
     else:
@@ -2311,6 +2555,23 @@ def _check_nondim_len(key: str, dim: str, coord: tx.Any, size: int) -> None:
         raise ValueError(
             f"coords: non-dimension coordinate {key!r} has {length} values "
             f"for dim {dim!r} of size {size}"
+        )
+
+
+def _check_curvilinear_shape(
+    key: str, coord: Coordinate, dims: tuple, shape: tuple, names: tuple
+) -> None:
+    """
+    Validate an explicit **curvilinear** coordinate's stored shape (issue
+    #82) against its spanned dims' current sizes, at construction time --
+    the multi-dim counterpart of `_check_nondim_len`.
+    """
+    raw = dict.__getitem__(coord, "values")
+    expected = tuple(shape[names.index(dim)] for dim in dims)
+    if tuple(raw.shape) != expected:
+        raise ValueError(
+            f"coords: {key!r} spans dims {dims!r} of shape {expected}, but "
+            f"its values have shape {tuple(raw.shape)}"
         )
 
 
@@ -3540,8 +3801,9 @@ def _affine_interp_pull(
     if is_many_group and name is not None:
         for nm, _, _, query, unit in broadcasted:
             values = query.to(torch.get_default_dtype())
-            new_coords[nm] = (name,), Coordinate(
-                values=XTensor(values, unit=unit)
+            new_coords[nm] = (
+                (name,),
+                Coordinate(values=XTensor(values, unit=unit)),
             )
     out._coords = new_coords
     return out
