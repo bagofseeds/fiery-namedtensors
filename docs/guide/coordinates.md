@@ -108,7 +108,7 @@ img = xtensor(data, names=("y", "x"),
               coords={"x": {"spacing": (0.5, "mm"), "origin": (-16, "mm")}})
 
 img.coords["x"]["spacing"].unit   # "mm"  — the position unit
-img.coords["x"]["value"]          # tensor([-16, -15.5, …]) with .unit == "mm"
+img.coords["x"]["value"]          # tensor([-16, -15.5, …]) with .units == "mm"
 ```
 
 Only one of `spacing`/`origin` needs to be given — the other defaults, and the
@@ -130,14 +130,14 @@ takes an explicit unitful tensor of positions — three equivalent spellings:
 
     ```python
     sig = xtensor(trace, names=("t",),
-                  coords={"t": xtensor([0., 0.5, 2., 4.], unit="s")})
+                  coords={"t": xtensor([0., 0.5, 2., 4.], units="s")})
     ```
 
 === "Dict form"
 
     ```python
     sig = xtensor(trace, names=("t",),
-                  coords={"t": {"value": xtensor([0., 0.5, 2., 4.], unit="s")}})
+                  coords={"t": {"value": xtensor([0., 0.5, 2., 4.], units="s")}})
     ```
 
 === "Bare list of numbers"

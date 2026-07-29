@@ -42,11 +42,12 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   (preserving order), `sum(dim={"type": "channel"})` reduces every channel
   axis (see `_query_positions` / `_movedim_block_order` / `_resolve_reduce_dim`).
 
-- **data unit** (`unit`, Proposal 0003 phase 1): the physical unit of the
-  tensor **values**, self-managed in `_data_unit` (in `_ATTRS`, so it
-  propagates like names/coords). `.unit` gets/sets it; `unit=` is a constructor
-  kwarg; `to_unit` converts (rescaling data). Opaque unless the `unit_backend`
-  option selects one (`"pint"` → validate/normalise/convert via `_units`).
+- **data unit** (`units`, Proposal 0003 phase 1): the physical unit of the
+  tensor **values**, self-managed in `_data_units` (in `_ATTRS`, so it
+  propagates like names/coords). `.units` gets/sets it; `units=` is a
+  constructor kwarg; `to_units` converts (rescaling data). Opaque unless the
+  `unit_backend` option selects one (`"pint"` → validate/normalise/convert via
+  `_units`).
   Under a backend the ops do dimensional **algebra** (`*`/`/`/`pow`/matmul
   multiply/divide units, `add`/compare need compatible units, transcendentals
   require dimensionless) — an invalid step drops the unit, or raises under
@@ -57,7 +58,7 @@ first-class citizen** of `torch.Tensor`. `XTensor` is an
   an axis live on the `unit` field of a structured coordinate (0002) —
   `_label_unit` reads them; effective unit = base · Π(coord units). Selecting a
   single position on such an axis (`__getitem__`/`isel`/`sel`) folds that unit
-  into `_data_unit`; reducing over it folds a **uniform** axis unit (via
+  into `_data_units`; reducing over it folds a **uniform** axis unit (via
   `_uniform_unit`/`_reduce_unit`) into the base, or drops/raises (policy) on
   **incompatible** per-position units. Backend-gated (inert with
   `unit_backend=None`). Heterogeneous matmul/einsum contraction is not yet
@@ -328,7 +329,7 @@ src/fiery/xtensor/
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
   _options.py       # global options + `set_options` context manager
-  _units.py         # optional unit backend (pint) for the `.unit` data unit
+  _units.py         # optional unit backend (pint) for the `.units` data unit
 tests/
   test_xtensor.py
   test_arrayutils.py

@@ -69,9 +69,9 @@ def test_factory_understands_axes_descriptors():
 
 
 def test_factory_understands_coords_and_unit():
-    x = xzeros(3, names=("c",), coords={"c": ("r", "g", "b")}, unit="V")
+    x = xzeros(3, names=("c",), coords={"c": ("r", "g", "b")}, units="V")
     assert x.coords["c"] == ("r", "g", "b")
-    assert x.unit == "V"
+    assert x.units == "V"
     assert x.sel(c="g").item() == 0.0
 
 

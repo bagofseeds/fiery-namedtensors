@@ -60,7 +60,7 @@ Repository = "https://github.com/bagofseeds/fiery-xtensor"
 
 [project.optional-dependencies]
 # Physical-unit backend for data units (Proposal 0003). Optional: without it a
-# `.unit` is an opaque string. pint needs Python >= 3.8.
+# `.units` is an opaque string. pint needs Python >= 3.8.
 units = [
     "pint>=0.18",
 ]

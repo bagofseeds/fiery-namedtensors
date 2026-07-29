@@ -271,7 +271,7 @@ def _reconcile_units(
     of **compatible-but-different** units (e.g. `V` and `mV`), implicitly
     convert the *right* operand to the left's unit (Proposal 0003 §7) so the
     values line up before the op; then compute the result unit per `rule` and
-    policy. Returns the (possibly rescaled) operands and the `_data_unit`
+    policy. Returns the (possibly rescaled) operands and the `_data_units`
     override for `_carry`. Inert with no backend / no unit rule.
     """
     if not (_units.active() and rule is not None):
@@ -285,8 +285,8 @@ def _reconcile_units(
             and _units.compatible(ua, ub)
         ):
             converted = Tensor.mul(b, _units.factor(ub, ua))
-            b = _carry(b, converted, _data_unit=ua)
-    return a, b, {"_data_unit": _binary_unit(a, b, rule)}
+            b = _carry(b, converted, _data_units=ua)
+    return a, b, {"_data_units": _binary_unit(a, b, rule)}
 
 
 def _binary(
@@ -427,7 +427,7 @@ def _make_transcendental(name: str) -> None:
             not _units.dimensionless(unit),
             f"{name}: expected a dimensionless argument, got unit {unit!r}",
         )
-        return _carry(input, result, _data_unit=None)
+        return _carry(input, result, _data_units=None)
 
     XTensor.overrides(base)(_op)
 

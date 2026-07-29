@@ -7,12 +7,12 @@ label, unit) the axes at creation time instead of wrapping every call by hand:
 ```python
 xzeros(2, 3, names=("row", "col"))
 xfull((2, 2), 7.0, axes=[{"name": "y", "type": "space"}, "x"])
-xones_like(x)                        # inherits x's names / coords / unit
+xones_like(x)                        # inherits x's names / coords / units
 ```
 
 Each wrapper forwards its positional and unrecognised keyword arguments to the
 matching `torch.*` function, and understands the `XTensor` metadata keywords
-`names` / `axes` / `coords` / `unit` -- so a factory result carries names the
+`names` / `axes` / `coords` / `units` -- so a factory result carries names the
 same way a hand-built `XTensor` does.
 """
 
@@ -25,7 +25,7 @@ from fiery.xtensor._tensors import XTensor
 
 #: The `XTensor` metadata keywords a factory understands (everything else is
 #: forwarded to the underlying `torch.*` op).
-_META_KEYS = ("names", "axes", "coords", "unit")
+_META_KEYS = ("names", "axes", "coords", "units")
 
 
 def _split_meta(kwargs: dict) -> dict:
@@ -57,7 +57,7 @@ def _make_factory(name: str) -> tx.Optional[tx.Callable]:
         f"Like `torch.{name}`, but returns an `XTensor`.\n\n"
         f"Positional and extra keyword arguments are forwarded to "
         f"`torch.{name}`; pass any of `names=` / `axes=` / `coords=` / "
-        f"`unit=` to name, describe, label, and unit the axes of the result."
+        f"`units=` to name, describe, label, and unit the axes of the result."
     )
     return factory
 
@@ -67,7 +67,7 @@ def _make_like_factory(name: str) -> tx.Optional[tx.Callable]:
 
     A `torch.<name>(input, ...)` already carries an `XTensor` input's metadata
     through the generic `__torch_function__` path, so `xones_like(x)` inherits
-    `x`'s names / coords / unit; any metadata keyword overrides what is
+    `x`'s names / coords / units; any metadata keyword overrides what is
     inherited.
     """
     base = getattr(torch, name, None)
@@ -88,7 +88,7 @@ def _make_like_factory(name: str) -> tx.Optional[tx.Callable]:
         f"Like `torch.{name}`, but returns an `XTensor`.\n\n"
         f"When `input` is an `XTensor`, the result **inherits** its names, "
         f"coordinates, descriptors, and unit; pass `names=` / `axes=` / "
-        f"`coords=` / `unit=` to override any of them."
+        f"`coords=` / `units=` to override any of them."
     )
     return factory
 
@@ -235,7 +235,7 @@ def xvector(
     A one-liner over `XTensor(...)`: names axis `channel_dim` (the last by
     default) `"channel"` and labels it with `channels` (a `...` in the labels
     fills the rest with unlabelled positions). Any other `XTensor` keyword
-    (`names=`, `coords=`, `unit=`, ...) is forwarded.
+    (`names=`, `coords=`, `units=`, ...) is forwarded.
 
     The result is a **plain** `XTensor`, not a distinct type -- so a reduction
     or selection that drops the channel axis just returns a normal `XTensor`,

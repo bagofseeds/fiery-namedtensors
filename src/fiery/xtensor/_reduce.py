@@ -80,7 +80,7 @@ def _reduce_unit(input: XTensor, removed: tx.Set) -> dict:
     if not coords:
         return {}
     names = input.names
-    base = input.__dict__.get("_data_unit")
+    base = input.__dict__.get("_data_units")
     changed = False
     for ax in removed:
         name = names[ax] if ax < len(names) else None
@@ -90,11 +90,11 @@ def _reduce_unit(input: XTensor, removed: tx.Set) -> dict:
         unit = _uniform_unit(labels)
         if unit is _INCOMPATIBLE:
             _unit_strict(True, f"reducing incompatible units on axis {name!r}")
-            return {"_data_unit": None}
+            return {"_data_units": None}
         if unit is not None:
             base = _units.mul(base, unit)
             changed = True
-    return {"_data_unit": base} if changed else {}
+    return {"_data_units": base} if changed else {}
 
 
 def _reduce_names(input: XTensor, result: tx.Any, dim: tx.Any) -> tx.Any:
