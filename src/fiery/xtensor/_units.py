@@ -233,10 +233,10 @@ def as_unitful(obj: tx.Any) -> Unitful:
     `Quantity`, a unit string, or a bare value (dimensionless). A united
     `XTensor` value is handled by the caller (it needs the tensor type).
 
-    A 2-tuple is `(value, unit)` only when its second element `looks_like_unit`
-    (`None`/a string/a backend `Unit`/`Quantity`) -- a 2-tuple of bare numbers
-    (e.g. a 2-component vector `spacing`) is never mistaken for `(value,
-    unit)`; it falls through as a raw value instead (issue #93).
+    A 2-tuple is `(value, unit)` only when its second element looks like a
+    unit (`None`/a string/a backend `Unit`/`Quantity`) -- a 2-tuple of bare
+    numbers (e.g. a 2-component vector `spacing`) is never mistaken for
+    `(value, unit)`; it falls through as a raw value instead.
     """
     if isinstance(obj, Unitful):
         return obj

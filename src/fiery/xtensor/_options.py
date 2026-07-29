@@ -166,14 +166,14 @@ class set_options:
         - `"override"` -- keep the left operand's value;
         - `"drop"` -- always drop the field.
 
-    - **`unit_backend`** -- the physical-unit engine for **data units**
-      (Proposal 0003): `None` *(default)* means units are inert opaque strings;
+    - **`unit_backend`** -- the physical-unit engine for **data units**:
+      `None` *(default)* means units are inert opaque strings;
       `"pint"` enables validation/algebra/conversion (and is rejected at set
       time if pint is not installed).
     - **`unit_policy`** -- what a dimensionally invalid/ambiguous step does:
       `"drop"` *(default)* silently drops the unit, `"strict"` raises.
     - **`interp_bound`** -- the default boundary condition for
-      [`interp`][fiery.xtensor.XTensor.interp] (Proposal 0004), i.e. how an
+      [`interp`][fiery.xtensor.XTensor.interp], i.e. how an
       out-of-range query is resolved. `"replicate"` *(default)* clamps to the
       edge value; other names (`"wrap"`, `"reflect"`, `"mirror"`, `"zero"`, …)
       mirror `fiery.interpol`. A per-call `bound=` overrides it.
