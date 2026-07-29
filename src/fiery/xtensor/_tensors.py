@@ -1600,8 +1600,12 @@ def as_xtensor(
     a hypothetical), stripping every bit of metadata in the process. `.to()`
     on the subclass instead goes through its own `__torch_function__` (which
     already carries the axis names/coords/unit onto ops it doesn't otherwise
-    special-case), and is itself just as much a true identity passthrough
-    for a no-op conversion (`x.to(dtype=x.dtype) is x`).
+    special-case). `.to()` isn't called at all when `dtype`/`device` already
+    match `value`'s own -- rather than relying on `.to()`'s own no-op-
+    returns-self behaviour, which isn't consistent across the range of
+    torch versions this library supports (verified: old torch does *not*
+    short-circuit when `device=` is passed explicitly alongside `dtype=`,
+    even when both already match).
 
     `value`'s own tensor is never mutated: when nothing is overridden and
     `value` is already an `XTensor`, it is returned as-is (the same object,
@@ -1611,7 +1615,15 @@ def as_xtensor(
     `value`'s own unit as a side effect.
     """
     base = torch.as_tensor(value)
-    if dtype is not None or device is not None:
+    # Skip `.to()` entirely when neither actually changes anything, rather
+    # than trusting its own no-op-returns-self behaviour: passing `device=`
+    # explicitly (even as `None`) alongside `dtype=` defeats that fast path
+    # on old torch (verified on 1.7/1.8 CI) even when both already match --
+    # this way, identity is guaranteed by construction, not by a version-
+    # dependent internal optimisation.
+    if (dtype is not None and dtype != base.dtype) or (
+        device is not None and torch.device(device) != base.device
+    ):
         base = base.to(dtype=dtype, device=device)
     if isinstance(base, XTensor) and (
         unit is arrayutils._UNSET
