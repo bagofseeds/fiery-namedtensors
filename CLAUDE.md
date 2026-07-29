@@ -309,8 +309,22 @@ name-keyed `coords` model (see #37).
 
 ```
 src/fiery/xtensor/
-  __init__.py       # public API re-exports
-  _tensors.py       # the tensor subclasses + torch-function overrides
+  __init__.py       # public API re-exports; imports the 6 leaf modules below
+                     # for their override-registration side effects
+  _common.py        # name/axis-descriptor plumbing, no torch-subclass knowledge
+  _extended.py       # ExtendedTensor: the generic override-registry base class
+  _selection.py     # label/numeric-tolerance/closed-form .sel math, no
+                     # XTensor/Coordinate dependency of its own
+  _meta.py          # axis-descriptor/unit reconciliation shared by 2+ leaves
+  _tensors.py       # the core: XTensor, Coordinate, as_xtensor, plus every
+                     # helper mutually recursive with them (construction,
+                     # numeric/curvilinear/affine selection, interpolation)
+  _shape.py         # RESHAPE / REORDER leaf
+  _reduce.py        # REDUCTIONS / SCANS leaf
+  _slice.py         # SLICE / SPLIT leaf
+  _combine.py       # COMBINE leaf (cat/stack/matmul/einsum/tensordot)
+  _gather.py        # GATHER / SCATTER leaf
+  _pointwise.py     # POINTWISE (BY NAME) leaf
   _arrayutils.py    # slicer parsing / axis-mapping helpers (no torch subclass)
   _compat.py        # version shims: EllipsisType, broadcast_shape, torch_func
   _options.py       # global options + `set_options` context manager
@@ -320,6 +334,17 @@ tests/
   test_arrayutils.py
   test_compat.py
 ```
+
+`_tensors.py` keeps its original name (rather than becoming e.g. `_core.py`)
+so `docs/griffe_ext.py`'s hardcoded `"fiery.xtensor._tensors.XTensor"` class
+path — and any external code that imports `XTensor` from
+`fiery.xtensor._tensors` directly — doesn't need to change. The six leaf
+modules (`_shape`, `_reduce`, `_slice`, `_combine`, `_gather`, `_pointwise`)
+each import `XTensor`/helpers **from** `_tensors.py` and register their
+overrides via `XTensor.overrides()` as an import side effect; `_tensors.py`
+never imports from any of them, so importing it alone does not populate the
+full `_OVERRIDES` registry — only importing the top-level `fiery.xtensor`
+package (which imports all six) does.
 
 ## How the subclassing works
 
@@ -366,12 +391,13 @@ tests/
   dispatch (torch inspects nested lists for subclasses). The override takes the
   first operand as the `_carry` metadata source.
 
-## Where the overrides live (`_tensors.py` sections)
+## Where the overrides live (one leaf module per section)
 
-Named-aware overrides are grouped into labelled banners; add new ops to the
-matching section (or a new one):
+Named-aware overrides are grouped by op family, one leaf module per family
+(each still keeps its section as a labelled banner internally); add new ops
+to the matching module (or a new one):
 
-- **NAMED TENSOR** — the `XTensor` class: `names`/`coords` properties,
+- **`_tensors.py` (NAMED TENSOR)** — the `XTensor` class: `names`/`coords` properties,
   `sel`/`isel`, `__getitem__` (positional slicing that also slices the labels
   of kept axes; a **positional** coordinate label resolves against the axis it
   indexes — a bare `str` like an int there, a `list` of `str` as an advanced
@@ -382,14 +408,16 @@ matching section (or a new one):
   for: unnamed (`None`) on assignment (`names=`/setter), unchanged on
   modification (`rename`/`refine_names`), the remaining axes in current order
   on reorder (`permute`/`align_to`).
-- **RESHAPE / REORDER** — `permute` + special cases (transpose/movedim family,
-  `view`/`reshape`), and rank-changers `flatten`/`unflatten`/`expand`/
-  `broadcast_to`/`diagonal`.
-- **REDUCTIONS** — `_make_reduction` factory (`sum`/`mean`/`amax`/…): drop the
-  reduced axis' name+coords (keep under `keepdim`), reduce-all → unnamed scalar.
-- **SLICE / SPLIT** — `select`/`narrow`/`unbind`/`split`/`chunk` (single-axis
-  `__getitem__`, so coords track for free) and `flip`/`roll` (reorder labels).
-- **COMBINE** — `cat`/`stack` (name reconciliation across operands; `cat`
+- **`_shape.py` (RESHAPE / REORDER)** — `permute` + special cases
+  (transpose/movedim family, `view`/`reshape`), and rank-changers
+  `flatten`/`unflatten`/`expand`/`broadcast_to`/`diagonal`.
+- **`_reduce.py` (REDUCTIONS / SCANS)** — `_make_reduction` factory
+  (`sum`/`mean`/`amax`/…): drop the reduced axis' name+coords (keep under
+  `keepdim`), reduce-all → unnamed scalar.
+- **`_slice.py` (SLICE / SPLIT)** — `select`/`narrow`/`unbind`/`split`/`chunk`
+  (single-axis `__getitem__`, so coords track for free) and `flip`/`roll`
+  (reorder labels).
+- **`_combine.py` (COMBINE)** — `cat`/`stack` (name reconciliation across operands; `cat`
   concatenates the join-axis labels), `hstack`/`vstack`/`dstack` (same
   reconciliation, but only when every operand already has the result's rank
   — these promote lower-rank operands first, which can shift axes; always
@@ -402,9 +430,9 @@ matching section (or a new one):
   fields, drop conflicting — under the `combine_axes` option), the same helper
   the pointwise factory uses, so a surviving axis keeps its descriptor no
   matter which operand it came from.
-- **GATHER / SCATTER** — `index_select`/`gather`/`scatter`/`scatter_add`/
-  `index_add`/`index_copy`/`index_fill`/`where`/`masked_select`.
-- **POINTWISE (BY NAME)** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
+- **`_gather.py` (GATHER / SCATTER)** — `index_select`/`gather`/`scatter`/
+  `scatter_add`/`index_add`/`index_copy`/`index_fill`/`where`/`masked_select`.
+- **`_pointwise.py` (POINTWISE (BY NAME))** — `_make_pointwise` factory over `add`/`mul`/`eq`/…:
   when **both** operands are fully-named, axes align **by name** (`_align_by_name`
   → transpose + size-1 expand to the union of dims), else positional fallback.
   A shared dim **labelled on both** operands with differing labels is also
@@ -420,8 +448,10 @@ matching section (or a new one):
 - **CONVENIENCE** — `xvector`/`xmatrix` factory functions (in `_factories.py`),
   not subclasses.
 
-Shared helpers: `_carry`, `_coords_for` (keep surviving coords), `_slice_labels`
-(1-D label slicer), `_reconcile_axis_names` (multi-operand), `_matmul_names`.
+Shared helpers: `_carry`, `_coords_for` (keep surviving coords, in
+`_tensors.py`), `_slice_labels` (1-D label slicer, in `_selection.py`),
+`_broadcast_batch_names`/`_merge_axis_meta` (multi-operand descriptor
+reconciliation, in `_meta.py`).
 
 ## Conventions specific to this repo (do not regress)
 
