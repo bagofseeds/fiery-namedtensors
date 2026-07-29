@@ -99,7 +99,7 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
 
 
 def _either_dict_or_kwargs(
-    positional: tx.Optional[tx.Mapping], kwargs: dict, funcname: str
+    positional: tuple, kwargs: dict, funcname: str
 ) -> dict:
     """
     Merge an optional positional indexer mapping with `**kwargs`, xarray's own
@@ -111,15 +111,26 @@ def _either_dict_or_kwargs(
     can always be spelled out in an explicit dict instead
     (`x.sel({"method": 5.0})`). Passing both raises, rather than silently
     preferring one.
+
+    `positional` is captured via the caller's own `*args` (not a named
+    `indexers=` parameter) so this mapping itself can never collide with a
+    query name either -- `x.sel(indexers=5.0)` on a dim literally called
+    "indexers" reaches `**kwargs` exactly as before this escape hatch
+    existed, since a bare `*args` slot can only ever be filled positionally.
     """
-    if positional is None:
+    if len(positional) > 1:
+        raise TypeError(
+            f"{funcname}: at most one positional argument (an indexers "
+            "mapping) is accepted"
+        )
+    if not positional:
         return dict(kwargs)
     if kwargs:
         raise ValueError(
             f"{funcname}: pass indexers as a dict OR as keyword arguments, "
             "not both"
         )
-    return dict(positional)
+    return dict(positional[0])
 
 
 def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
@@ -1144,7 +1155,7 @@ class XTensor(ExtendedTensor):
 
     def sel(
         self,
-        indexers: tx.Optional[tx.Mapping] = None,
+        *indexers_positional: tx.Mapping,
         mode: tx.Optional[str] = None,
         tolerance: tx.Any = None,
         method: tx.Optional[str] = None,
@@ -1209,7 +1220,9 @@ class XTensor(ExtendedTensor):
         argument matching one of those names is always bound to the
         parameter, never reaching the indexers. Passing both raises.
         """
-        indexers = _either_dict_or_kwargs(indexers, indexers_kwargs, "sel")
+        indexers = _either_dict_or_kwargs(
+            indexers_positional, indexers_kwargs, "sel"
+        )
         if mode is not None and method is not None:
             raise ValueError("sel: pass either 'mode' or 'method', not both")
         raw = mode if mode is not None else method
@@ -1469,7 +1482,9 @@ class XTensor(ExtendedTensor):
             raise AttributeError(name)
         hits = self._dims_with_label(name)
         if len(hits) == 1:
-            return self.sel(**{hits[0]: name})
+            # positional (not **kwargs): `x.<label>` must still resolve a
+            # dim literally named "mode"/"tolerance"/"method".
+            return self.sel({hits[0]: name})
         if len(hits) > 1:
             raise AttributeError(
                 f"label {name!r} is ambiguous across dims {hits}"

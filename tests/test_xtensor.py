@@ -1505,6 +1505,43 @@ def test_sel_indexers_dict_and_kwargs_together_raises():
         x.sel({"t": 2.0}, t=2.0)
 
 
+def test_sel_too_many_positional_indexers_raises():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    with pytest.raises(TypeError, match="at most one positional argument"):
+        x.sel({"t": 2.0}, {"t": 3.0})
+
+
+def test_sel_indexers_is_captured_positionally_not_by_keyword():
+    # the escape hatch mustn't introduce the exact collision it fixes: a
+    # dim literally named "indexers" still has to work as an ordinary
+    # keyword argument, since the positional mapping is captured via
+    # *args, never a named `indexers=` parameter.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("indexers",),
+        coords={"indexers": {"spacing": 2.0}},
+    )
+    assert x.sel(indexers=2.0).item() == 1.0
+
+
+def test_sel_dict_form_reaches_the_joint_affine_path():
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.sel({"lat": 11.0, "lon": 24.0})
+    assert out.item() == field[1, 2].item()
+
+
+def test_sel_attribute_style_label_access_on_a_colliding_dim_name():
+    # x.<label> resolves through .sel internally -- must still work for a
+    # dim literally named "mode"/"tolerance"/"method".
+    x = XTensor(
+        torch.arange(3.0), names=("mode",), coords={"mode": ["a", "b", "c"]}
+    )
+    assert x.a.item() == 0.0
+
+
 def test_sel_modes_round_floor_ceil_prev_next():
     # ascending ticks 0,2,4,6,8 ; data 0,10,20,30,40
     x = XTensor(
