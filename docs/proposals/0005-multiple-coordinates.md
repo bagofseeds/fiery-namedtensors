@@ -2,10 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Draft — steps 1–4 implemented; step 5's `.sel` half landed (#82 phase 1); step 5's `.interp` half (N-D `grid_pull`) not yet started |
+| **Status** | Draft — steps 1–4 implemented; step 5 (`.sel`/`.interp`) fully landed (#82 phases 1 and 2) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-26 |
-| **Updated** | 2026-07-29 — affine joint `.sel` (step 5, #82 phase 1) implemented |
+| **Updated** | 2026-07-29 — affine joint `.interp` (step 5, #82 phase 2) implemented |
 | **Tracking** | [#65](https://github.com/bagofseeds/fiery-xtensor/issues/65); generalises 0001/0002; interacts with 0004 (numeric `.sel`), #82 (curvilinear interp) |
 
 ## Abstract
@@ -154,14 +154,17 @@ Per review, this lands as a **sequence of small PRs**, not one massive change:
    `dims` tuple: materialisation, exact per-component affine slicing,
    learnable. *(No `.sel` yet — that's step 5.)*
 4. ✅ **`swap_dims`** — promote a non-dimension coordinate to the index.
-5. **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
+5. ✅ **Affine `.sel` / `.interp`** — closed-form `A⁻¹` inverse + (for interp)
    N-D `grid_pull`, joint query over the coupled dims (ties off
-   [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82) phase 1).
-   - ✅ `.sel` half landed — a joint query (`x.sel(lat=…, lon=…)`) over a
+   [#82](https://github.com/bagofseeds/fiery-xtensor/issues/82)).
+   - ✅ `.sel` half (phase 1) — a joint query (`x.sel(lat=…, lon=…)`) over a
      square, invertible affine solves `index = A⁻¹(world − origin)` and
      snaps to the nearest position; under/over-determined and non-invertible
      queries raise rather than approximating.
-   - ⬜ `.interp` half (N-D `grid_pull` over the coupled dims) — not started.
+   - ✅ `.interp` half (phase 2) — the same closed-form inverse, kept
+     **fractional**, feeds a genuine N-D `grid_pull` (or a built-in
+     separable nearest gather); a multi-valued joint query collapses the
+     spanned dims into one new axis, point-wise.
 6. **Non-dim coordinate slice-tracking** — carry non-dim coords through slicing
    instead of dropping on resize.
 
@@ -301,6 +304,53 @@ affine feature.
   implemented here) — the pull itself needs genuine multi-axis simultaneous
   sampling, not the axis-by-axis separable interpolation `.interp` already
   does for 1-D coordinates.
+
+## What step 5's `.interp` half implements (#82 phase 2)
+
+- Groups `.interp`'s indexers the same way `.sel` does; the square-system
+  requirement is identical, and only **one** joint group per call is
+  supported for now (a second group raises `NotImplementedError` — call
+  `interp` again for it).
+- Inverts `A` **once** per call (shared across every query point, unlike
+  `.sel`'s single-point solve) to a **fractional** index — never rounded —
+  then genuinely pulls the tensor's values at those N-D positions via
+  `fiery.interpol.grid_pull` (order ≥ 1, or order 0 with the backend
+  installed) or a built-in separable nearest gather (order 0, no backend —
+  nearest-neighbour rounding needs no cross-axis interpolation weight, so
+  it stays exact without the optional dependency). Solved in float64
+  regardless of the spacing's own/default dtype, mirroring both `.sel`'s
+  and the 1-D `.interp` path's conventions.
+- A query with **every** name given as a scalar is a single point: the
+  spanned dims drop entirely, the same scalar-drops-the-axis convention
+  `.interp`/`.sel` already have for a 1-D coordinate.
+- Any name given as a **list**/tensor makes the whole group "many": every
+  name's query broadcasts to a common length `N` (a length-1 query
+  broadcasts against a longer one; two different non-1 lengths raise), and
+  the spanned dims collapse into **one new axis** of `N` sampled points —
+  *not* an outer-product grid. The dims are coupled, so you can't vary one
+  queried name's value without moving through every spanned dim at once;
+  this mirrors xarray's own vectorized/pointwise-indexing convention for a
+  value-based query on a multi-dim coordinate (confirmed against
+  `xarray.indexes.CoordinateTransformIndex`, its own affine-inversion
+  index type — a bare scalar/list query isn't accepted there at all, only
+  point-wise `DataArray` indexers sharing a dimension, collapsing to that
+  one dimension).
+- The new axis is named via `interp`'s new `name=` keyword (default
+  unnamed — `xstack`'s convention for a brand-new axis, since `torch.stack`
+  itself gives no way to name one either) and carries every queried name's
+  own sampled values as a riding (non-dimension) coordinate — you get the
+  world coordinates of your sampled points back, the same way xarray's
+  vectorized indexing collapses its own auxiliary coordinates onto the new
+  dimension for free.
+- The new axis is inserted at the left-most spanned dim's position (a
+  well-defined choice regardless of whether the spanned dims are adjacent
+  in the tensor); every other axis keeps its name and relative order.
+- Composes with ordinary 1-D `.interp` indexers in the same call
+  (`x.interp(t=1.0, lat=52.1, lon=4.3)`) — attempting to *also* query a
+  spanned dim directly afterward fails naturally (the dim no longer
+  exists once the joint pull replaces it), with no special-case guard
+  needed (unlike `.sel`, where the dim's integer position still exists
+  after the solve, making a silent overwrite possible there).
 
 ## Open questions — resolved
 

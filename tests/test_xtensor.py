@@ -1056,6 +1056,232 @@ def test_affine_sel_matches_a_brute_force_reference_exhaustively():
         assert got.item() == field[i, j].item(), (s1, s2, o1, o2, i, j)
 
 
+# ----------------------------------------------------------------------
+# joint affine .interp (issue #82 phase 2)
+# ----------------------------------------------------------------------
+
+
+def test_affine_interp_scalar_query_picks_the_exact_value():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.interp(lat=11.0, lon=24.0)  # exactly (1, 2)
+    assert out.ndim == 0
+    assert out.item() == field[1, 2].item()
+
+
+def test_affine_interp_scalar_query_interpolates_between_ticks():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.interp(lat=11.5, lon=24.0)  # halfway between row 1 and row 2
+    expected = (field[1, 2].item() + field[2, 2].item()) / 2
+    assert abs(out.item() - expected) < 1e-6
+
+
+def test_affine_interp_many_query_produces_one_new_named_axis():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.interp(lat=[11.0, 12.0], lon=[24.0, 20.0], name="pts")
+    assert out.names == ("pts",)
+    assert out.shape == (2,)
+    assert out[0].item() == field[1, 2].item()
+    assert out[1].item() == field[2, 0].item()
+    assert out.coords["lat"]["values"].tolist() == [11.0, 12.0]
+    assert out.coords["lon"]["values"].tolist() == [24.0, 20.0]
+
+
+def test_affine_interp_new_axis_defaults_to_unnamed():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    out = x.interp(lat=[11.0, 12.0], lon=[24.0, 20.0])  # no name= given
+    assert out.names == (None,)
+
+
+def test_affine_interp_new_axis_lands_at_the_left_most_spanned_position():
+    pytest.importorskip("fiery.interpol")
+    field = torch.arange(24.0).reshape(2, 3, 4)
+    x = XTensor(
+        field,
+        names=("t", "y", "x"),  # y, x are not the tensor's leading axes
+        coords={
+            "t": {"spacing": 1.0},
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+        },
+    )
+    out = x.interp(lat=[11.0, 12.0], lon=[24.0, 20.0], name="pts")
+    assert out.names == ("t", "pts")
+    assert out.shape == (2, 2)
+    assert out[:, 0].tolist() == field[:, 1, 2].tolist()
+    assert out[:, 1].tolist() == field[:, 2, 0].tolist()
+
+
+def test_affine_interp_mixes_with_an_ordinary_indexer():
+    pytest.importorskip("fiery.interpol")
+    field = torch.arange(24.0).reshape(2, 3, 4)
+    x = XTensor(
+        field,
+        names=("t", "y", "x"),
+        coords={
+            "t": {"spacing": 1.0},
+            "lat": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+        },
+    )
+    out = x.interp(t=0.5, lat=11.0, lon=24.0)
+    expected = (field[0, 1, 2].item() + field[1, 1, 2].item()) / 2
+    assert out.item() == expected
+
+
+def test_affine_interp_broadcasts_a_length_one_query_against_a_list():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.interp(lat=11.0, lon=[24.0, 20.0], name="pts")
+    assert out.shape == (2,)
+    assert out[0].item() == field[1, 2].item()
+    assert out[1].item() == field[1, 0].item()
+
+
+def test_affine_interp_mismatched_lengths_raises():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="same length"):
+        x.interp(lat=[11.0, 12.0], lon=[24.0, 20.0, 22.0])
+
+
+def test_affine_interp_under_determined_query_raises():
+    x = _lat_lon_tensor()
+    with pytest.raises(ValueError, match="needs exactly 2 coordinate"):
+        x.interp(lat=11.0)
+
+
+def test_affine_interp_singular_map_raises():
+    field = torch.arange(12.0).reshape(3, 4)
+    x = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "a": (("y", "x"), {"spacing": ([1.0, 1.0], "")}),
+            "b": (("y", "x"), {"spacing": ([2.0, 2.0], "")}),
+        },
+    )
+    with pytest.raises(ValueError, match="isn't invertible"):
+        x.interp(a=1.0, b=2.0)
+
+
+def test_affine_interp_multiple_groups_in_one_call_raises():
+    field = torch.arange(16.0).reshape(2, 2, 2, 2)
+    x = XTensor(
+        field,
+        names=("y", "x", "z", "w"),
+        coords={
+            "lat": (("y", "x"), {"spacing": ([1.0, 0.0], "")}),
+            "lon": (("y", "x"), {"spacing": ([0.0, 1.0], "")}),
+            "p": (("z", "w"), {"spacing": ([1.0, 0.0], "")}),
+            "q": (("z", "w"), {"spacing": ([0.0, 1.0], "")}),
+        },
+    )
+    with pytest.raises(NotImplementedError, match="more than one"):
+        x.interp(lat=0.0, lon=1.0, p=0.0, q=1.0)
+
+
+def test_affine_interp_empty_query_returns_an_empty_axis():
+    pytest.importorskip("fiery.interpol")
+    x = _lat_lon_tensor()
+    out = x.interp(lat=[], lon=[], name="pts")
+    assert out.shape == (0,)
+    assert out.names == ("pts",)
+
+
+def test_affine_interp_nearest_works_without_the_backend(monkeypatch):
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = _lat_lon_tensor()
+    field = x.as_subclass(torch.Tensor)
+    out = x.interp(lat=11.4, lon=23.6, method="nearest")  # nearest -> (1, 2)
+    assert out.item() == field[1, 2].item()
+
+
+def test_affine_interp_higher_order_needs_the_backend_too(monkeypatch):
+    from fiery.xtensor import _tensors
+
+    monkeypatch.setattr(_tensors, "_interpol", lambda: None)
+    x = _lat_lon_tensor()
+    with pytest.raises(ImportError, match="fiery-xtensor\\[interp\\]"):
+        x.interp(lat=11.0, lon=24.0, method="linear")
+
+
+def test_affine_interp_gradients_flow_through_a_learnable_spacing():
+    pytest.importorskip("fiery.interpol")
+    spacing = torch.tensor([1.0, 0.0], requires_grad=True)
+    x = XTensor(
+        torch.arange(12.0).reshape(3, 4),
+        names=("y", "x"),
+        coords={
+            "lat": (
+                ("y", "x"),
+                {"spacing": (spacing, "deg"), "origin": (10.0, "deg")},
+            ),
+            "lon": (
+                ("y", "x"),
+                {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")},
+            ),
+        },
+    )
+    x.interp(lat=11.0, lon=24.0).backward()
+    assert spacing.grad is not None
+    assert not torch.isnan(spacing.grad).any()
+
+
+def test_affine_interp_matches_a_brute_force_bilinear_reference():
+    pytest.importorskip("fiery.interpol")
+    # independent randomized comparison: compute the bilinear value by hand
+    # (manual 2x2 neighbourhood + weights) instead of via the closed-form
+    # inverse + grid_pull path under test.
+    import random
+
+    rng = random.Random(0)
+    for _ in range(100):
+        h, w = rng.randint(3, 6), rng.randint(3, 6)
+        field = torch.rand(h, w, dtype=torch.float64)
+        x = XTensor(
+            field,
+            names=("y", "x"),
+            coords={
+                "lat": (("y", "x"), {"spacing": ([1.0, 0.0], "")}),
+                "lon": (("y", "x"), {"spacing": ([0.0, 1.0], "")}),
+            },
+        )
+        fi = rng.uniform(0, h - 1)
+        fj = rng.uniform(0, w - 1)
+        i0, j0 = int(fi), int(fj)
+        i1, j1 = min(i0 + 1, h - 1), min(j0 + 1, w - 1)
+        di, dj = fi - i0, fj - j0
+        expected = (
+            field[i0, j0].item() * (1 - di) * (1 - dj)
+            + field[i0, j1].item() * (1 - di) * dj
+            + field[i1, j0].item() * di * (1 - dj)
+            + field[i1, j1].item() * di * dj
+        )
+        got = x.interp(lat=fi, lon=fj).item()
+        assert abs(got - expected) < 1e-5, (h, w, fi, fj)
+
+
 def test_non_dimension_coordinate_length_is_checked():
     with pytest.raises(ValueError, match="has 2 values for dim"):
         XTensor(
