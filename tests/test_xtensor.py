@@ -1302,6 +1302,93 @@ def test_as_xtensor_explicit_none_clears_the_unit():
     assert out.unit is None
 
 
+def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
+    # torch.as_tensor(an_xtensor, dtype=...) silently degrades to a plain
+    # Tensor when it actually has to convert -- as_xtensor must not.
+    x = XTensor(
+        torch.arange(4, dtype=torch.int64),
+        names=("t",),
+        coords={"t": {"spacing": 1}},
+        unit="mm",
+    )
+    plain = torch.as_tensor(x, dtype=torch.float64)
+    assert not isinstance(plain, XTensor)  # the footgun this avoids
+
+    out = as_xtensor(x, dtype=torch.float64)
+    assert isinstance(out, XTensor)
+    assert out.dtype == torch.float64
+    assert out.names == ("t",)
+    assert out.unit == "mm"
+    # the coordinate itself isn't converted -- only the data's own dtype is
+    # -- so its dtype is untouched (int64), not just numerically equal.
+    assert out.coords["t"]["values"].dtype == torch.int64
+    assert out.coords["t"]["values"].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_as_xtensor_device_override_actually_converts():
+    # a genuine (GPU-free) device conversion, not just the cpu->cpu no-op
+    # the other device test covers -- "meta" exercises the real .to() path,
+    # where available (old torch doesn't recognise it as a device type).
+    try:
+        torch.device("meta")
+    except RuntimeError:
+        pytest.skip("this torch build has no 'meta' device")
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    out = as_xtensor(x, device="meta")
+    assert isinstance(out, XTensor)
+    assert out.device.type == "meta"
+    assert out.names == ("t",)
+
+
+def test_as_xtensor_dtype_none_is_a_true_passthrough():
+    # dtype=None (the default) means "leave as is", same as torch.as_tensor
+    # -- combined with no metadata override, still a strict identity return.
+    x = XTensor(torch.arange(4.0), names=("t",), unit="mm")
+    assert as_xtensor(x, dtype=None, device=None) is x
+
+
+def test_as_xtensor_dtype_override_is_graph_safe():
+    leaf = torch.tensor(2.0, dtype=torch.float32, requires_grad=True)
+    x = XTensor(leaf, names=())
+    out = as_xtensor(x, dtype=torch.float64)
+    assert out.requires_grad
+    assert out.dtype == torch.float64
+    (out.as_subclass(torch.Tensor) * 5).sum().backward()
+    assert leaf.grad.item() == 5.0
+
+
+def test_as_xtensor_dtype_override_from_a_bare_number():
+    out = as_xtensor(2, dtype=torch.float64, unit="mm")
+    assert out.dtype == torch.float64
+    assert out.unit == "mm"
+
+
+def test_as_xtensor_no_op_dtype_override_keeps_identity():
+    # matching the current dtype is a no-op -- as_xtensor skips calling
+    # .to() at all in this case (rather than relying on .to()'s own
+    # no-op-returns-self behaviour, which isn't consistent across the
+    # torch versions this library supports), so this is a true passthrough.
+    x = XTensor(torch.arange(3.0), names=("c",))
+    assert as_xtensor(x, dtype=x.dtype) is x
+
+
+def test_as_xtensor_device_override_is_a_noop_on_the_same_device():
+    x = XTensor(torch.arange(3.0), names=("c",))
+    assert as_xtensor(x, device="cpu") is x
+
+
+def test_as_xtensor_dtype_override_composes_with_metadata_override():
+    x = XTensor(
+        torch.arange(3, dtype=torch.int64), names=("c",), unit="mm"
+    )
+    out = as_xtensor(x, dtype=torch.float64, unit="s")
+    assert out.dtype == torch.float64
+    assert out.unit == "s"
+    assert out.names == ("c",)  # untouched metadata still rides through
+
+
 def test_spacing_unitful_converts():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):

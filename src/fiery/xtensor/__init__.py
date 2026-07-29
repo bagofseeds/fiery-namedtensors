@@ -22,7 +22,8 @@ names, coordinates, and unit.
 [`as_xtensor`][fiery.xtensor.as_xtensor] is the `XTensor` analogue of
 `torch.as_tensor`: coerce a bare number, a plain `Tensor`, or an `XTensor`
 into an `XTensor`, graph-safely, preserving `unit`/`names`/`coords` unless a
-keyword explicitly overrides them.
+keyword explicitly overrides them. Like `torch.as_tensor`, it also accepts
+`dtype=`/`device=` to convert the underlying data.
 """
 
 from fiery.xtensor._factories import (
