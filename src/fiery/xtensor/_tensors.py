@@ -98,6 +98,30 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     return dim
 
 
+def _either_dict_or_kwargs(
+    positional: tx.Optional[tx.Mapping], kwargs: dict, funcname: str
+) -> dict:
+    """
+    Merge an optional positional indexer mapping with `**kwargs`, xarray's own
+    escape hatch for `.sel`/`.interp`-style calls: a dim whose name collides
+    with one of the method's own keyword parameters (`.sel`'s `mode`/
+    `tolerance`/`method`, `.interp`'s `method`/`bound`/`extrapolate`/`name`)
+    can never be passed as `**kwargs` -- Python binds a matching keyword to
+    the named parameter first, so it never reaches the catch-all -- but it
+    can always be spelled out in an explicit dict instead
+    (`x.sel({"method": 5.0})`). Passing both raises, rather than silently
+    preferring one.
+    """
+    if positional is None:
+        return dict(kwargs)
+    if kwargs:
+        raise ValueError(
+            f"{funcname}: pass indexers as a dict OR as keyword arguments, "
+            "not both"
+        )
+    return dict(positional)
+
+
 def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
     """
     Expand a single `...` in a name tuple into the run of axes it stands for,
@@ -1306,11 +1330,12 @@ class XTensor(ExtendedTensor):
 
     def interp(
         self,
+        indexers: tx.Optional[tx.Mapping] = None,
         method: tx.Any = "linear",
         bound: tx.Any = None,
         extrapolate: tx.Any = None,
         name: tx.Optional[str] = None,
-        **indexers: tx.Any,
+        **indexers_kwargs: tx.Any,
     ) -> tx.Self:
         """
         Interpolate onto new coordinate values along named dims (Prop. 0004).
@@ -1369,7 +1394,16 @@ class XTensor(ExtendedTensor):
         sampled values as a riding coordinate. Only **one** joint group per
         call is supported for now
         (#82 phase 2); call `interp` again for a second group.
+
+        Pass `indexers` as an explicit mapping (`x.interp({"method":
+        5.0})`) instead of keyword arguments when a dim's name collides
+        with one of `interp`'s own keyword parameters (`method`, `bound`,
+        `extrapolate`, `name`) -- xarray's own escape hatch for exactly
+        this, since a keyword argument matching one of those names is
+        always bound to the parameter, never reaching the indexers.
+        Passing both raises.
         """
+        indexers = _either_dict_or_kwargs(indexers, indexers_kwargs, "interp")
         out, consumed = self._affine_interp_group(
             indexers, method, bound, extrapolate, name
         )

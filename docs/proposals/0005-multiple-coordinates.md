@@ -357,6 +357,13 @@ affine feature.
   exists once the joint pull replaces it), with no special-case guard
   needed (unlike `.sel`, where the dim's integer position still exists
   after the solve, making a silent overwrite possible there).
+- `interp` accepts `indexers` as an explicit mapping
+  (`x.interp({"method": 5.0})`), not just `**kwargs` — xarray's own escape
+  hatch for a dim whose name collides with one of `interp`'s own keyword
+  parameters (`method`, `bound`, `extrapolate`, and now `name`): a matching
+  keyword argument always binds to the parameter, never reaching the
+  indexers, so the dict form is the only way to query such a dim. Passing
+  both raises.
 
 ## Open questions — resolved
 

@@ -2416,6 +2416,33 @@ def test_interp_nearest_is_builtin_without_the_backend(monkeypatch):
     assert x.interp(t=10.0, method="nearest", bound="wrap").item() == 0.0
 
 
+def test_interp_accepts_indexers_as_a_dict():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    assert x.interp({"t": 3.0}).item() == 1.5
+
+
+def test_interp_dict_escape_hatch_reaches_a_dim_named_like_a_keyword():
+    # a dim literally named "method" can never be spelled as a keyword
+    # argument -- interp(method=...) always binds interp's own parameter,
+    # never the indexers -- so the dict form is the only way to reach it.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("method",),
+        coords={"method": {"spacing": 2.0}},
+    )
+    assert x.interp({"method": 3.0}).item() == 1.5
+
+
+def test_interp_indexers_dict_and_kwargs_together_raises():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    with pytest.raises(ValueError, match="dict OR as keyword arguments"):
+        x.interp({"t": 3.0}, t=3.0)
+
+
 def test_interp_higher_order_needs_the_backend(monkeypatch):
     from fiery.xtensor import _tensors
 
