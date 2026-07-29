@@ -2,17 +2,18 @@
 
 `x*` wrappers around the `torch.*` construction functions that return an
 [`XTensor`][fiery.xtensor.XTensor] directly, so you can name (and describe,
-label, unit) the axes at creation time instead of wrapping every call by
-hand::
+label, unit) the axes at creation time instead of wrapping every call by hand:
 
-    xzeros(2, 3, names=("row", "col"))
-    xfull((2, 2), 7.0, axes=[{"name": "y", "type": "space"}, "x"])
-    xones_like(x)                        # inherits x's names / coords / unit
+```python
+xzeros(2, 3, names=("row", "col"))
+xfull((2, 2), 7.0, axes=[{"name": "y", "type": "space"}, "x"])
+xones_like(x)                        # inherits x's names / coords / unit
+```
 
 Each wrapper forwards its positional and unrecognised keyword arguments to the
 matching `torch.*` function, and understands the `XTensor` metadata keywords
-``names`` / ``axes`` / ``coords`` / ``unit`` -- so a factory result carries
-names the same way a hand-built `XTensor` does.
+`names` / `axes` / `coords` / `unit` -- so a factory result carries names the
+same way a hand-built `XTensor` does.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ xzeros = _make_factory("zeros")
 xones = _make_factory("ones")
 xempty = _make_factory("empty")
 xfull = _make_factory("full")
-#: Alias of [`xfull`][fiery.xtensor.xfull] -- fill a new tensor with a value.
+#: Alias of `xfull` -- fill a new tensor with a value.
 xfill = xfull
 xarange = _make_factory("arange")
 xlinspace = _make_factory("linspace")
@@ -130,9 +131,11 @@ def xstack(
     name, so it always comes out unnamed. `xstack` stacks the same way and then
     names the inserted axis `name` (at position `dim`) and, if given, labels it
     with `coords` -- handy for stacking a list of frames into a named,
-    coordinate-carrying axis::
+    coordinate-carrying axis:
 
-        xstack([r, g, b], name="channel", coords=("r", "g", "b"))
+    ```python
+    xstack([r, g, b], name="channel", coords=("r", "g", "b"))
+    ```
 
     The existing axes keep whatever names and labels the operands agree on
     (as with a plain `torch.stack`). `coords` needs a `name`.
@@ -171,11 +174,13 @@ def xmeshgrid(
     Every output spans all the input axes; `xmeshgrid` names those axes after
     the inputs (an `XTensor` input contributes its own axis name, or pass
     `names=` to set them) and attaches **each input as the coordinate** along
-    its axis -- exactly the coordinate grid you usually build a meshgrid for::
+    its axis -- exactly the coordinate grid you usually build a meshgrid for:
 
-        y = xarange(3, names=("y",))
-        x = xarange(4, names=("x",))
-        gy, gx = xmeshgrid(y, x)          # each is ("y", "x") with y/x coords
+    ```python
+    y = xarange(3, names=("y",))
+    x = xarange(4, names=("x",))
+    gy, gx = xmeshgrid(y, x)          # each is ("y", "x") with y/x coords
+    ```
 
     `indexing` is `torch.meshgrid`'s (`"ij"` *(default)*, or `"xy"` which swaps
     the first two output axes). Inputs must be 1-D. A `None` axis name gets no

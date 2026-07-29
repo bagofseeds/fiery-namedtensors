@@ -71,7 +71,7 @@ with set_options(combine_axes="strict"):
 ```
 
 The policy is one of `"drop_conflicts"` (default), `"strict"` (alias
-`"raise"`), `"override"` (keep the left operand's value) or `"drop"` (always
+`"raise"`), `"override"` (keep the left operand's value), or `"drop"` (always
 drop the field). Pass a `{field: policy}` dict to set it **per descriptor
 field** — `"*"` is the default for fields you don't name:
 
@@ -80,10 +80,6 @@ field** — `"*"` is the default for fields you don't name:
 with set_options(combine_axes={"*": "drop", "type": "raise"}):
     ...
 ```
-
-`combine_axes` accepts `"drop_conflicts"` (default), `"strict"` (raise on any
-clash), `"override"` (keep the left operand's fields), or `"drop"` (discard all
-descriptors).
 
 A descriptor is also a way to **address** axes. Anywhere you can pass a `dim`
 (method form), a query dict selects *every* axis whose descriptor matches — so

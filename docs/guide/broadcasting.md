@@ -6,9 +6,8 @@ sides, **by label** — the xarray way.
 
 ## Broadcast by name
 
-When **both** operands of a pointwise op (`+`, `-`, `*`, `/`, comparisons, …)
-are fully-named `XTensor`s, their axes are aligned **by name** — the xarray way
-— instead of by position:
+A pointwise op (`+`, `-`, `*`, `/`, a comparison, …) between two fully-named
+`XTensor`s pairs their axes up by name rather than by position:
 
 ```python
 a = xtensor(torch.arange(6).reshape(2, 3), names=("x", "y"))

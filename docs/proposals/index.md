@@ -6,8 +6,8 @@ icon: material/lightbulb-outline
 
 Design proposals for `fiery.xtensor` — the larger, cross-cutting decisions,
 written up for discussion before (and as) they land. Each one states the
-motivation, the API, how it relates to [xarray](vs-xarray.md), and the open
-questions.
+motivation, the API, how it relates to [xarray](../guide/vs-xarray.md), and the
+open questions.
 
 - [0001 — Coordinates (values, spacing, units)](0001-units.md) — numeric
   coordinates: a physical position per element, compact `spacing`/`origin` or
@@ -16,3 +16,9 @@ questions.
   coordinate labels (a label as a dict of fields) and querying by field.
 - [0003 — Data units](0003-data-units.md) — physical units on a tensor's
   *values*, with dimensional algebra and per-axis units.
+- [0004 — Numeric coordinate selection](0004-numeric-selection.md) — selecting
+  by coordinate *value* with `.sel`, and computing off-grid values with
+  `.interp`.
+- [0005 — Multiple coordinates per axis](0005-multiple-coordinates.md) —
+  non-dimension coordinates riding along a dim, and compact **affine**
+  coordinates spanning several dims at once.
