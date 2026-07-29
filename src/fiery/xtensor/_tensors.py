@@ -92,7 +92,7 @@ class XTensor(ExtendedTensor):
         "_axis_names",
         "_coords",
         "_axis_meta",
-        "_data_unit",
+        "_data_units",
     }
 
     def __new__(cls, *args, **kwargs) -> tx.Self:
@@ -100,7 +100,7 @@ class XTensor(ExtendedTensor):
         kwargs.pop("names", None)
         kwargs.pop("coords", None)
         kwargs.pop("axes", None)
-        kwargs.pop("unit", None)
+        kwargs.pop("units", None)
         # Wrapping an existing tensor via `Tensor.__new__(cls, t)` is not
         # portable: some PyTorch versions reject a non-default dtype there
         # (e.g. a Long tensor raises "expected Float"). `as_subclass` re-tags
@@ -118,7 +118,7 @@ class XTensor(ExtendedTensor):
         axes = kwargs.pop("axes", None)
         names = kwargs.pop("names", None)
         coords = kwargs.pop("coords", None)
-        unit = kwargs.pop("unit", None)
+        units = kwargs.pop("units", None)
         coord_specs = {}
         if axes is not None:
             axis_names, meta, coord_specs = _parse_axes(tuple(axes), self.ndim)
@@ -132,8 +132,8 @@ class XTensor(ExtendedTensor):
             coord_specs = {**coord_specs, **dict(coords)}
         if coord_specs:
             self.coords = coord_specs
-        if unit is not None:
-            self.unit = unit
+        if units is not None:
+            self.units = units
 
     # -- dimensions --------------------------------------------------------
 
@@ -351,45 +351,46 @@ class XTensor(ExtendedTensor):
     # -- data unit ---------------------------------------------------------
 
     @property
-    def unit(self) -> tx.Optional[str]:
+    def units(self) -> tx.Optional[str]:
         """
-        The physical unit of the tensor's **values** (the *data* unit, Proposal
-        0003), or `None`. Assigning *annotates* (it never changes the data);
-        `to_unit` converts. Under `unit_backend="pint"` the unit is validated
-        and normalised on set; with the default `unit_backend=None` it is an
-        opaque string that is simply carried through operations.
+        The physical unit of the tensor's **values** (the *data* unit), or
+        `None`. Assigning *annotates* (it never changes the data);
+        `to_units` converts. Under `unit_backend="pint"` the unit is
+        validated and normalised on set; with the default
+        `unit_backend=None` it is an opaque string that is simply carried
+        through operations.
         """
-        return self.__dict__.get("_data_unit")
+        return self.__dict__.get("_data_units")
 
-    @unit.setter
-    def unit(self, value: tx.Optional[str]) -> None:
+    @units.setter
+    def units(self, value: tx.Optional[str]) -> None:
         if value is None:
-            self.__dict__.pop("_data_unit", None)
+            self.__dict__.pop("_data_units", None)
             return
-        self._data_unit = _units.normalise(value)
+        self._data_units = _units.normalise(value)
 
-    def to_unit(self, unit: str) -> tx.Self:
+    def to_units(self, unit: str) -> tx.Self:
         """
         Convert the data to `unit`, rescaling the values by the conversion
         factor (requires a unit already set and `unit_backend="pint"`).
         """
-        current = self.unit
+        current = self.units
         if current is None:
-            raise ValueError("to_unit: this tensor has no unit to convert")
+            raise ValueError("to_units: this tensor has no unit to convert")
         unit = _units.normalise(unit)
         scaled = Tensor.mul(self, _units.factor(current, unit))
-        return _carry(self, scaled, _data_unit=unit)
+        return _carry(self, scaled, _data_units=unit)
 
     @property
     def magnitude(self) -> tx.Self:
         """
         The tensor with its **data unit dropped** -- the bare values, still
         an `XTensor` with the same names and coordinates. A view (no data
-        copy); the original is unchanged. `x.magnitude.unit` is always
+        copy); the original is unchanged. `x.magnitude.units` is always
         `None`. (To get a plain `torch.Tensor`, use
         `x.as_subclass(torch.Tensor)`.)
         """
-        return _carry(self, self.as_subclass(type(self)), _data_unit=None)
+        return _carry(self, self.as_subclass(type(self)), _data_units=None)
 
     # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
     #
@@ -802,7 +803,7 @@ class XTensor(ExtendedTensor):
             # that axis away; its per-position data unit folds into the base
             # data unit (effective unit = base * product of coord units).
             if _units.active():
-                folded = self.__dict__.get("_data_unit")
+                folded = self.__dict__.get("_data_units")
                 kept = {src for src in sources if src is not None}
                 changed = False
                 for ax, in_name in enumerate(in_names):
@@ -823,7 +824,7 @@ class XTensor(ExtendedTensor):
                         folded = _units.mul(folded, unit)
                         changed = True
                 if changed:
-                    out._data_unit = folded
+                    out._data_units = folded
             out._coords = new_stored
         return out
 
@@ -1252,7 +1253,7 @@ class XTensor(ExtendedTensor):
                     "see #81)"
                 )
             stored_values = dict.__getitem__(coord, "value")
-            unit = stored_values.unit
+            unit = stored_values.units
             query, is_many = _query_values(target, unit)
             frac = _irregular_frac(
                 stored_values.as_subclass(Tensor), query, name
@@ -1284,7 +1285,7 @@ class XTensor(ExtendedTensor):
         # or numeric -- plus any non-dimension coordinate riding on it, since
         # neither corresponds to the new positions; Proposal 0005).
         new_coords = _coords_dropping(self, name)
-        explicit = Coordinate(value=XTensor(query, unit=unit))
+        explicit = Coordinate(value=XTensor(query, units=unit))
         new_coords[name] = (name,), explicit
         out._coords = new_coords
         if not is_many:
@@ -1479,7 +1480,7 @@ class Coordinate(_units.MagicDict):
       tensor is equivalent sugar for the same thing); `["value"]` returns
       the stored array.
 
-    The **position** unit (`["value"].unit`) is distinct from the tensor's
+    The **position** unit (`["value"].units`) is distinct from the tensor's
     own data unit.
     """
 
@@ -1535,7 +1536,7 @@ class Coordinate(_units.MagicDict):
         if isinstance(step, Tensor):
             index = index.to(step)
         values = start + index * step
-        return XTensor(values, unit=spacing["unit"])
+        return XTensor(values, units=spacing["unit"])
 
     def _materialise_axes(self) -> "XTensor":
         """
@@ -1561,7 +1562,7 @@ class Coordinate(_units.MagicDict):
             shape = [1] * ndim
             shape[axis] = size
             total = total + index.view(shape) * component
-        return XTensor(total, unit=spacing["unit"])
+        return XTensor(total, units=spacing["unit"])
 
     def _materialise_curvilinear(self) -> "XTensor":
         """
@@ -1592,7 +1593,7 @@ class Coordinate(_units.MagicDict):
                 out["origin"] = dict.__getitem__(self, "origin").to(unit)
         else:
             out = Coordinate(
-                value=dict.__getitem__(self, "value").to_unit(unit)
+                value=dict.__getitem__(self, "value").to_units(unit)
             )
         if "_size" in self.__dict__:
             out._size = self._size
@@ -1608,7 +1609,7 @@ def as_xtensor(
     *,
     dtype: tx.Any = None,
     device: tx.Any = None,
-    unit: tx.Any = arrayutils._UNSET,
+    units: tx.Any = arrayutils._UNSET,
     names: tx.Any = arrayutils._UNSET,
     coords: tx.Any = arrayutils._UNSET,
 ) -> XTensor:
@@ -1619,7 +1620,7 @@ def as_xtensor(
     strict identity passthrough for an already-a-tensor `value` -- the *same
     object*, never a detaching copy, unlike `torch.tensor(existing_tensor)`'s
     well-known footgun of silently returning a fresh, non-differentiable
-    leaf), and metadata-preserving: `unit`/`names`/`coords` ride through
+    leaf), and metadata-preserving: `units`/`names`/`coords` ride through
     untouched unless a keyword **explicitly** overrides them -- mirroring how
     `torch.as_tensor(t, dtype=..., device=...)` only converts what you pass.
     A given override **replaces wholesale**, never merges (`coords={...}`
@@ -1641,7 +1642,7 @@ def as_xtensor(
     `value`'s own tensor is never mutated: when nothing is overridden and
     `value` is already an `XTensor`, it is returned as-is (the same object,
     metadata included); otherwise the result is always a **fresh** view (no
-    data copy) before any override is applied, so overriding e.g. `unit=`
+    data copy) before any override is applied, so overriding e.g. `units=`
     never reaches back and changes `value`'s own unit as a side effect.
     """
     base = torch.as_tensor(value)
@@ -1656,7 +1657,7 @@ def as_xtensor(
     ):
         base = base.to(dtype=dtype, device=device)
     if isinstance(base, XTensor) and (
-        unit is arrayutils._UNSET
+        units is arrayutils._UNSET
         and names is arrayutils._UNSET
         and coords is arrayutils._UNSET
     ):
@@ -1677,8 +1678,8 @@ def as_xtensor(
         out.__dict__.update(base.__dict__)
     if names is not arrayutils._UNSET:
         out.names = names
-    if unit is not arrayutils._UNSET:
-        out.unit = unit
+    if units is not arrayutils._UNSET:
+        out.units = units
     if coords is not arrayutils._UNSET:
         out.coords = coords
     return out
@@ -1693,7 +1694,7 @@ def is_xtensor(obj: tx.Any) -> bool:
 def _as_unitful(obj: tx.Any) -> tx.Any:
     """Coerce a spacing/origin input to a `Unitful`, preserving a tensor."""
     if isinstance(obj, XTensor):
-        unit = obj.unit
+        unit = obj.units
         if unit is None:
             return _units.Unitful(value=obj, unit=_units.normalise(""))
         return _units.Unitful(value=obj.magnitude, unit=unit)
@@ -1795,7 +1796,7 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
     if _is_explicit_coord(spec):
         if isinstance(spec, tx.Mapping):
             spec = spec["value"]
-        if isinstance(spec, XTensor) and spec.unit is not None:
+        if isinstance(spec, XTensor) and spec.units is not None:
             values = as_xtensor(spec)  # preserve its own unit, graph-safe
         else:
             # force dimensionless -- via the override kwarg, not a post-hoc
@@ -1805,7 +1806,7 @@ def _make_coordinate(spec: tx.Any) -> Coordinate:
             # `unit=None`, its own `names`/`coords` now ride along instead of
             # being silently dropped -- verified inert for every existing
             # caller, since a bare Tensor/number spec has none to preserve.)
-            values = as_xtensor(spec, unit=_units.normalise(""))
+            values = as_xtensor(spec, units=_units.normalise(""))
         if values.ndim != 1:
             raise ValueError(
                 "coords: a numeric coordinate must be 1-D, got shape "
@@ -1871,10 +1872,10 @@ def _make_curvilinear_coordinate(
         )
     if isinstance(spec, tx.Mapping):
         spec = spec["value"]
-    if isinstance(spec, XTensor) and spec.unit is not None:
+    if isinstance(spec, XTensor) and spec.units is not None:
         values = as_xtensor(spec)
     else:
-        values = as_xtensor(spec, unit=_units.normalise(""))
+        values = as_xtensor(spec, units=_units.normalise(""))
     if values.ndim != len(dims):
         raise ValueError(
             f"coords: {key!r} spans {len(dims)} dims {dims!r}, so its "
@@ -2057,7 +2058,7 @@ def _curvilinear_sel_indices(
         if grid_shape is None:
             grid_shape = tuple(grid.shape)
         grids.append(grid.as_subclass(Tensor))
-        units.append(grid.unit)
+        units.append(grid.units)
     n = 1
     for size in grid_shape:
         n *= size
@@ -2376,7 +2377,7 @@ def _numeric_select(
         return _numeric_select_compact(coord, selector, mode, tolerance, name)
     materialised = coord["value"]
     values = materialised.as_subclass(Tensor)
-    unit = materialised.unit
+    unit = materialised.units
     # a `list` selects several positions; a `tuple` is a unitful (value, unit)
     is_many = isinstance(selector, list)
     wanted = list(selector) if is_many else [selector]
@@ -2435,7 +2436,7 @@ def _numeric_select_range(
     else:
         materialised = coord["value"]
         values = materialised.as_subclass(Tensor)
-        unit = materialised.unit
+        unit = materialised.units
         size = values.numel()
     start = (
         None
@@ -2865,7 +2866,7 @@ def _affine_interp_pull(
             values = query.to(torch.get_default_dtype())
             new_coords[nm] = (
                 (name,),
-                Coordinate(value=XTensor(values, unit=unit)),
+                Coordinate(value=XTensor(values, units=unit)),
             )
     out._coords = new_coords
     return out
@@ -2992,7 +2993,7 @@ def _names_of(tensor: tx.Any) -> tuple:
 
 def _unit_of(x: tx.Any) -> tx.Optional[str]:
     """The data unit of `x`, or `None` (a plain tensor/scalar is unitless)."""
-    return x.__dict__.get("_data_unit") if isinstance(x, XTensor) else None
+    return x.__dict__.get("_data_units") if isinstance(x, XTensor) else None
 
 
 def _attach_unit(x: XTensor, operand: tx.Any, op: str) -> XTensor:
@@ -3012,4 +3013,4 @@ def _attach_unit(x: XTensor, operand: tx.Any, op: str) -> XTensor:
     combined = (
         _units.mul(current, unit) if op == "mul" else _units.div(current, unit)
     )
-    return _carry(x, scaled, _data_unit=combined)
+    return _carry(x, scaled, _data_units=combined)

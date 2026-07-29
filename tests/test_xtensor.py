@@ -154,12 +154,12 @@ def test_non_dimension_numeric_coordinate():
         coords={
             "wl": (
                 "i",
-                XTensor(torch.tensor([400.0, 500.0, 600.0]), unit="nm"),
+                XTensor(torch.tensor([400.0, 500.0, 600.0]), units="nm"),
             )
         },
     )
     assert x.coords["wl"]["value"].tolist() == [400.0, 500.0, 600.0]
-    assert x.coords["wl"]["value"].unit == "nm"
+    assert x.coords["wl"]["value"].units == "nm"
 
 
 def test_non_dimension_compact_coordinate_is_rejected():
@@ -284,7 +284,7 @@ def test_compact_coordinate_origin_only_default_spacing_shares_its_unit():
             torch.zeros(4), names=["t"], coords={"t": {"origin": (5.0, "mm")}}
         )
         values = x.coords["t"]["value"]
-        assert values.unit == "millimeter"
+        assert values.units == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             5.0,
             6.0,
@@ -443,7 +443,7 @@ def test_coordinate_origin_unit_defaults_to_spacings_when_unspecified():
             coords={"t": {"spacing": (1.0, "mm"), "origin": 5.0}},
         )
         values = x.coords["t"]["value"]
-        assert values.unit == "millimeter"
+        assert values.units == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             5.0,
             6.0,
@@ -461,7 +461,7 @@ def test_coordinate_origin_converts_into_spacings_unit_when_compatible():
             coords={"t": {"spacing": (0.5, "mm"), "origin": (1.0, "cm")}},
         )
         values = x.coords["t"]["value"]
-        assert values.unit == "millimeter"
+        assert values.units == "millimeter"
         assert values.as_subclass(torch.Tensor).tolist() == [
             10.0,
             10.5,
@@ -510,7 +510,7 @@ def test_coordinate_to_unit_carries_over_the_axis_size_binding():
             coords={"t": {"spacing": (0.5, "mm")}},
         )
         converted = x.coords["t"].to("cm")
-        assert converted["value"].unit == "centimeter"
+        assert converted["value"].units == "centimeter"
         assert converted["value"].as_subclass(
             torch.Tensor
         ).tolist() == pytest.approx([0.0, 0.05, 0.1, 0.15])
@@ -521,7 +521,7 @@ def test_coordinate_to_unit_carries_over_the_axis_size_binding():
             coords={"lat": (("y", "x"), {"spacing": ([10.0, 5.0], "mm")})},
         )
         converted_lat = y.coords["lat"].to("cm")
-        assert converted_lat["value"].unit == "centimeter"
+        assert converted_lat["value"].units == "centimeter"
         assert torch.allclose(
             converted_lat["value"].as_subclass(torch.Tensor),
             torch.tensor(
@@ -715,7 +715,7 @@ def test_curvilinear_coordinate_survives_to_unit():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         lat_raw = torch.arange(12.0).reshape(3, 4)
-        lat = as_xtensor(lat_raw, unit="m")
+        lat = as_xtensor(lat_raw, units="m")
         t = XTensor(
             torch.zeros(3, 4),
             names=["y", "x"],
@@ -1690,7 +1690,7 @@ def test_compact_numeric_coordinate_stores_and_materialises():
     assert cx["spacing"].unit == "mm"  # attribute sugar for a safe key
     # `["value"]` is a derived key: origin + i*spacing
     assert cx["value"].tolist() == [-1.0, -0.5, 0.0, 0.5]
-    assert cx["value"].unit == "mm"  # the POSITION unit
+    assert cx["value"].units == "mm"  # the POSITION unit
 
 
 def test_numeric_and_categorical_coords_coexist():
@@ -1730,7 +1730,7 @@ def test_learnable_spacing_keeps_its_gradient():
     pytest.importorskip("pint")
     leaf = torch.tensor(0.5, requires_grad=True)
     with set_options(unit_backend="pint"):
-        step = XTensor(leaf, unit="mm")
+        step = XTensor(leaf, units="mm")
         x = XTensor(
             torch.zeros(5), names=("t",), coords={"t": {"spacing": step}}
         )
@@ -1739,10 +1739,10 @@ def test_learnable_spacing_keeps_its_gradient():
 
 
 def test_as_xtensor_from_a_bare_scalar():
-    out = as_xtensor(2.0, unit="mm")
+    out = as_xtensor(2.0, units="mm")
     assert isinstance(out, XTensor)
     assert out.item() == 2.0
-    assert out.unit == "mm"
+    assert out.units == "mm"
     assert not out.requires_grad
 
 
@@ -1750,8 +1750,8 @@ def test_as_xtensor_does_not_force_a_float_dtype():
     # must not change the input's natural dtype (review comment on #112):
     # an int value stays int64, matching what Unitful's old do-nothing
     # storage already let downstream arithmetic produce.
-    assert as_xtensor(2, unit="").dtype == torch.int64
-    assert as_xtensor(2.0, unit="").dtype == torch.get_default_dtype()
+    assert as_xtensor(2, units="").dtype == torch.int64
+    assert as_xtensor(2.0, units="").dtype == torch.get_default_dtype()
 
 
 def test_as_xtensor_preserves_the_graph_of_an_existing_tensor():
@@ -1760,7 +1760,7 @@ def test_as_xtensor_preserves_the_graph_of_an_existing_tensor():
     # must go through the as_subclass-based (torch.as_tensor-like) path
     # instead, which never detaches.
     leaf = torch.tensor(2.0, requires_grad=True)
-    out = as_xtensor(leaf, unit="mm")
+    out = as_xtensor(leaf, units="mm")
     assert out.requires_grad
     assert out.data_ptr() == leaf.data_ptr()  # same storage, no copy at all
     (out.as_subclass(torch.Tensor) * 3).sum().backward()
@@ -1772,7 +1772,7 @@ def test_as_xtensor_preserves_the_graph_across_a_dtype_conversion():
     # so it can't be the *same* tensor -- but it must stay a differentiable
     # op, not a detaching copy.
     leaf = torch.tensor(2.0, dtype=torch.float32, requires_grad=True)
-    out = as_xtensor(leaf.to(torch.float64), unit="mm")
+    out = as_xtensor(leaf.to(torch.float64), units="mm")
     assert out.requires_grad
     assert out.dtype == torch.float64
     (out.as_subclass(torch.Tensor) * 5).sum().backward()
@@ -1781,9 +1781,9 @@ def test_as_xtensor_preserves_the_graph_across_a_dtype_conversion():
 
 def test_as_xtensor_from_a_plain_non_xtensor_tensor():
     leaf = torch.tensor(3.0, requires_grad=True)
-    out = as_xtensor(leaf, unit="s")
+    out = as_xtensor(leaf, units="s")
     assert isinstance(out, XTensor)
-    assert out.unit == "s"
+    assert out.units == "s"
     assert out.requires_grad
     (out.as_subclass(torch.Tensor) * 2).sum().backward()
     assert leaf.grad.item() == 2.0
@@ -1797,7 +1797,7 @@ def test_as_xtensor_with_no_overrides_is_a_true_passthrough():
         torch.arange(4.0, requires_grad=True),
         names=("t",),
         coords={"t": {"spacing": 1.0}},
-        unit="mm",
+        units="mm",
     )
     out = as_xtensor(x)
     assert out is x
@@ -1808,10 +1808,10 @@ def test_as_xtensor_preserves_unit_names_coords_by_default():
         torch.arange(4.0),
         names=("t",),
         coords={"t": {"spacing": 2.0, "origin": 1.0}},
-        unit="mm",
+        units="mm",
     )
-    out = as_xtensor(x, unit="s")  # override only unit
-    assert out.unit == "s"
+    out = as_xtensor(x, units="s")  # override only unit
+    assert out.units == "s"
     assert out.names == ("t",)  # preserved
     assert out.coords["t"]["value"].tolist() == [
         1.0,
@@ -1844,10 +1844,10 @@ def test_as_xtensor_override_replaces_wholesale_not_merge():
 
 
 def test_as_xtensor_never_mutates_the_original_when_overriding():
-    x = XTensor(torch.arange(3.0), names=("c",), unit="mm")
-    out = as_xtensor(x, unit="s")
-    assert out.unit == "s"
-    assert x.unit == "mm"  # the original is untouched
+    x = XTensor(torch.arange(3.0), names=("c",), units="mm")
+    out = as_xtensor(x, units="s")
+    assert out.units == "s"
+    assert x.units == "mm"  # the original is untouched
     assert out is not x
 
 
@@ -1856,14 +1856,14 @@ def test_as_xtensor_preserves_axis_descriptors_when_overriding_the_unit():
         torch.arange(2.0),
         axes=[{"name": "x", "type": "space", "unit": "mm"}],
     )
-    out = as_xtensor(x, unit="s")  # override unrelated metadata
+    out = as_xtensor(x, units="s")  # override unrelated metadata
     assert out.axes[0]["type"] == "space"  # descriptor still rides through
 
 
 def test_as_xtensor_explicit_none_clears_the_unit():
-    x = XTensor(torch.arange(3.0), unit="mm")
-    out = as_xtensor(x, unit=None)
-    assert out.unit is None
+    x = XTensor(torch.arange(3.0), units="mm")
+    out = as_xtensor(x, units=None)
+    assert out.units is None
 
 
 def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
@@ -1873,7 +1873,7 @@ def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
         torch.arange(4, dtype=torch.int64),
         names=("t",),
         coords={"t": {"spacing": 1}},
-        unit="mm",
+        units="mm",
     )
     plain = torch.as_tensor(x, dtype=torch.float64)
     assert not isinstance(plain, XTensor)  # the footgun this avoids
@@ -1882,7 +1882,7 @@ def test_as_xtensor_dtype_override_converts_and_preserves_metadata():
     assert isinstance(out, XTensor)
     assert out.dtype == torch.float64
     assert out.names == ("t",)
-    assert out.unit == "mm"
+    assert out.units == "mm"
     # the coordinate itself isn't converted -- only the data's own dtype is
     # -- so its dtype is untouched (int64), not just numerically equal.
     assert out.coords["t"]["value"].dtype == torch.int64
@@ -1909,7 +1909,7 @@ def test_as_xtensor_device_override_actually_converts():
 def test_as_xtensor_dtype_none_is_a_true_passthrough():
     # dtype=None (the default) means "leave as is", same as torch.as_tensor
     # -- combined with no metadata override, still a strict identity return.
-    x = XTensor(torch.arange(4.0), names=("t",), unit="mm")
+    x = XTensor(torch.arange(4.0), names=("t",), units="mm")
     assert as_xtensor(x, dtype=None, device=None) is x
 
 
@@ -1924,9 +1924,9 @@ def test_as_xtensor_dtype_override_is_graph_safe():
 
 
 def test_as_xtensor_dtype_override_from_a_bare_number():
-    out = as_xtensor(2, dtype=torch.float64, unit="mm")
+    out = as_xtensor(2, dtype=torch.float64, units="mm")
     assert out.dtype == torch.float64
-    assert out.unit == "mm"
+    assert out.units == "mm"
 
 
 def test_as_xtensor_no_op_dtype_override_keeps_identity():
@@ -1944,10 +1944,10 @@ def test_as_xtensor_device_override_is_a_noop_on_the_same_device():
 
 
 def test_as_xtensor_dtype_override_composes_with_metadata_override():
-    x = XTensor(torch.arange(3, dtype=torch.int64), names=("c",), unit="mm")
-    out = as_xtensor(x, dtype=torch.float64, unit="s")
+    x = XTensor(torch.arange(3, dtype=torch.int64), names=("c",), units="mm")
+    out = as_xtensor(x, dtype=torch.float64, units="s")
     assert out.dtype == torch.float64
-    assert out.unit == "s"
+    assert out.units == "s"
     assert out.names == ("c",)  # untouched metadata still rides through
 
 
@@ -1978,10 +1978,10 @@ def test_spacing_unitful_converts():
 
 
 def test_explicit_numeric_coordinate_stores_positions():
-    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
+    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), units="s")
     x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
     assert x.coords["t"]["value"].tolist() == [0.0, 0.5, 2.0, 4.0]
-    assert x.coords["t"]["value"].unit == "s"  # position unit
+    assert x.coords["t"]["value"].units == "s"  # position unit
 
 
 def test_explicit_dict_form_is_equivalent_to_a_bare_tensor():
@@ -1990,19 +1990,19 @@ def test_explicit_dict_form_is_equivalent_to_a_bare_tensor():
     bare = XTensor(
         torch.arange(4.0),
         names=("t",),
-        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")},
+        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), units="s")},
     )
     dict_form = XTensor(
         torch.arange(4.0),
         names=("t",),
-        coords={"t": {"value": XTensor([0.0, 0.5, 2.0, 4.0], unit="s")}},
+        coords={"t": {"value": XTensor([0.0, 0.5, 2.0, 4.0], units="s")}},
     )
     assert isinstance(dict_form.coords["t"], Coordinate)
     assert (
         dict_form.coords["t"]["value"].tolist()
         == bare.coords["t"]["value"].tolist()
     )
-    assert dict_form.coords["t"]["value"].unit == "s"
+    assert dict_form.coords["t"]["value"].units == "s"
     assert dict_form.sel(t=0.5).item() == 1.0
 
 
@@ -2020,7 +2020,7 @@ def test_bare_list_of_numbers_is_equivalent_to_the_explicit_dict_form():
         from_list.coords["t"]["value"].tolist()
         == from_dict.coords["t"]["value"].tolist()
     )
-    assert from_dict.coords["t"]["value"].unit == ""
+    assert from_dict.coords["t"]["value"].units == ""
     assert (
         from_dict.coords["t"]["value"].dtype
         == from_list.coords["t"]["value"].dtype
@@ -2033,12 +2033,12 @@ def test_explicit_dict_form_works_for_a_curvilinear_multi_dim_coordinate():
         torch.arange(4.0).reshape(2, 2),
         names=("y", "x"),
         coords={
-            "lat": (("y", "x"), {"value": XTensor(lat, unit="deg")}),
+            "lat": (("y", "x"), {"value": XTensor(lat, units="deg")}),
         },
     )
     assert isinstance(x.coords["lat"], Coordinate)
     assert x.coords["lat"]["value"].tolist() == lat.tolist()
-    assert x.coords["lat"]["value"].unit == "deg"
+    assert x.coords["lat"]["value"].units == "deg"
 
 
 def test_coordinate_value_key_is_attribute_accessible():
@@ -2122,7 +2122,7 @@ def test_compact_coord_slices_affinely():
 
 
 def test_explicit_coord_slices_including_advanced():
-    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")
+    t = XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), units="s")
     x = XTensor(torch.arange(4.0), names=("t",), coords={"t": t})
     assert x[1:3].coords["t"]["value"].tolist() == [0.5, 2.0]
     assert x[[0, 2]].coords["t"]["value"].tolist() == [0.0, 2.0]
@@ -2151,7 +2151,7 @@ def test_coordinate_converts_its_position_unit():
         explicit = XTensor(
             torch.arange(3.0),
             names=("t",),
-            coords={"t": XTensor(torch.tensor([1.0, 2.0, 3.0]), unit="mm")},
+            coords={"t": XTensor(torch.tensor([1.0, 2.0, 3.0]), units="mm")},
         )
         got = explicit.coords["t"].to("um")["value"].tolist()
         assert got == [1000.0, 2000.0, 3000.0]
@@ -2565,7 +2565,7 @@ def test_sel_string_selector_splits_value_and_unit_without_a_backend():
     x = XTensor(
         torch.tensor([10.0, 20.0, 30.0, 40.0]),
         names=("t",),
-        coords={"t": XTensor([0.0, 0.5, 1.0, 1.5], unit="s")},
+        coords={"t": XTensor([0.0, 0.5, 1.0, 1.5], units="s")},
     )
     assert x.sel(t="0s").item() == 10.0
     assert x.sel(t="0.5s").item() == 20.0
@@ -2594,7 +2594,7 @@ def test_sel_explicit_numeric_coordinate():
     x = XTensor(
         torch.arange(4.0),
         names=("t",),
-        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), unit="s")},
+        coords={"t": XTensor(torch.tensor([0.0, 0.5, 2.0, 4.0]), units="s")},
     )
     assert x.sel(t=2.0).item() == 2.0
     assert x.sel(t=1.0, method="nearest").item() == 1.0  # nearest tick is 0.5
@@ -2651,7 +2651,7 @@ def test_sel_range_on_an_explicit_ascending_coordinate():
     x = XTensor(
         torch.arange(5.0),
         names=("t",),
-        coords={"t": XTensor([0.0, 0.5, 2.0, 4.0, 10.0], unit="s")},
+        coords={"t": XTensor([0.0, 0.5, 2.0, 4.0, 10.0], units="s")},
     )
     assert x.sel(t=slice("1s", "5s")).tolist() == [
         2.0,
@@ -2665,7 +2665,7 @@ def test_sel_range_on_an_explicit_descending_coordinate():
     x = XTensor(
         torch.arange(5.0),
         names=("t",),
-        coords={"t": XTensor([10.0, 4.0, 2.0, 0.5, 0.0], unit="s")},
+        coords={"t": XTensor([10.0, 4.0, 2.0, 0.5, 0.0], units="s")},
     )
     assert x.sel(t=slice("1s", "5s")).tolist() == [1.0, 2.0]  # values 4., 2.
 
@@ -3276,7 +3276,7 @@ def test_interp_irregular_is_unit_aware():
             torch.tensor([0.0, 10.0, 20.0, 30.0]),
             names=("t",),
             coords={
-                "t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), unit="s")
+                "t": XTensor(torch.tensor([0.0, 1.0, 4.0, 9.0]), units="s")
             },
         )
         assert x.interp(t="2500ms").item() == pytest.approx(15.0)
@@ -3284,7 +3284,7 @@ def test_interp_irregular_is_unit_aware():
         assert got.tolist() == pytest.approx([5.0, 15.0])
         # the new coordinate carries the *position* unit, not the query's
         coord = got.coords["t"]["value"]
-        assert coord.unit == "second"
+        assert coord.units == "second"
         assert coord.as_subclass(torch.Tensor).tolist() == [0.5, 2.5]
 
 
@@ -5376,47 +5376,47 @@ def test_set_options_rejects_unknown_option_or_value():
 
 
 # ----------------------------------------------------------------------
-# data units (Proposal 0003 — the .unit annotation)
+# data units (Proposal 0003 — the .units annotation)
 # ----------------------------------------------------------------------
 
 
 def test_data_unit_is_stored_carried_and_opaque_without_a_backend():
     # default backend is None: a unit is an opaque string, stored and carried
-    x = XTensor(torch.ones(2, 3), names=("a", "b"), unit="V")
-    assert x.unit == "V"
-    assert x.T.unit == "V"  # rides through reshape/reorder
-    assert x.sum(dim="a").unit == "V"  # ... and reductions
-    assert x[0].unit == "V"  # ... and indexing
-    x.unit = None
-    assert x.unit is None
-    x.unit = "not_a_real_unit"  # no backend -> no validation
-    assert x.unit == "not_a_real_unit"
+    x = XTensor(torch.ones(2, 3), names=("a", "b"), units="V")
+    assert x.units == "V"
+    assert x.T.units == "V"  # rides through reshape/reorder
+    assert x.sum(dim="a").units == "V"  # ... and reductions
+    assert x[0].units == "V"  # ... and indexing
+    x.units = None
+    assert x.units is None
+    x.units = "not_a_real_unit"  # no backend -> no validation
+    assert x.units == "not_a_real_unit"
 
 
 def test_data_unit_pint_backend_validates_and_normalises():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        y = XTensor(torch.ones(3), unit="mV")
-        assert y.unit == "millivolt"  # canonicalised
+        y = XTensor(torch.ones(3), units="mV")
+        assert y.units == "millivolt"  # canonicalised
         with pytest.raises(ValueError, match="invalid unit"):
-            XTensor(torch.ones(2), unit="not_a_unit_zz")
+            XTensor(torch.ones(2), units="not_a_unit_zz")
 
 
-def test_to_unit_converts_the_data_by_the_conversion_factor():
+def test_to_units_converts_the_data_by_the_conversion_factor():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        y = XTensor(torch.ones(3), unit="mV")
-        z = y.to_unit("V")
-        assert z.unit == "volt"
+        y = XTensor(torch.ones(3), units="mV")
+        z = y.to_units("V")
+        assert z.units == "volt"
         assert torch.allclose(
             z.as_subclass(torch.Tensor), torch.full((3,), 0.001)
         )
         with pytest.raises(ValueError, match="no unit to convert"):
-            XTensor(torch.ones(2)).to_unit("V")
+            XTensor(torch.ones(2)).to_units("V")
 
 
 def _united(**kw):
-    return {name: XTensor(torch.ones(3), unit=u) for name, u in kw.items()}
+    return {name: XTensor(torch.ones(3), units=u) for name, u in kw.items()}
 
 
 def test_data_unit_algebra_mul_div_pow():
@@ -5424,20 +5424,20 @@ def test_data_unit_algebra_mul_div_pow():
     with set_options(unit_backend="pint"):
         u = _united(V="V", A="A", s="s")
         V, A, s = u["V"], u["A"], u["s"]
-        assert (V * A).unit == "ampere * volt"  # product
-        assert (V / s).unit == "volt / second"  # quotient
-        assert (V * 2).unit == "volt"  # a scalar is dimensionless
-        assert (V**2).unit == "volt ** 2"  # power (via the `**` operator)
+        assert (V * A).units == "ampere * volt"  # product
+        assert (V / s).units == "volt / second"  # quotient
+        assert (V * 2).units == "volt"  # a scalar is dimensionless
+        assert (V**2).units == "volt ** 2"  # power (via the `**` operator)
 
 
 def test_data_unit_algebra_add_and_compare():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        V = XTensor(torch.ones(3), unit="V")
-        A = XTensor(torch.ones(3), unit="A")
-        assert (V + V).unit == "volt"  # same unit kept
-        assert (V + A).unit is None  # incompatible -> dropped (default policy)
-        assert (V < V).unit is None  # comparison result is unitless
+        V = XTensor(torch.ones(3), units="V")
+        A = XTensor(torch.ones(3), units="A")
+        assert (V + V).units == "volt"  # same unit kept
+        assert (V + A).units is None  # incompatible -> dropped (default)
+        assert (V < V).units is None  # comparison result is unitless
         with set_options(unit_policy="strict"):
             with pytest.raises(ValueError, match="incompatible units"):
                 _ = V + A
@@ -5446,17 +5446,17 @@ def test_data_unit_algebra_add_and_compare():
 def test_data_unit_matmul_multiplies_units():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        M = XTensor(torch.ones(2, 2), unit="V")
-        N = XTensor(torch.ones(2, 2), unit="A")
-        assert (M @ N).unit == "ampere * volt"
+        M = XTensor(torch.ones(2, 2), units="V")
+        N = XTensor(torch.ones(2, 2), units="A")
+        assert (M @ N).units == "ampere * volt"
 
 
 def test_data_unit_transcendental_requires_dimensionless():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        V = XTensor(torch.ones(3), unit="V")
-        assert torch.exp(V).unit is None  # drop the unit (default policy)
-        assert torch.log(XTensor(torch.ones(3))).unit is None  # unitless
+        V = XTensor(torch.ones(3), units="V")
+        assert torch.exp(V).units is None  # drop the unit (default policy)
+        assert torch.log(XTensor(torch.ones(3))).units is None  # unitless
         with set_options(unit_policy="strict"):
             with pytest.raises(ValueError, match="dimensionless"):
                 torch.exp(V)
@@ -5466,17 +5466,17 @@ def test_data_unit_algebra_preserves_autograd():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         leaf = torch.ones(3, requires_grad=True)
-        A = XTensor(torch.ones(3), unit="A")
-        (XTensor(leaf, unit="V") * A).sum().backward()
+        A = XTensor(torch.ones(3), units="A")
+        (XTensor(leaf, units="V") * A).sum().backward()
         assert leaf.grad is not None
 
 
 def test_data_unit_algebra_is_inert_without_a_backend():
     # no backend: no algebra, the unit just rides along opaquely
-    V = XTensor(torch.ones(3), unit="V")
-    A = XTensor(torch.ones(3), unit="A")
-    assert (V * A).unit == "V"  # carried from the left operand, not combined
-    assert torch.exp(V).unit == "V"  # not dropped
+    V = XTensor(torch.ones(3), units="V")
+    A = XTensor(torch.ones(3), units="A")
+    assert (V * A).units == "V"  # carried from the left operand, not combined
+    assert torch.exp(V).units == "V"  # not dropped
 
 
 # -- attaching a unit by multiplication (Proposal 0003 phase 4, §2.4) ---------
@@ -5488,10 +5488,10 @@ def test_multiplying_by_a_unit_attaches_it():
     with set_options(unit_backend="pint"):
         x = XTensor(torch.arange(3.0), names=("t",))
         attached = x * u.mm  # a bare Unit: data unchanged, unit attached
-        assert attached.unit == "millimeter"
+        assert attached.units == "millimeter"
         assert attached.tolist() == [0.0, 1.0, 2.0]
         assert attached.names == ("t",)  # names ride through
-        assert x.unit is None  # the original is never annotated in place
+        assert x.units is None  # the original is never annotated in place
 
 
 def test_multiplying_by_a_quantity_scales_the_data():
@@ -5500,7 +5500,7 @@ def test_multiplying_by_a_quantity_scales_the_data():
     with set_options(unit_backend="pint"):
         x = XTensor(torch.arange(3.0))
         scaled = x * (3 * u.mm)  # a Quantity carries a magnitude
-        assert scaled.unit == "millimeter"
+        assert scaled.units == "millimeter"
         assert scaled.tolist() == [0.0, 3.0, 6.0]
 
 
@@ -5508,19 +5508,19 @@ def test_dividing_by_a_unit_derives_the_quotient_unit():
     pint = pytest.importorskip("pint")
     u = pint.UnitRegistry()
     with set_options(unit_backend="pint"):
-        v = XTensor(torch.ones(3), unit="V")
-        assert (v / u.s).unit == "volt / second"
-        assert (v * u.ohm).unit == "ohm * volt"
+        v = XTensor(torch.ones(3), units="V")
+        assert (v / u.s).units == "volt / second"
+        assert (v * u.ohm).units == "ohm * volt"
 
 
 def test_unit_multiplication_leaves_ordinary_operands_untouched():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        x = XTensor(torch.arange(3.0), unit="m")
+        x = XTensor(torch.arange(3.0), units="m")
         assert (x * 2).tolist() == [0.0, 2.0, 4.0]  # scalar mul, not a unit
         assert (2 * x).tolist() == [0.0, 2.0, 4.0]  # reflected scalar
-        assert (x * x).unit == "meter ** 2"  # two united tensors: algebra
-        assert (x / 2).unit == "meter"  # scalar divide keeps the unit
+        assert (x * x).units == "meter ** 2"  # two united tensors: algebra
+        assert (x / 2).units == "meter"  # scalar divide keeps the unit
 
 
 # -- heterogeneous (per-axis) data units (Proposal 0003 phase 3) --------------
@@ -5545,11 +5545,11 @@ def test_hetero_unit_folds_into_base_on_selection():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         x = _channel_stack()
-        assert x.unit is None  # heterogeneous: no single base unit
-        assert x.sel(q="voltage").unit == "V"  # fold the channel's unit
-        assert x.sel(q="current").unit == "A"
-        assert x.isel(q=2).unit == "W"  # isel folds too
-        assert x[0].unit == "V"  # and plain integer indexing
+        assert x.units is None  # heterogeneous: no single base unit
+        assert x.sel(q="voltage").units == "V"  # fold the channel's unit
+        assert x.sel(q="current").units == "A"
+        assert x.isel(q=2).units == "W"  # isel folds too
+        assert x[0].units == "V"  # and plain integer indexing
 
 
 def test_hetero_unit_selection_multiplies_into_an_existing_base():
@@ -5565,9 +5565,9 @@ def test_hetero_unit_selection_multiplies_into_an_existing_base():
                     {"name": "c", "unit": "m"},
                 ]
             },
-            unit="s",
+            units="s",
         )
-        assert x.isel(q=0).unit == "meter * second"  # base * coord unit
+        assert x.isel(q=0).units == "meter * second"  # base * coord unit
 
 
 def test_hetero_unit_slice_keeps_axis_and_units():
@@ -5575,7 +5575,7 @@ def test_hetero_unit_slice_keeps_axis_and_units():
     with set_options(unit_backend="pint"):
         x = _channel_stack()
         sl = x.isel(q=slice(0, 2))  # keeps the axis -> no fold
-        assert sl.unit is None
+        assert sl.units is None
         assert sl.coords["q"] == (
             {"name": "voltage", "unit": "V"},
             {"name": "current", "unit": "A"},
@@ -5594,24 +5594,24 @@ def test_reduction_folds_a_uniform_axis_unit():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         x = _uniform_stack("V")
-        assert x.sum(dim="q").unit == "V"  # uniform axis unit folds in
-        assert x.mean(dim="q").unit == "V"
-        assert x.sum(dim="q", keepdim=True).unit == "V"  # keepdim too
-        assert x.sum().unit == "V"  # dim=None reduces the unit axis as well
+        assert x.sum(dim="q").units == "V"  # uniform axis unit folds in
+        assert x.mean(dim="q").units == "V"
+        assert x.sum(dim="q", keepdim=True).units == "V"  # keepdim too
+        assert x.sum().units == "V"  # dim=None reduces the unit axis as well
 
 
 def test_reduction_keeps_base_over_a_unitless_axis():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         x = _uniform_stack("V")
-        assert x.sum(dim="t").unit is None  # `t` carries no units; base stays
+        assert x.sum(dim="t").units is None  # `t` carries no units; base stays
 
 
 def test_reduction_over_incompatible_units_drops_or_raises():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         x = _channel_stack()
-        assert x.sum(dim="q").unit is None  # V/A/W incompatible -> dropped
+        assert x.sum(dim="q").units is None  # V/A/W incompatible -> dropped
         with set_options(unit_policy="strict"):
             with pytest.raises(ValueError, match="incompatible units"):
                 x.sum(dim="q")
@@ -5619,8 +5619,8 @@ def test_reduction_over_incompatible_units_drops_or_raises():
 
 def test_hetero_units_are_inert_without_a_backend():
     x = _channel_stack()  # unit_backend=None
-    assert x.sel(q="voltage").unit is None  # no fold when the layer is inert
-    assert x.sum(dim="q").unit is None
+    assert x.sel(q="voltage").units is None  # no fold when the layer is inert
+    assert x.sum(dim="q").units is None
 
 
 # -- phase 4: detach, implicit conversion, heterogeneous contraction ----------
@@ -5629,25 +5629,25 @@ def test_hetero_units_are_inert_without_a_backend():
 def test_magnitude_drops_the_data_unit_but_keeps_names():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        x = XTensor(torch.arange(3.0), names=("t",), unit="V")
+        x = XTensor(torch.arange(3.0), names=("t",), units="V")
         m = x.magnitude
-        assert m.unit is None  # the data unit is stripped
+        assert m.units is None  # the data unit is stripped
         assert m.names == ("t",)  # names/coords ride through
         assert m.tolist() == [0.0, 1.0, 2.0]
-        assert x.unit == "volt"  # the original is unchanged (a view)
+        assert x.units == "volt"  # the original is unchanged (a view)
 
 
 def test_add_implicitly_converts_compatible_units():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        volts = XTensor(torch.ones(3), names=("t",), unit="V")
-        millivolts = XTensor(torch.full((3,), 500.0), names=("t",), unit="mV")
+        volts = XTensor(torch.ones(3), names=("t",), units="V")
+        millivolts = XTensor(torch.full((3,), 500.0), names=("t",), units="mV")
         # right operand converts to the left's unit before adding
         left = volts + millivolts
-        assert left.unit == "volt"
+        assert left.units == "volt"
         assert left.tolist() == [1.5, 1.5, 1.5]
         right = millivolts + volts
-        assert right.unit == "millivolt"
+        assert right.units == "millivolt"
         assert right.tolist() == [1500.0, 1500.0, 1500.0]
         # comparisons convert too
         assert (volts > millivolts).tolist() == [True, True, True]
@@ -5656,9 +5656,9 @@ def test_add_implicitly_converts_compatible_units():
 def test_add_incompatible_units_still_drops_or_raises():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        volts = XTensor(torch.ones(3), unit="V")
-        amps = XTensor(torch.ones(3), unit="A")
-        assert (volts + amps).unit is None  # incompatible -> dropped
+        volts = XTensor(torch.ones(3), units="V")
+        amps = XTensor(torch.ones(3), units="A")
+        assert (volts + amps).units is None  # incompatible -> dropped
         with set_options(unit_policy="strict"):
             with pytest.raises(ValueError, match="incompatible units"):
                 _ = volts + amps
@@ -5671,16 +5671,16 @@ def test_matmul_folds_uniform_contracted_axis_units():
             torch.ones(2, 3),
             names=("i", "k"),
             coords={"k": [{"name": c, "unit": "m"} for c in "abc"]},
-            unit="V",
+            units="V",
         )
         b = XTensor(
             torch.ones(3, 2),
             names=("k", "j"),
             coords={"k": [{"name": c, "unit": "s"} for c in "abc"]},
-            unit="A",
+            units="A",
         )
         # (V·m) · (A·s) — each side's uniform contracted-axis unit folds in
-        assert (a @ b).unit == "ampere * meter * second * volt"
+        assert (a @ b).units == "ampere * meter * second * volt"
 
 
 def test_contraction_over_non_uniform_axis_drops_or_raises():
@@ -5698,7 +5698,7 @@ def test_contraction_over_non_uniform_axis_drops_or_raises():
             },
         )
         b = XTensor(torch.ones(3, 2), names=("k", "j"))
-        assert (a @ b).unit is None  # non-uniform contracted axis -> dropped
+        assert (a @ b).units is None  # non-uniform contracted axis -> dropped
         with set_options(unit_policy="strict"):
             with pytest.raises(ValueError, match="non-uniform"):
                 _ = a @ b
@@ -5707,16 +5707,16 @@ def test_contraction_over_non_uniform_axis_drops_or_raises():
 def test_einsum_and_tensordot_multiply_operand_units():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
-        m = XTensor(torch.ones(2, 2), unit="V")
-        n = XTensor(torch.ones(2, 2), unit="A")
+        m = XTensor(torch.ones(2, 2), units="V")
+        n = XTensor(torch.ones(2, 2), units="A")
         # einsum previously kept only the first operand's base unit
-        assert torch.einsum("ij,jk->ik", m, n).unit == "ampere * volt"
-        assert torch.tensordot(m, n, dims=1).unit == "ampere * volt"
+        assert torch.einsum("ij,jk->ik", m, n).units == "ampere * volt"
+        assert torch.tensordot(m, n, dims=1).units == "ampere * volt"
         # an unparsable equation (ellipsis) falls back to the base product
-        p = XTensor(torch.ones(2, 2, 2), unit="V")
-        q = XTensor(torch.ones(2, 2, 2), unit="A")
+        p = XTensor(torch.ones(2, 2, 2), units="V")
+        q = XTensor(torch.ones(2, 2, 2), units="A")
         out = torch.einsum("...ij,...jk->...ik", p, q)
-        assert out.unit == "ampere * volt"
+        assert out.units == "ampere * volt"
 
 
 def test_combine_axes_accepts_a_per_field_policy():

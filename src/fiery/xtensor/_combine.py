@@ -204,7 +204,7 @@ def _make_matmul(name: str) -> None:
             axa, axb = _matmul_contracted_axes(
                 getattr(input, "ndim", 0), getattr(other, "ndim", 0)
             )
-            unit_kw["_data_unit"] = _contraction_unit(
+            unit_kw["_data_units"] = _contraction_unit(
                 (input, other), ([axa], [axb])
             )
         # The contraction invalidates the coordinate layout; surviving axes
@@ -334,9 +334,9 @@ def _(equation: str, *operands: tx.Any, **kwargs) -> tx.Any:
             base = None
             for operand in flat:
                 base = _units.mul(base, _unit_of(operand))
-            unit_kw["_data_unit"] = base
+            unit_kw["_data_units"] = base
         else:
-            unit_kw["_data_unit"] = _contraction_unit(flat, axes)
+            unit_kw["_data_units"] = _contraction_unit(flat, axes)
     return _carry(
         ref, result, _axis_names=names, _coords={}, _axis_meta=meta, **unit_kw
     )
@@ -360,7 +360,7 @@ def _(a: tx.Any, b: tx.Any, dims: tx.Any = 2, **kwargs) -> tx.Any:
     meta = _merge_axis_meta((a, b), names)
     unit_kw = {}
     if _units.active():
-        unit_kw["_data_unit"] = _contraction_unit(
+        unit_kw["_data_units"] = _contraction_unit(
             (a, b), (sorted(a_contracted), sorted(b_contracted))
         )
     return _carry(

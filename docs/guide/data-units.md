@@ -1,16 +1,16 @@
 # Data units
 
-A tensor's **values** can carry a physical unit — the `.unit` property (a
-constructor `unit=` kwarg or a settable attribute) — that rides through
+A tensor's **values** can carry a physical unit — the `.units` property (a
+constructor `units=` kwarg or a settable attribute) — that rides through
 operations the way names and coordinates do. By default a unit is an opaque
 string; with a units backend it also gains validation, conversion, and
 dimensional algebra:
 
 ```python
-v = xtensor(data, names=("b", "t"), unit="V")
-v.unit                 # "V"
-v.T.unit               # "V"  — carried through reshaping/reduction/indexing
-v.unit = "mV"          # annotate: never changes the data
+v = xtensor(data, names=("b", "t"), units="V")
+v.units                # "V"
+v.T.units              # "V"  — carried through reshaping/reduction/indexing
+v.units = "mV"         # annotate: never changes the data
 ```
 
 By default (`unit_backend=None`) a unit is an **opaque string** — stored and
@@ -20,14 +20,14 @@ and **dimensional algebra**:
 ```python
 from fiery.xtensor import set_options
 with set_options(unit_backend="pint"):     # needs fiery-xtensor[units]
-    volts = xtensor(v, unit="V")
-    amps  = xtensor(a, unit="A")
-    secs  = xtensor(t, unit="s")
-    volts.to_unit("mV")           # converts: rescales the data ×1000
-    (volts * amps).unit           # "ampere * volt"  — units multiply
-    (volts / secs).unit           # "volt / second"
-    (volts ** 2).unit             # "volt ** 2"
-    (volts @ amps).unit           # "ampere * volt"  — matmul multiplies too
+    volts = xtensor(v, units="V")
+    amps  = xtensor(a, units="A")
+    secs  = xtensor(t, units="s")
+    volts.to_units("mV")          # converts: rescales the data ×1000
+    (volts * amps).units          # "ampere * volt"  — units multiply
+    (volts / secs).units          # "volt / second"
+    (volts ** 2).units            # "volt ** 2"
+    (volts @ amps).units          # "ampere * volt"  — matmul multiplies too
 ```
 
 You can also **attach** a unit by multiplying with the backend's own unit
@@ -37,9 +37,9 @@ objects, the way pint builds a `Quantity` from `5 * ureg.metre`:
 import pint
 u = pint.UnitRegistry()
 with set_options(unit_backend="pint"):
-    (x * u.mm).unit              # "millimeter"          — bare unit; data unchanged
-    (x * (3 * u.mm)).unit        # "millimeter", data ×3 — a quantity scales too
-    (v / u.s).unit               # "volt / second"
+    (x * u.mm).units             # "millimeter"          — bare unit; data unchanged
+    (x * (3 * u.mm)).units       # "millimeter", data ×3 — a quantity scales too
+    (v / u.s).units              # "volt / second"
 ```
 
 (Write the unit on the **right** — `x * u.mm`, not `u.mm * x` — so the
@@ -51,8 +51,8 @@ silently **drops** the unit; `set_options(unit_policy="strict")` makes those
 same steps **raise** instead:
 
 ```python
-(volts + amps).unit               # None    — incompatible, dropped
-torch.exp(volts).unit             # None    — exp needs a dimensionless argument
+(volts + amps).units              # None    — incompatible, dropped
+torch.exp(volts).units            # None    — exp needs a dimensionless argument
 with set_options(unit_policy="strict"):
     volts + amps                  # ValueError: incompatible units 'volt' and 'ampere'
 ```
@@ -64,8 +64,8 @@ values:
 
 ```python
 with set_options(unit_backend="pint"):
-    (xtensor(v, unit="V") + xtensor(mv, unit="mV")).unit   # "volt" — mV converted
-    xtensor(v, unit="V").magnitude.unit                    # None   — unit dropped, still an XTensor
+    (xtensor(v, units="V") + xtensor(mv, units="mV")).units  # "volt" — mV converted
+    xtensor(v, units="V").magnitude.units                    # None   — unit dropped, still an XTensor
 ```
 
 ## Heterogeneous (per-axis) units
@@ -83,9 +83,9 @@ with set_options(unit_backend="pint"):
         {"name": "current", "unit": "A"},
         {"name": "power",   "unit": "W"},
     ]})
-    x.unit                     # None    — no single base unit (heterogeneous)
-    x.sel(q="voltage").unit    # "V"     — selecting one position folds its unit in
-    x.sum(dim="q").unit        # None    — V/A/W incompatible -> dropped
+    x.units                     # None    — no single base unit (heterogeneous)
+    x.sel(q="voltage").units    # "V"     — selecting one position folds its unit in
+    x.sum(dim="q").units        # None    — V/A/W incompatible -> dropped
 
     # a *uniform* axis (every position in the same unit) folds cleanly instead:
     uniform = xtensor(data, names=("q", "t"), coords={"q": [
@@ -93,7 +93,7 @@ with set_options(unit_backend="pint"):
         {"name": "vy", "unit": "V"},
         {"name": "vz", "unit": "V"},
     ]})
-    uniform.sum(dim="q").unit  # "V"     — the shared unit folds into the base
+    uniform.sum(dim="q").units  # "V"     — the shared unit folds into the base
 ```
 
 Reducing over such an axis folds a uniform unit into the base or, on
