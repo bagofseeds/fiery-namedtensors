@@ -16,3 +16,13 @@ a[href="https://bagofseeds.github.io/fiery/"]::before {
 [data-md-color-scheme="default"] a[href="https://bagofseeds.github.io/fiery/"]::before {
   background-color: #EE4C2C;
 }
+
+[data-md-color-scheme="default"] .md-logo {
+  /* Changes the color if it uses text/currentColor */
+  color: #EE4C2C !important;
+}
+
+[data-md-color-scheme="default"] .md-logo svg {
+  /* Forces the color if it renders as an inline SVG path */
+  fill: #EE4C2C !important;
+}
