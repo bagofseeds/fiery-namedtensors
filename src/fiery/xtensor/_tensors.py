@@ -99,7 +99,7 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
 
 
 def _either_dict_or_kwargs(
-    positional: tx.Optional[tx.Mapping], kwargs: dict, funcname: str
+    positional: tuple, kwargs: dict, funcname: str
 ) -> dict:
     """
     Merge an optional positional indexer mapping with `**kwargs`, xarray's own
@@ -111,15 +111,26 @@ def _either_dict_or_kwargs(
     can always be spelled out in an explicit dict instead
     (`x.sel({"method": 5.0})`). Passing both raises, rather than silently
     preferring one.
+
+    `positional` is captured via the caller's own `*args` (not a named
+    `indexers=` parameter) so this mapping itself can never collide with a
+    query name either -- `x.sel(indexers=5.0)` on a dim literally called
+    "indexers" reaches `**kwargs` exactly as before this escape hatch
+    existed, since a bare `*args` slot can only ever be filled positionally.
     """
-    if positional is None:
+    if len(positional) > 1:
+        raise TypeError(
+            f"{funcname}: at most one positional argument (an indexers "
+            "mapping) is accepted"
+        )
+    if not positional:
         return dict(kwargs)
     if kwargs:
         raise ValueError(
             f"{funcname}: pass indexers as a dict OR as keyword arguments, "
             "not both"
         )
-    return dict(positional)
+    return dict(positional[0])
 
 
 def _expand_name_ellipsis(names: tuple, ndim: int, fill: tuple) -> tuple:
@@ -1330,7 +1341,7 @@ class XTensor(ExtendedTensor):
 
     def interp(
         self,
-        indexers: tx.Optional[tx.Mapping] = None,
+        *indexers_positional: tx.Mapping,
         method: tx.Any = "linear",
         bound: tx.Any = None,
         extrapolate: tx.Any = None,
@@ -1404,7 +1415,9 @@ class XTensor(ExtendedTensor):
         always bound to the parameter, never reaching the indexers.
         Passing both raises.
         """
-        indexers = _either_dict_or_kwargs(indexers, indexers_kwargs, "interp")
+        indexers = _either_dict_or_kwargs(
+            indexers_positional, indexers_kwargs, "interp"
+        )
         if name is not None and not isinstance(name, str):
             # `name=` binds to this parameter before a same-named indexer
             # ever reaches `**indexers_kwargs` -- so `interp(name=3.0)` on a
@@ -1412,10 +1425,10 @@ class XTensor(ExtendedTensor):
             # nothing at all (name=3.0 stored as an axis name never used,
             # since interp is numeric-only, no query needs a string here).
             # Catching the type mismatch turns that into a loud error;
-            # reach the dim via the indexers= dict instead.
+            # reach the dim via the indexers dict instead.
             raise TypeError(
                 f"interp: name= must be a str or None, got {name!r} -- "
-                "pass indexers={'name': ...} to query a dim literally "
+                "pass interp({'name': ...}) to query a dim literally "
                 "called 'name'"
             )
         out, consumed = self._affine_interp_group(

@@ -2469,6 +2469,27 @@ def test_interp_indexers_dict_and_kwargs_together_raises():
         x.interp({"t": 3.0}, t=3.0)
 
 
+def test_interp_too_many_positional_indexers_raises():
+    x = XTensor(
+        torch.arange(5.0), names=("t",), coords={"t": {"spacing": 2.0}}
+    )
+    with pytest.raises(TypeError, match="at most one positional argument"):
+        x.interp({"t": 2.0}, {"t": 3.0})
+
+
+def test_interp_indexers_is_captured_positionally_not_by_keyword():
+    # the escape hatch mustn't introduce the exact collision it fixes: a
+    # dim literally named "indexers" still has to work as an ordinary
+    # keyword argument, since the positional mapping is captured via
+    # *args, never a named `indexers=` parameter.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("indexers",),
+        coords={"indexers": {"spacing": 2.0}},
+    )
+    assert x.interp(indexers=2.0).item() == 1.0
+
+
 def test_interp_higher_order_needs_the_backend(monkeypatch):
     from fiery.xtensor import _tensors
 
