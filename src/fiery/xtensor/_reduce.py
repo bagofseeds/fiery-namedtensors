@@ -54,7 +54,7 @@ def _resolve_reduce_dim(input: XTensor, dim: tx.Any) -> tx.Any:
     it matches. A query hitting a single axis collapses to a bare `int` (so
     single-`dim`-only reducers like `prod`/`argmax` keep working); one hitting
     several yields a list of positions. Non-query specs pass through
-    [`_resolve_dims`][fiery.xtensor._tensors._resolve_dims] unchanged.
+    [`_resolve_dims`][fiery.xtensor._common._resolve_dims] unchanged.
     """
     has_query = isinstance(dim, dict) or (
         isinstance(dim, (tuple, list))

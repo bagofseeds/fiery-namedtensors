@@ -73,7 +73,7 @@ def _resolve_dims(names: tuple[str | None, ...], dim: tx.Any) -> tx.Any:
     """
     Resolve an axis specifier, or a sequence of them, to integer position(s).
 
-    Wraps [`_resolve_axis`][fiery.xtensor._tensors._resolve_axis]: a
+    Wraps [`_resolve_axis`][fiery.xtensor._common._resolve_axis]: a
     single specifier is resolved directly; a `tuple`/`list` is resolved
     element-wise (keeping its container type); anything else passes through.
     """

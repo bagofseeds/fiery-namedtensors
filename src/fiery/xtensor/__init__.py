@@ -36,6 +36,7 @@ from fiery.xtensor import (
     _shape,  # noqa: F401
     _slice,  # noqa: F401
 )
+from fiery.xtensor._extended import ExtendedTensor
 from fiery.xtensor._factories import (
     xarange,
     xempty,
@@ -60,11 +61,7 @@ from fiery.xtensor._factories import (
     xzeros_like,
 )
 from fiery.xtensor._options import set_options
-from fiery.xtensor._tensors import (
-    ExtendedTensor,
-    XTensor,
-    as_xtensor,
-)
+from fiery.xtensor._tensors import XTensor, as_xtensor
 
 #: Lowercase alias of [`XTensor`][fiery.xtensor.XTensor].
 xtensor = XTensor

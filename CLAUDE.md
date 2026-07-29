@@ -312,7 +312,7 @@ src/fiery/xtensor/
   __init__.py       # public API re-exports; imports the 6 leaf modules below
                      # for their override-registration side effects
   _common.py        # name/axis-descriptor plumbing, no torch-subclass knowledge
-  _extended.py       # ExtendedTensor: the generic override-registry base class
+  _extended.py      # ExtendedTensor: the generic override-registry base class
   _selection.py     # label/numeric-tolerance/closed-form .sel math, no
                      # XTensor/Coordinate dependency of its own
   _meta.py          # axis-descriptor/unit reconciliation shared by 2+ leaves
@@ -448,10 +448,10 @@ to the matching module (or a new one):
 - **CONVENIENCE** — `xvector`/`xmatrix` factory functions (in `_factories.py`),
   not subclasses.
 
-Shared helpers: `_carry`, `_coords_for` (keep surviving coords, in
-`_tensors.py`), `_slice_labels` (1-D label slicer, in `_selection.py`),
-`_broadcast_batch_names`/`_merge_axis_meta` (multi-operand descriptor
-reconciliation, in `_meta.py`).
+Shared helpers: `_carry` (in `_common.py`), `_coords_for` (keep surviving
+coords, in `_tensors.py`), `_slice_labels` (1-D label slicer, in
+`_selection.py`), `_broadcast_batch_names`/`_merge_axis_meta` (multi-operand
+descriptor reconciliation, in `_meta.py`).
 
 ## Conventions specific to this repo (do not regress)
 
