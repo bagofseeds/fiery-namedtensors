@@ -2017,8 +2017,12 @@ def _affine_sel_indices(
     # coordinate NAME (not dim: the gap is meaningful per coordinate, since
     # several can share the same dims) and enforce it the same way the 1-D
     # path does, so a bare `.sel(lat=.., lon=..)` stays exact by default too.
+    # Built once on `matrix`'s own device/dtype (not implicitly CPU) -- a
+    # per-name `torch.tensor(rounded, ...)` with no `device=` would silently
+    # reintroduce the exact cross-device bug fix #2 (above) already closed.
+    rounded_t = torch.tensor(rounded, dtype=matrix.dtype, device=matrix.device)
     for name, vec, base, target, unit in per_name:
-        predicted = base + float(vec @ torch.tensor(rounded, dtype=vec.dtype))
+        predicted = base + float(vec @ rounded_t)
         gap = abs(predicted - target)
         tol = None if tolerance is None else _selector_value(tolerance, unit)
         _check_sel_tolerance(gap, tol, target, sel_mode, indexers[name], name)
