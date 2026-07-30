@@ -24,6 +24,95 @@ _HAS_MOVEAXIS = hasattr(torch, "moveaxis")
 _HAS_BROADCAST_TO = hasattr(torch, "broadcast_to")
 
 # ----------------------------------------------------------------------
+# dispatch machinery: method form vs. functional form (issue #160)
+# ----------------------------------------------------------------------
+
+
+def test_method_form_runs_the_override_body_exactly_once(monkeypatch):
+    # `x.sum(...)` used to run `_reduce_names` twice: once directly (Python
+    # attribute lookup finds the registered method without ever going
+    # through `__torch_function__`), then again when that call's own
+    # `base(input, ...)` re-entered `__torch_function__` and found the same
+    # override a second time. `torch.sum(x, ...)` only ever ran it once.
+    import fiery.xtensor._reduce as _reduce
+
+    calls = []
+    orig = _reduce._reduce_names
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(_reduce, "_reduce_names", counting)
+
+    x = XTensor(torch.arange(6.0).reshape(2, 3), names=("a", "b"))
+
+    calls.clear()
+    method_result = x.sum(dim="a")
+    assert len(calls) == 1
+
+    calls.clear()
+    functional_result = torch.sum(x, 0)
+    assert len(calls) == 1
+
+    assert method_result.names == functional_result.names == ("b",)
+    assert method_result.tolist() == functional_result.tolist()
+
+
+def test_pointwise_method_functional_and_operator_forms_run_once(monkeypatch):
+    import fiery.xtensor._pointwise as _pointwise
+
+    calls = []
+    orig = _pointwise._binary
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(_pointwise, "_binary", counting)
+
+    x = XTensor(torch.ones(2, 3), names=("a", "b"))
+    y = XTensor(torch.ones(2, 3), names=("a", "b"))
+
+    calls.clear()
+    x.add(y)
+    assert len(calls) == 1
+
+    calls.clear()
+    torch.add(x, y)
+    assert len(calls) == 1
+
+    calls.clear()
+    x + y
+    assert len(calls) == 1
+
+
+def test_method_form_pointwise_op_on_partially_overlapping_names():
+    # the double-execution bug (#160) had a user-visible symptom beyond
+    # wasted work: re-running `_binary` on its own already name-aligned
+    # output (rather than the original operands) could feed it a `None`
+    # sitting after a named axis on the second pass, even though the
+    # operands' own names never had that shape -- so every method-form
+    # pointwise op on two operands with only partially-overlapping name
+    # sets (needing the union-broadcast path in `_align_by_name`) used to
+    # raise, while the functional and operator forms of the exact same op
+    # (which only ever ran `_binary` once) both succeeded.
+    a = XTensor(torch.ones(2, 3), names=("a", "b"))
+    b = XTensor(torch.ones(3, 4), names=("b", "c"))
+    expected_names = ("a", "b", "c")
+    expected_shape = (2, 3, 4)
+
+    functional = torch.add(a, b)
+    operator_form = a + b
+    method = a.add(b)  # used to raise ValueError before the fix
+
+    for out in (functional, operator_form, method):
+        assert out.names == expected_names
+        assert out.shape == expected_shape
+    assert torch.equal(method, functional)
+
+
+# ----------------------------------------------------------------------
 # dimensions (names)
 # ----------------------------------------------------------------------
 
