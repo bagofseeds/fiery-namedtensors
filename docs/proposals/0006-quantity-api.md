@@ -17,7 +17,7 @@ is also a named tensor" — but `XTensor` doesn't yet expose a few small,
 frequently-reached-for corners of `pint.Quantity`'s API: dimensionality,
 compatibility checks, a convert-and-drop shortcut, in-place conversion, and
 the unit-simplification family (`to_base_units`/`to_reduced_units`/
-`to_compact`). This proposal scopes exactly those additions, resolves the
+`to_compact`/`to_preferred`). This proposal scopes exactly those additions, resolves the
 `.magnitude` vs. complex-`abs` naming question raised alongside #143, and
 specifies the graceful-degradation contract for every new member when no unit
 backend is selected.
@@ -51,17 +51,17 @@ m.startswith("_")]`), grouped by what to do with each:
 | `m_as(unit)` | **add** — convert-and-drop shortcut (§2.3) |
 | `m`, `u` (short aliases for `magnitude`/`units`) | **skip** — too terse for a public API, no torch precedent |
 | `ito` | **add**, as `.to_units_(unit)` (§2.4) — in-place conversion; `XTensor` already has this pattern (`rename_`/`swap_dims_`), see revised reasoning below |
-| `to_base_units`, `to_reduced_units`, `to_compact` | **add** (§2.5) — deterministic, no policy needed; mimic pint directly |
-| `to_preferred`, `to_root_units`, `to_unprefixed` | **defer** — `to_preferred` needs a preferred-units-table policy pint itself doesn't default (§3); `to_root_units`/`to_unprefixed` are niche pint-registry-system-specific variants, not proposed here |
+| `to_base_units`, `to_reduced_units`, `to_compact`, `to_preferred` | **add** (§2.5) — all four are a thin pass-through to the backend, no XTensor-level policy needed even for `to_preferred` (see revised reasoning below) |
+| `to_root_units`, `to_unprefixed` | **skip** — niche pint-registry-system-specific variants, not proposed here |
 | `ito_base_units`, `ito_preferred`, `ito_reduced_units`, `ito_root_units`, `ito_unprefixed` | **skip for now** — in-place variants of the §2.5 family; real but rarer than the plain conversions, not worth the surface area yet |
 | `plus_minus` | **skip** — uncertainty propagation, no analog in scope |
 | `to_timedelta`, `from_list`/`from_sequence`/`from_tuple`, `visualize`, `compute`, `persist`, `force_ndarray*`, `format_babel` | **skip** — Dask/pandas/babel-formatting interop, not applicable |
 | `real`, `imag`, `T`, `dot`, `prod`, `clip`, `fill`, `flat`, `searchsorted`, `tolist`, `shape`, `ndim`, `dtype`, `compare`, `unit_items`, `compatible_units`, `UnitsContainer` | **already inherited** — these are `torch.Tensor`/array-protocol members pint re-exposes for numpy interop; `XTensor` already has them natively as a `Tensor` subclass, carrying the unit through per 0003 §4's catch-all structure-preserving row |
 
-So the actual proposal is eight new members across §2.1–2.5 (`dimensionality`,
+So the actual proposal is nine new members across §2.1–2.5 (`dimensionality`,
 `dimensionless`, `is_compatible_with`, `m_as`, `to_units_`, `to_base_units`,
-`to_reduced_units`, `to_compact`) plus one explicit non-goal worth recording
-so it isn't re-litigated later (§3).
+`to_reduced_units`, `to_compact`, `to_preferred`) — no non-goals remain once
+`to_preferred` moved into scope (§2.5).
 
 ## 2. What to add
 
@@ -214,36 +214,63 @@ doesn't transfer cleanly anyway.
 below (`ito_base_units` etc.) — real, but rarer than plain conversion, and
 easy to add later following the same pattern once there's demand.
 
-### 2.5 The unit-simplification family: `to_base_units`, `to_reduced_units`, `to_compact`
+### 2.5 The unit-simplification family: `to_base_units`, `to_reduced_units`, `to_compact`, `to_preferred`
 
-Revised from the first draft, which deferred this whole family behind a
-"needs a policy decision" concern. Checked directly against pint: only
-`to_preferred` actually needs one (an explicit preferred-units table — it
-raises `'default_preferred_units' is not defined in the unit registry` with
-none supplied). `to_base_units`, `to_reduced_units`, and `to_compact` are all
-**deterministic** — pint computes them from the unit registry alone, no
-table or config required:
+Revised twice now. First draft deferred this whole family behind a "needs a
+policy decision" concern; second draft split it, moving in the three
+deterministic members but keeping `to_preferred` out, reasoning that an
+explicit preferred-units *table* needed a home (a `set_options` global?
+Per-call?) that 0003 never had to provide. Raised in review: why not just
+defer entirely to whatever pint does there, the same way `to_base_units`
+et al. already do? Checked pint's own signature directly —
+`to_preferred(preferred_units: list[UnitLike] | None = None)` — and that
+settles it: it's a **per-call optional argument**, not a registry-wide
+setting `XTensor` would need to own. Passing nothing reproduces pint's exact
+behaviour (raises `'default_preferred_units' is not defined in the unit
+registry'` if the backend registry has no default configured); passing a
+list is the caller supplying the table **at the call site**, same as pint
+itself. There's no policy for this package to invent — it's a pure
+pass-through:
 
 ```python
 >>> q = ureg.Quantity(5000, "g*mm/s**2")
->>> q.to_base_units()      # -> 0.005 kilogram * meter / second ** 2
->>> q.to_reduced_units()   # -> 5000 gram * millimeter / second ** 2  (this case, no-op)
->>> q.to_compact()         # -> 5.0 gram * meter / second ** 2
+>>> q.to_base_units()             # -> 0.005 kilogram * meter / second ** 2
+>>> q.to_reduced_units()          # -> 5000 gram * millimeter / second ** 2 (this case, no-op)
+>>> q.to_compact()                # -> 5.0 gram * meter / second ** 2
+>>> q.to_preferred([ureg.N])      # -> 0.005 newton  (only with an explicit or registry-default table)
 ```
 
-So these three are in scope now, each a thin wrapper mirroring `to_units`'s
-own shape (compute a target unit string via the backend, then reuse the same
+All four are in scope, each a thin wrapper mirroring `to_units`'s own shape
+(compute a target unit string via the backend, then reuse the same
 convert-and-carry machinery `to_units` already has):
 
 ```python
 def to_base_units(self) -> tx.Self: ...    # convert to SI base units
 def to_reduced_units(self) -> tx.Self: ... # convert to the reduced/simplified form
 def to_compact(self) -> tx.Self: ...       # pick a "nice"-scale prefix
+def to_preferred(
+    self, preferred_units: tx.Optional[tx.List[str]] = None
+) -> tx.Self:
+    """
+    Convert to whichever unit the backend's preferred-units logic picks.
+    `preferred_units` is a list of unit strings to guide it (mirrors
+    pint's `Quantity.to_preferred`); omit it to use the backend
+    registry's own default, which raises if none is configured -- exactly
+    pint's behaviour, not a new one. Requires a unit already set and
+    `unit_backend="pint"`.
+    """
 ```
 
-Each requires `unit_backend="pint"` and a unit already set, same failure mode
-as `to_units()`. `to_preferred(units)` (the one that genuinely needs a table)
-stays out of scope for now — see §3.
+pint's own `to_preferred` wants `Unit` objects in the list, not strings
+(`AttributeError: 'str' object has no attribute 'dimensionality'` if you pass
+plain strings) — so the wrapper normalises each string in `preferred_units`
+to `ureg.Unit(s)` before delegating, keeping the string-only input contract
+the rest of this API already has (same shape as `x * u.mm` already accepting
+a backend-native operand at the call boundary, 0003 §2.4, while storage stays
+canonical strings).
+
+Each of the four requires `unit_backend="pint"` and a unit already set, same
+failure mode as `to_units()`.
 
 Implementation note: since this is composition on top of `to_units`, it may
 land as a follow-up PR after the core §2.1–2.4 additions rather than in the
@@ -264,36 +291,18 @@ Same contract for the new members:
 | `.is_compatible_with(unit)` | `_units.compatible()` already degrades to plain string equality without a backend (existing behaviour, unchanged) — no new failure mode needed |
 | `.m_as(unit)` | inherits `to_units()`'s existing `ValueError` on `self.units is None` or no backend |
 | `.to_units_(unit)` | same `ValueError` contract as `.to_units()` (§2.4) |
-| `.to_base_units()` / `.to_reduced_units()` / `.to_compact()` | same `ValueError` contract as `.to_units()` (§2.5) |
+| `.to_base_units()` / `.to_reduced_units()` / `.to_compact()` / `.to_preferred(...)` | same `ValueError` contract as `.to_units()` (§2.5) |
 
 No other existing 0003 member was found to have a gap during this audit — the
 constructor, `.units` get/set, and `.to_units()` all already fail with a
 `ValueError` naming the missing backend rather than an opaque `AttributeError`.
 
-## 3. Explicit non-goal: `to_preferred` (needs a policy this proposal doesn't set)
+## 3. Open questions
 
-pint's `to_preferred(units)` rewrites a compound unit toward whichever member
-of a caller-supplied (or registry-default) **preferred-units table** matches
-its dimensionality (e.g. simplify `kg*m/s**2` toward `N` because `N` was
-listed as preferred for that dimensionality) — unlike `to_base_units`/
-`to_reduced_units`/`to_compact` (§2.5), it has no sensible parameter-free
-default; pint itself raises without an explicit or registry-configured table.
-Adding it means deciding *where that table lives* (a `set_options(...)`
-global, a per-call argument, both?) — a genuinely new kind of policy decision
-0003 never had to make, since nothing before now let a unit's *form* (as
-opposed to its *value*) be configured. Recording as an open question (§4)
-rather than silently dropping it.
-
-## 4. Open questions
-
-1. **`to_preferred`** (§3): worth adding now with a `set_options`-scoped
-   preferred-units table, or a future issue once there's a concrete use case?
-   `to_base_units`/`to_reduced_units`/`to_compact` (§2.5) don't wait on this
-   either way, since they need no such table.
-2. Confirm `.magnitude` naming (§5) doesn't need revisiting given the pint
+1. Confirm `.magnitude` naming (§4) doesn't need revisiting given the pint
    precedent found below.
 
-## 5. Resolving the `.magnitude` vs. complex-`abs` question
+## 4. Resolving the `.magnitude` vs. complex-`abs` question
 
 The issue raised: does `.magnitude` (0003's "drop the unit annotation" verb)
 read confusingly against the mathematical sense of "magnitude of a complex
