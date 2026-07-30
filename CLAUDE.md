@@ -299,6 +299,28 @@ pattern is worth internalising rather than re-discovering.
   contracted axis drops/raises. An `einsum` equation the parser can't read
   (ellipsis) falls back to the base-unit product.
 
+- **the `pint.Quantity`-shaped API** (Proposal 0006): queries
+  `dimensionality`/`dimensionless`/`unitless`/`is_compatible_with`, short
+  forms `m`/`u`/`m_as`, in-place `to_units_`, and the simplification family
+  `to_base_units`/`to_reduced_units`/`to_compact`/`to_preferred` plus their
+  four `_`-suffixed in-place twins. `.to()` is now overridden (it was plain
+  `Tensor.to` before): same dtype/device forms, plus a **positional** backend
+  `Unit`/`Quantity` (never a string — that stays torch's device spelling) and
+  `units=`/`names=`/`coords=` overrides — `units=` *converts* (via
+  `to_units`, so `units=None` raises rather than clearing), `names=`/`coords=`
+  delegate to `as_xtensor`. `.to_()` is the in-place counterpart: metadata
+  mutates through `to_units_` / the `names`/`coords` setters, a real
+  dtype/device change raises. Every backend-computed unit goes through a new
+  `_units` adapter op (`dimensionality`/`unitless`/`base_units`/
+  `reduced_units`/`compact_units`/`preferred_units`) so `_tensors.py` never
+  touches pint itself; `to_compact` feeds the backend the largest magnitude
+  present, since the compact prefix depends on the values, not just the unit.
+  With no backend each member raises a `ValueError` naming
+  `unit_backend='pint'`, except `dimensionless`/`unitless` (fall back to `not
+  bool(units)` — this also fixed `_units.dimensionless()`'s own no-backend
+  answer for an explicitly empty unit) and `is_compatible_with` (falls back
+  to string equality).
+
 Select by label with `.sel`, by position with `.isel`, or reach a single label
 by attribute (`x.red`). Ported (and since substantially reshaped) from a
 work-in-progress in `balbasty/magnetix`

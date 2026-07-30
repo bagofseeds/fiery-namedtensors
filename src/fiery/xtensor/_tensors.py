@@ -369,6 +369,50 @@ class XTensor(ExtendedTensor):
             return
         self._data_units = _units.normalise(value)
 
+    @property
+    def dimensionality(self) -> str:
+        """
+        The physical dimensionality of this tensor's unit (e.g. `"[length]"`,
+        `"[mass] * [length] ** 2 / [time] ** 3"`), or `""` if unitless.
+        Requires `unit_backend="pint"`.
+        """
+        return _units.dimensionality(self.units)
+
+    @property
+    def dimensionless(self) -> bool:
+        """
+        Whether this tensor's unit is dimensionless (or unset). With no unit
+        backend this is `not bool(self.units)` -- `True` for no unit or an
+        explicitly empty one, `False` for any opaque unit string, since
+        there's no dimensionality system to consult otherwise.
+        """
+        return _units.dimensionless(self.units)
+
+    @property
+    def unitless(self) -> bool:
+        """
+        Whether this tensor has literally **no unit at all** -- a stricter
+        check than `dimensionless`. Angle units are the case that splits
+        them: `xtensor(x, units="rad").dimensionless` is `True` (an angle is
+        dimensionally trivial) but `unitless` is `False` (it still names a
+        unit). With no backend the two coincide exactly
+        (`not bool(self.units)` for both), since there's no dimensionality
+        system to tell them apart. Requires `unit_backend="pint"` for the two
+        to actually differ.
+        """
+        return _units.unitless(self.units)
+
+    def is_compatible_with(self, unit: str) -> bool:
+        """
+        Whether this tensor's unit shares a dimensionality with `unit` (so
+        `to_units(unit)` would succeed). `False` if this tensor has no unit.
+        Requires `unit_backend="pint"`.
+        """
+        current = self.units
+        if current is None:
+            return False
+        return _units.compatible(current, _units.normalise(unit))
+
     def to_units(self, unit: str) -> tx.Self:
         """
         Convert the data to `unit`, rescaling the values by the conversion
@@ -381,6 +425,26 @@ class XTensor(ExtendedTensor):
         scaled = Tensor.mul(self, _units.factor(current, unit))
         return _carry(self, scaled, _data_units=unit)
 
+    def to_units_(self, unit: str) -> tx.Self:
+        """
+        Convert to `unit` **in place** -- rescales the data and updates the
+        unit annotation on `self`, returning `self`. Same restrictions as any
+        other in-place op (`mul_`, `add_`, ...): raises on a leaf tensor that
+        requires grad, and raises if the scale factor can't be applied
+        without changing dtype. Requires a unit already set and
+        `unit_backend="pint"`.
+        """
+        current = self.units
+        if current is None:
+            raise ValueError("to_units_: this tensor has no unit to convert")
+        unit = _units.normalise(unit)
+        # Rescale first: nothing above this line has touched `self`, so a
+        # failure (bad unit, incompatible dimensions, a grad-requiring leaf,
+        # an integer dtype) leaves the annotation as it was.
+        self.mul_(_units.factor(current, unit))
+        self._data_units = unit
+        return self
+
     @property
     def magnitude(self) -> tx.Self:
         """
@@ -389,8 +453,244 @@ class XTensor(ExtendedTensor):
         copy); the original is unchanged. `x.magnitude.units` is always
         `None`. (To get a plain `torch.Tensor`, use
         `x.as_subclass(torch.Tensor)`.)
+
+        This drops the *unit annotation* -- it is not the mathematical
+        modulus. For the absolute value of a (possibly complex) tensor, use
+        `x.abs()` / `torch.abs(x)`.
         """
         return _carry(self, self.as_subclass(type(self)), _data_units=None)
+
+    def m_as(self, unit: str) -> tx.Self:
+        """
+        Convert to `unit` and drop the annotation in one step -- sugar for
+        `x.to_units(unit).magnitude`. Still an `XTensor` (see `magnitude`'s
+        own note on getting a plain `torch.Tensor`).
+        """
+        return self.to_units(unit).magnitude
+
+    @property
+    def m(self) -> tx.Self:
+        """Alias for `magnitude`."""
+        return self.magnitude
+
+    @property
+    def u(self) -> tx.Optional[str]:
+        """Alias for `units`."""
+        return self.units
+
+    # -- unit simplification (Proposal 0006 §2.7) --------------------------
+    #
+    # Each of these asks the backend which unit to land in, then reuses the
+    # ordinary `to_units` / `to_units_` conversion. `to_compact` is the one
+    # whose answer depends on the *values* (it picks the prefix that keeps
+    # them near 1), so it feeds the backend a representative magnitude.
+
+    def _simplification_target(
+        self, name: str, operation: tx.Callable, **kwargs: tx.Any
+    ) -> str:
+        """The unit one of the `to_*` simplifications should convert to."""
+        current = self.units
+        if current is None:
+            raise ValueError(f"{name}: this tensor has no unit to convert")
+        return operation(current, **kwargs)
+
+    def _compact_target(self, name: str) -> str:
+        # Unlike the other three, the compact unit depends on how big the
+        # values actually are, so the backend is given the largest magnitude
+        # present as a stand-in for the whole tensor.
+        magnitude = 1.0
+        if self.numel():
+            largest = self.as_subclass(Tensor).detach().abs().max().item()
+            if math.isfinite(largest):
+                magnitude = largest
+        return self._simplification_target(
+            name, _units.compact_units, magnitude=magnitude
+        )
+
+    def to_base_units(self) -> tx.Self:
+        """
+        Convert to the backend's base units (SI base units under pint).
+        Requires a unit already set and `unit_backend="pint"`.
+        """
+        return self.to_units(
+            self._simplification_target("to_base_units", _units.base_units)
+        )
+
+    def to_base_units_(self) -> tx.Self:
+        """In-place variant of `to_base_units`."""
+        return self.to_units_(
+            self._simplification_target("to_base_units_", _units.base_units)
+        )
+
+    def to_reduced_units(self) -> tx.Self:
+        """
+        Convert to the backend's reduced (simplified) form of this unit.
+        Requires a unit already set and `unit_backend="pint"`.
+        """
+        return self.to_units(
+            self._simplification_target(
+                "to_reduced_units", _units.reduced_units
+            )
+        )
+
+    def to_reduced_units_(self) -> tx.Self:
+        """In-place variant of `to_reduced_units`."""
+        return self.to_units_(
+            self._simplification_target(
+                "to_reduced_units_", _units.reduced_units
+            )
+        )
+
+    def to_compact(self) -> tx.Self:
+        """
+        Convert to the unit these values read most compactly in -- the prefix
+        that keeps them near 1 (`200e-9 s` becomes `200 ns`), picked from the
+        largest magnitude present. Requires a unit already set and
+        `unit_backend="pint"`.
+        """
+        return self.to_units(self._compact_target("to_compact"))
+
+    def to_compact_(self) -> tx.Self:
+        """In-place variant of `to_compact`."""
+        return self.to_units_(self._compact_target("to_compact_"))
+
+    def to_preferred(
+        self, preferred_units: tx.Optional[tx.List[str]] = None
+    ) -> tx.Self:
+        """
+        Convert to whichever unit the backend's preferred-units logic picks.
+        `preferred_units` is a list of unit strings to guide it; omit it to
+        use the backend registry's own default, which raises if none is
+        configured. Requires a unit already set and `unit_backend="pint"`.
+
+        ```python
+        force.to_preferred(["N"])          # 5000 g·mm/s² -> 0.005 N
+        ```
+        """
+        return self.to_units(
+            self._simplification_target(
+                "to_preferred",
+                _units.preferred_units,
+                preferred=preferred_units,
+            )
+        )
+
+    def to_preferred_(
+        self, preferred_units: tx.Optional[tx.List[str]] = None
+    ) -> tx.Self:
+        """In-place variant of `to_preferred`."""
+        return self.to_units_(
+            self._simplification_target(
+                "to_preferred_",
+                _units.preferred_units,
+                preferred=preferred_units,
+            )
+        )
+
+    # -- dtype / device / metadata conversion (Proposal 0006 §2.5-2.6) -----
+
+    def _parse_to_units(
+        self, name: str, args: tuple, kwargs: dict, units: tx.Any
+    ) -> tx.Tuple[tuple, tx.Any]:
+        """
+        Split `.to()`/`.to_()`'s arguments into `(args, unit)`: a lone
+        positional backend `Unit`/`Quantity` is sugar for `units=`, and a
+        backend object given either way reduces to its unit string.
+        """
+        if (
+            args
+            and _units.is_unit_like(args[0])
+            and units is arrayutils._UNSET
+            and len(args) == 1
+            and not kwargs
+        ):
+            units, args = args[0], ()
+        if units is None:
+            # `units=` converts, and there is no such thing as converting
+            # *to* no unit -- clearing an annotation is a different verb.
+            raise ValueError(
+                f"{name}: units=None is not a conversion target; assign "
+                "`x.units = None` to clear a tensor's unit instead"
+            )
+        if _units.is_unit_like(units):
+            _, units = _units.split_quantity(units)
+        return args, units
+
+    def to(
+        self,
+        *args: tx.Any,
+        units: tx.Any = arrayutils._UNSET,
+        names: tx.Any = arrayutils._UNSET,
+        coords: tx.Any = arrayutils._UNSET,
+        **kwargs: tx.Any,
+    ) -> tx.Self:
+        """
+        Same as `torch.Tensor.to` (dtype/device, positional or keyword), plus
+        `units=`/`names=`/`coords=` overrides.
+
+        ```python
+        x.to(torch.float64)              # exactly as before
+        x.to(units="mm")                 # convert the data unit
+        x.to(ureg.mm)                    # ... same, from a backend unit
+        x.to(torch.float64, names=("b", "t"))
+        ```
+
+        `units=` **converts** (like `to_units`, so a unit must already be
+        set), matching what `.to()` means everywhere else -- unlike
+        `as_xtensor(x, units=...)`, which *annotates*. `names=`/`coords=` are
+        the instance-method form of
+        [`as_xtensor`][fiery.xtensor.as_xtensor]'s overrides of the same
+        name, and replace wholesale. A bare positional backend
+        `Unit`/`Quantity` is sugar for `units=` with that same object; unlike
+        the positional form, `units=` also accepts a plain unit string (a
+        positional string stays `torch.Tensor.to`'s own device spelling,
+        `"cuda"`/`"cpu"`).
+        """
+        args, units = self._parse_to_units("to", args, kwargs, units)
+        result = Tensor.to(self, *args, **kwargs)
+        if (
+            units is arrayutils._UNSET
+            and names is arrayutils._UNSET
+            and coords is arrayutils._UNSET
+        ):
+            return result
+        if units is not arrayutils._UNSET:
+            result = result.to_units(units)
+        return as_xtensor(result, names=names, coords=coords)
+
+    def to_(
+        self,
+        *args: tx.Any,
+        units: tx.Any = arrayutils._UNSET,
+        names: tx.Any = arrayutils._UNSET,
+        coords: tx.Any = arrayutils._UNSET,
+        **kwargs: tx.Any,
+    ) -> tx.Self:
+        """
+        In-place `.to()`, with the same `units=`/`names=`/`coords=`
+        overrides, each going through an already in-place path -- but "in
+        place" doesn't mean "always succeeds": a dtype/device change raises
+        unless the request already matches this tensor's current dtype and
+        device (a no-op), even if forced through `copy=True`; `units=`
+        inherits `to_units_`'s own restrictions (no unit set, or a leaf
+        tensor requiring grad); `names=`/`coords=` inherit their setters'
+        own validation (a length mismatch, an invalid coordinate spec).
+        """
+        args, units = self._parse_to_units("to_", args, kwargs, units)
+        result = Tensor.to(self, *args, **kwargs)
+        if result.dtype != self.dtype or result.device != self.device:
+            raise ValueError(
+                "to_: in-place .to() cannot change dtype or device "
+                f"(would produce dtype={result.dtype}, "
+                f"device={result.device})"
+            )
+        if units is not arrayutils._UNSET:
+            self.to_units_(units)
+        if names is not arrayutils._UNSET:
+            self.names = names
+        if coords is not arrayutils._UNSET:
+            self.coords = coords
+        return self
 
     # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
     #

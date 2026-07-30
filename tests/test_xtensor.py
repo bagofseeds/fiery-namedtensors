@@ -5719,6 +5719,362 @@ def test_einsum_and_tensordot_multiply_operand_units():
         assert out.units == "ampere * volt"
 
 
+# ----------------------------------------------------------------------
+# the pint.Quantity-shaped API (Proposal 0006)
+# ----------------------------------------------------------------------
+
+
+def test_dimensionality_reports_the_physical_dimensions():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        assert XTensor(torch.ones(3), units="m").dimensionality == "[length]"
+        power = XTensor(torch.ones(3), units="W")
+        assert power.dimensionality == "[mass] * [length] ** 2 / [time] ** 3"
+        # no unit at all -> the empty string, not an error
+        assert XTensor(torch.ones(3)).dimensionality == ""
+
+
+def test_unitless_is_stricter_than_dimensionless_on_angles():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        # an angle is dimensionally trivial but still names a unit
+        radians = XTensor(torch.ones(3), units="rad")
+        assert radians.dimensionless is True
+        assert radians.unitless is False
+        volts = XTensor(torch.ones(3), units="V")
+        assert volts.dimensionless is False
+        assert volts.unitless is False
+        # no unit, and an explicitly dimensionless one, are both
+        bare = XTensor(torch.ones(3))
+        assert bare.dimensionless is True
+        assert bare.unitless is True
+        empty = XTensor(torch.ones(3), units="")
+        assert empty.dimensionless is True
+        assert empty.unitless is True
+
+
+def test_dimensionality_queries_degrade_clearly_without_a_backend():
+    x = XTensor(torch.ones(3), units="V")
+    with pytest.raises(ValueError, match="dimensionality requires"):
+        _ = x.dimensionality
+    # without a dimensionality system to consult, the two predicates
+    # coincide: `not bool(units)`
+    assert x.dimensionless is False
+    assert x.unitless is False
+    bare = XTensor(torch.ones(3))
+    assert bare.dimensionless is True
+    assert bare.unitless is True
+    assert XTensor(torch.ones(3), units="").dimensionless is True
+
+
+def test_units_dimensionless_helper_without_a_backend():
+    from fiery.xtensor import _units
+
+    # an explicitly empty unit *is* dimensionless with no backend; an opaque
+    # unit string is not (there is no way to tell)
+    assert _units.dimensionless("") is True
+    assert _units.dimensionless(None) is True
+    assert _units.dimensionless("V") is False
+
+
+def test_is_compatible_with_matches_convertible_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), units="V")
+        assert volts.is_compatible_with("mV") is True
+        assert volts.is_compatible_with("A") is False
+        # no unit at all is compatible with nothing
+        assert XTensor(torch.ones(3)).is_compatible_with("V") is False
+        with pytest.raises(ValueError, match="invalid unit"):
+            volts.is_compatible_with("not_a_unit_zz")
+
+
+def test_is_compatible_with_falls_back_to_string_equality():
+    # no backend: no dimensionality system, so only the same spelling matches
+    x = XTensor(torch.ones(3), units="V")
+    assert x.is_compatible_with("V") is True
+    assert x.is_compatible_with("mV") is False
+
+
+def test_m_as_converts_and_drops_the_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        volts = XTensor(torch.ones(3), names=("t",), units="V")
+        bare = volts.m_as("mV")
+        assert bare.units is None  # dropped
+        assert bare.names == ("t",)  # still an XTensor
+        assert bare.tolist() == [1000.0, 1000.0, 1000.0]  # converted
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(3)).m_as("mV")
+
+
+def test_m_and_u_alias_magnitude_and_units():
+    x = XTensor(torch.ones(3), names=("t",), units="V")
+    assert x.u == x.units == "V"
+    assert x.m.units is None
+    assert x.m.names == ("t",)
+    # `.u` is read-only: `.units = ...` stays the one way to annotate
+    with pytest.raises(AttributeError):
+        x.u = "A"
+
+
+def test_to_units_converts_in_place():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.ones(3), names=("t",), units="V")
+        pointer = x.data_ptr()
+        result = x.to_units_("mV")
+        assert result is x  # returns self
+        assert x.units == "millivolt"
+        assert x.tolist() == [1000.0, 1000.0, 1000.0]
+        assert x.data_ptr() == pointer  # same storage
+        assert x.names == ("t",)
+
+
+def test_to_units_in_place_needs_a_unit_and_a_backend():
+    x = XTensor(torch.ones(3), units="V")
+    with pytest.raises(ValueError, match="unit_backend='pint'"):
+        x.to_units_("mV")
+    assert x.units == "V"  # nothing changed
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(3)).to_units_("mV")
+        with pytest.raises(ValueError, match="invalid unit"):
+            XTensor(torch.ones(3), units="V").to_units_("not_a_unit_zz")
+
+
+def test_to_units_in_place_has_the_usual_in_place_restrictions():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        # a grad-requiring leaf, exactly as for `mul_`/`add_`
+        leaf = XTensor(torch.ones(3, requires_grad=True), units="V")
+        with pytest.raises(RuntimeError, match="leaf Variable that requires"):
+            leaf.to_units_("mV")
+        # a non-leaf converts fine, and the gradient still flows
+        source = torch.ones(3, requires_grad=True)
+        y = XTensor(source * 2, units="V")
+        y.to_units_("mV")
+        assert y.units == "millivolt"
+        y.sum().backward()
+        assert source.grad is not None
+        # an int dtype cannot absorb a non-integer factor
+        ints = XTensor(torch.ones(3, dtype=torch.int64), units="V")
+        with pytest.raises(RuntimeError, match="cast"):
+            ints.to_units_("mV")
+
+
+def test_to_recognises_a_backend_unit_positionally():
+    pint = pytest.importorskip("pint")
+    u = pint.UnitRegistry()
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.ones(3), names=("t",), units="m")
+        converted = x.to(u.mm)
+        assert converted.units == "millimeter"
+        assert converted.tolist() == [1000.0, 1000.0, 1000.0]
+        assert converted.names == ("t",)
+        assert x.units == "meter"  # the original is untouched
+        # a Quantity's own magnitude is not applied -- `.to()` converts
+        assert x.to(3 * u.mm).tolist() == [1000.0, 1000.0, 1000.0]
+        # combining a positional unit with other `.to()` options is not
+        # supported: torch's own dispatch rejects it, as it always has
+        with pytest.raises(TypeError, match="invalid combination"):
+            x.to(u.mm, copy=True)
+
+
+def test_to_converts_through_the_units_keyword():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.ones(3), units="m")
+        # unlike the positional form, the keyword takes a plain string
+        assert x.to(units="mm").units == "millimeter"
+        assert x.to(units="mm").tolist() == [1000.0, 1000.0, 1000.0]
+        # ... and composes with dtype/device and the metadata overrides
+        both = x.to(torch.float64, units="mm", names=("t",))
+        assert both.dtype == torch.float64
+        assert both.units == "millimeter"
+        assert both.names == ("t",)
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(3)).to(units="mm")
+
+
+def test_to_overrides_names_and_coords_like_as_xtensor():
+    x = XTensor(torch.ones(3))
+    out = x.to(names=("t",), coords={"t": ("a", "b", "c")})
+    assert out.names == ("t",)
+    assert out.coords == {"t": ("a", "b", "c")}
+    assert x.names == (None,)  # the original keeps its own metadata
+
+
+def test_to_rejects_units_none_as_a_conversion_target():
+    x = XTensor(torch.ones(3), units="V")
+    with pytest.raises(ValueError, match="units=None is not a conversion"):
+        x.to(units=None)
+    with pytest.raises(ValueError, match="units=None is not a conversion"):
+        x.to_(units=None)
+
+
+def test_to_still_behaves_like_plain_torch_to():
+    x = XTensor(torch.ones(3), names=("t",), units="V")
+    assert x.to(torch.float64).dtype == torch.float64
+    assert x.to(torch.float64).names == ("t",)  # metadata rides through
+    assert x.to(torch.float64).units == "V"
+    assert x.to(dtype=torch.float64).dtype == torch.float64
+    # a positional *string* stays torch's device spelling, never a unit
+    assert x.to("cpu").names == ("t",)
+    assert x.to(torch.zeros(3, dtype=torch.float64)).dtype == torch.float64
+
+
+def test_to_in_place_mutates_metadata_but_refuses_a_dtype_change():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.ones(3), names=("t",), units="m")
+        pointer = x.data_ptr()
+        result = x.to_(
+            torch.float32, units="mm", coords={"t": (1.0, 2.0, 3.0)}
+        )
+        assert result is x
+        assert x.units == "millimeter"
+        assert x.tolist() == [1000.0, 1000.0, 1000.0]
+        assert x.data_ptr() == pointer
+        assert x.coords["t"]["value"].tolist() == [1.0, 2.0, 3.0]
+        # an actual dtype change is not an in-place operation
+        with pytest.raises(ValueError, match="cannot change dtype or device"):
+            x.to_(torch.float64)
+        assert x.dtype == torch.float32  # and nothing was changed
+
+
+def test_to_in_place_accepts_a_no_op_copy_and_renames():
+    x = XTensor(torch.ones(3), names=("t",))
+    # `copy=True` produces a new tensor internally, but dtype/device match,
+    # so it is not treated as a rejected conversion
+    assert x.to_(copy=True) is x
+    assert x.to_(names=("q",)).names == ("q",)
+    with pytest.raises(ValueError, match="Expected 1 names"):
+        x.to_(names=("a", "b"))
+
+
+def test_to_in_place_needs_a_unit_for_a_units_override():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        with pytest.raises(ValueError, match="no unit to convert"):
+            XTensor(torch.ones(3)).to_(units="mm")
+
+
+def _force():
+    # 5000 g·mm/s², the worked example from the proposal
+    return XTensor(torch.tensor([5000.0]), names=("t",), units="g*mm/s**2")
+
+
+def test_to_base_units_converts_to_si_base_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        out = _force().to_base_units()
+        assert out.units == "kilogram * meter / second ** 2"
+        assert out.names == ("t",)
+        assert out.item() == pytest.approx(0.005)
+
+
+def test_to_reduced_units_simplifies_the_unit():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        out = _force().to_reduced_units()
+        assert out.units == "gram * millimeter / second ** 2"
+        assert out.item() == pytest.approx(5000.0)
+        # a unit that really does reduce
+        squared = XTensor(torch.tensor([2.0]), units="m*mm")
+        assert squared.to_reduced_units().units == "millimeter ** 2"
+
+
+def test_to_compact_picks_a_nice_scale_for_the_values():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        out = _force().to_compact()
+        assert out.units == "gram * meter / second ** 2"
+        assert out.item() == pytest.approx(5.0)
+        # the choice follows the data, not just the unit
+        tiny = XTensor(torch.tensor([200e-9]), units="s")
+        compacted = tiny.to_compact()
+        assert compacted.units == "nanosecond"
+        assert compacted.item() == pytest.approx(200.0)
+        # an empty tensor has no magnitude to go on: it keeps its own unit
+        empty = XTensor(torch.zeros(0), units="s")
+        assert empty.to_compact().units == "second"
+
+
+def test_to_preferred_needs_a_table_of_units():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        out = _force().to_preferred(["N"])
+        assert out.units == "newton"
+        assert out.item() == pytest.approx(0.005)
+        # with no table given, and none configured on the backend registry,
+        # the backend itself refuses
+        with pytest.raises(Exception, match="default_preferred_units"):
+            _force().to_preferred()
+
+
+def test_the_simplification_family_has_in_place_counterparts():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        base = _force()
+        assert base.to_base_units_() is base
+        assert base.units == "kilogram * meter / second ** 2"
+        assert base.item() == pytest.approx(0.005)
+
+        reduced = XTensor(torch.tensor([2.0]), units="m*mm")
+        reduced.to_reduced_units_()
+        assert reduced.units == "millimeter ** 2"
+
+        compact = _force()
+        compact.to_compact_()
+        assert compact.units == "gram * meter / second ** 2"
+        assert compact.item() == pytest.approx(5.0)
+
+        preferred = _force()
+        preferred.to_preferred_(["N"])
+        assert preferred.units == "newton"
+        assert preferred.item() == pytest.approx(0.005)
+
+
+def test_the_simplification_family_needs_a_unit_and_a_backend():
+    for name in (
+        "to_base_units",
+        "to_reduced_units",
+        "to_compact",
+        "to_preferred",
+    ):
+        for spelling in (name, name + "_"):
+            # no backend
+            method = getattr(XTensor(torch.ones(3), units="V"), spelling)
+            with pytest.raises(ValueError, match="unit_backend='pint'"):
+                method()
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        for name in (
+            "to_base_units",
+            "to_reduced_units",
+            "to_compact",
+            "to_preferred",
+        ):
+            for spelling in (name, name + "_"):
+                method = getattr(XTensor(torch.ones(3)), spelling)
+                with pytest.raises(ValueError, match="no unit to convert"):
+                    method()
+
+
+def test_to_needs_no_backend_for_dtype_or_metadata():
+    # with no backend a positional backend object cannot even exist, so
+    # `.to()`/`.to_()` are exactly plain torch plus the metadata overrides
+    x = XTensor(torch.ones(3), names=("t",), units="V")
+    assert x.to(torch.float64, names=("q",)).names == ("q",)
+    assert x.to_(names=("q",)).names == ("q",)
+    with pytest.raises(ValueError, match="unit_backend='pint'"):
+        x.to(units="mV")
+    with pytest.raises(ValueError, match="unit_backend='pint'"):
+        x.to_(units="mV")
+
+
 def test_combine_axes_accepts_a_per_field_policy():
     # a custom, free-form descriptor field ("role") -- nothing is special
     # about it; the per-field policy applies to any key.
