@@ -14,18 +14,20 @@ and the arithmetic to go with it (unit algebra on `*`/`/`/`pow`, compatible-unit
 conversion on `add`/`sub`/compare, drop-or-raise via `unit_policy`). That is
 already most of what makes a united `XTensor` feel like "a `pint.Quantity` that
 is also a named tensor" — but `XTensor` doesn't yet expose a few small,
-frequently-reached-for corners of `pint.Quantity`'s API: dimensionality,
-compatibility checks, a convert-and-drop shortcut, in-place conversion
-(including for the unit-simplification family, `to_base_units`/
-`to_reduced_units`/`to_compact`/`to_preferred`), and letting `.to()` itself
-recognize a backend unit and `names=`/`coords=` overrides (mirroring
-`as_xtensor`), plus a general in-place `.to_()`. This proposal scopes exactly
-those additions, describes how they all behave on a tensor with
-**heterogeneous per-axis units** (§3 — folding those into `to_units()` itself
-is explicitly out of scope, see below), resolves the `.magnitude` vs.
-complex-`abs` naming question raised alongside #143, and specifies the
-graceful-degradation contract for every new member when no unit backend is
-selected.
+frequently-reached-for corners of `pint.Quantity`'s API: dimensionality
+queries (`.dimensionality`/`.dimensionless`/`.unitless`), compatibility
+checks, the `.m`/`.u`/`.m_as` short forms, in-place conversion (`.to_units_`
+and, for the unit-simplification family, `to_base_units`/`to_reduced_units`/
+`to_compact`/`to_preferred` and their four in-place counterparts, all newly
+in scope here, not just their `_`-suffixed forms), and letting `.to()`/a new
+`.to_()` recognize a backend unit via a `units=` keyword (string or backend
+object, not just the positional-object form) plus `names=`/`coords=`
+overrides (mirroring `as_xtensor`). This proposal scopes exactly those
+additions, describes how they all behave on a tensor with **heterogeneous
+per-axis units** (§3 — folding those into `to_units()` itself is explicitly
+out of scope, see below), resolves the `.magnitude` vs. complex-`abs` naming
+question raised alongside #143, and specifies the graceful-degradation
+contract for every new member when no unit backend is selected.
 
 ## 0. What's already there (0003, landed)
 
@@ -37,9 +39,12 @@ selected.
 - `x * u.mm` attaches a unit from the backend's own `Unit`/`Quantity` objects.
 - Heterogeneous (per-axis) units via structured coordinates (0002).
 
-None of that is revisited here. The gap is specifically the small *query*
-surface pint exposes beyond arithmetic — the bit a user reaches for when they
-want to ask a united tensor a question rather than compute with it.
+None of that is revisited here. What's missing spans three shapes: **queries**
+(`.dimensionality`, `.dimensionless`, `.unitless`, `.is_compatible_with`),
+**short forms** (`.m`/`.u`/`.m_as`), and **conversion variants** `to_units()`
+doesn't yet have — in place, via `.to()`/`.to_()`, or into a
+backend-computed target unit (the simplification family) rather than one you
+name yourself.
 
 ## 1. Surveying `pint.Quantity`'s public API
 
@@ -52,30 +57,33 @@ m.startswith("_")]`), grouped by what to do with each:
 | arithmetic, comparisons | **have it** — 0003 §4 |
 | `dimensionality` | **add** (§2.1) |
 | `dimensionless` | **add** (§2.1) — thin wrapper, `_units.dimensionless` already exists internally |
-| `check(unit)` / `is_compatible_with(unit)` | **add**, one spelling (§2.2) |
+| `unitless` | **add** (§2.1) — a *different* predicate from `dimensionless` (a radian-valued quantity is dimensionless but not unitless), worth disposing of explicitly rather than silently dropping |
+| `check(dimension)` / `is_compatible_with(unit)` | **add**, one spelling (§2.2) |
 | `m_as(unit)` | **add** — convert-and-drop shortcut (§2.3) |
 | `m`, `u` (short aliases for `magnitude`/`units`) | **add** — reversed from an earlier draft; see §2.3 |
 | `ito` | **add**, as `.to_units_(unit)` (§2.4) — in-place conversion; `XTensor` already has this pattern (`rename_`/`swap_dims_`), see revised reasoning below |
 | `to(unit)` | **extend** `XTensor.to()` itself: recognize a backend `Unit`/`Quantity` positional argument, plus new `units=`/`names=`/`coords=` keyword overrides (§2.5) |
-| — (no pint equivalent; new) | `.to_()`, a general in-place counterpart of `.to()` with the same overrides (§2.6) |
+| — (no pint equivalent; new) | `.to_()`, a general in-place counterpart of `.to()` with the same overrides (§2.6); `to_compact_` (§2.7) — pint's own `ito*` family has no in-place `to_compact`, but there's no reason `XTensor`'s shouldn't |
 | `to_base_units`, `to_reduced_units`, `to_compact`, `to_preferred` | **add** (§2.7) — all four are a thin pass-through to the backend, no XTensor-level policy needed even for `to_preferred` (see revised reasoning below) |
 | `to_root_units`, `to_unprefixed` | **skip** — niche pint-registry-system-specific variants, not proposed here |
 | `ito_base_units`, `ito_preferred`, `ito_reduced_units` | **add**, as `to_base_units_`/`to_preferred_`/`to_reduced_units_` (§2.7) — reversed from an earlier draft; same trailing-underscore pattern as `to_units_` |
 | `ito_root_units`, `ito_unprefixed` | **skip** — in-place variants of the two members already skipped above |
 | `plus_minus` | **skip** — uncertainty propagation, no analog in scope |
-| `to_timedelta`, `from_list`/`from_sequence`/`from_tuple`, `visualize`, `compute`, `persist`, `force_ndarray*`, `format_babel` | **skip** — Dask/pandas/babel-formatting interop, not applicable |
-| `real`, `imag`, `T`, `dot`, `prod`, `clip`, `fill`, `flat`, `searchsorted`, `tolist`, `shape`, `ndim`, `dtype`, `compare`, `unit_items`, `compatible_units`, `UnitsContainer` | **already inherited** — these are `torch.Tensor`/array-protocol members pint re-exposes for numpy interop; `XTensor` already has them natively as a `Tensor` subclass, carrying the unit through per 0003 §4's catch-all structure-preserving row |
+| `to_timedelta`, `from_list`/`from_sequence`/`from_tuple`/`to_tuple`, `visualize`, `compute`, `persist`, `force_ndarray*`, `format_babel` | **skip** — Dask/pandas/babel-formatting interop, not applicable |
+| `real`, `imag`, `T`, `dot`, `prod`, `clip`, `tolist`, `shape`, `ndim`, `dtype`, `put` | **already inherited** — genuine `torch.Tensor` methods/properties (verified: `hasattr(torch.zeros(3), name)` is `True` for each); `XTensor` already has them natively as a `Tensor` subclass, carrying the unit through per 0003 §4's catch-all structure-preserving row |
+| `fill`, `flat`, `searchsorted`, `compare` | **skip** — despite looking numpy-inherited, these are **not** `torch.Tensor` members under those names (`hasattr` is `False`) — torch spells the first three `fill_`/`flatten`/`torch.searchsorted`; `compare` has no direct analogue and isn't needed |
+| `unit_items`, `compatible_units`, `UnitsContainer` | **skip** — pint's own internal unit-registry machinery, not numpy/array interop at all; `compatible_units` (list every unit `.to()` could reach) is the one a reader might actually want — explicit scoping call to leave it out of this proposal, not an oversight |
 
-So the actual proposal is seventeen new members across §2.1–2.7
-(`dimensionality`, `dimensionless`, `is_compatible_with`, `m_as`, `m`, `u`,
-`to_units_`, `.to()`'s extended dispatch, `to_()`, `to_base_units`,
+So the actual proposal is eighteen new members across §2.1–2.7
+(`dimensionality`, `dimensionless`, `unitless`, `is_compatible_with`, `m_as`,
+`m`, `u`, `to_units_`, `.to()`'s extended dispatch, `to_()`, `to_base_units`,
 `to_reduced_units`, `to_compact`, `to_preferred`, and their four in-place
 counterparts) — no non-goals remain; §3 documents (rather than changes)
 behaviour on heterogeneous per-axis units.
 
 ## 2. What to add
 
-### 2.1 `.dimensionality` / `.dimensionless`
+### 2.1 `.dimensionality` / `.dimensionless` / `.unitless`
 
 ```python
 @property
@@ -92,12 +100,24 @@ def dimensionless(self) -> bool:
     unit backend this is `not bool(self.units)` -- `True` for no unit or
     an explicitly empty one, `False` for any opaque unit string, since
     there's no dimensionality system to consult otherwise."""
+
+@property
+def unitless(self) -> bool:
+    """
+    Whether this tensor has literally **no unit at all** -- a stricter
+    check than `.dimensionless`. Angle units are the case that splits
+    them: `xtensor(x, units="rad").dimensionless` is `True` (an angle is
+    dimensionally trivial) but `.unitless` is `False` (it still names a
+    unit). With no backend the two coincide exactly (`not bool(self.units)`
+    for both), since there's no dimensionality system to tell them apart.
+    Requires `unit_backend="pint"` for the two to actually differ.
+    """
 ```
 
 `dimensionality` returns a **string** (`str(pint.Unit(u).dimensionality)`), not
 a raw pint `UnitsContainer` — consistent with 0003's "units stored/returned as
-canonical strings, never a raw backend object" rule (§5a), so the member stays
-meaningful if a future backend adapter (astropy, unyt) is swapped in.
+canonical strings, never a raw backend object" rule (0003 §5a), so the member
+stays meaningful if a future backend adapter (astropy, unyt) is swapped in.
 
 `dimensionless` is meant as a thin wrapper over the existing
 `_units.dimensionless()` helper (already backing the transcendental-function
@@ -107,7 +127,38 @@ inconsistent with what this property should do: it returns `False` for
 dimensionless without a backend), where `not bool("")` is `True`. Caught during
 review — the property's contract (`not bool(self.units)`) is correct here,
 and `_units.dimensionless()` itself should be fixed to match as part of the
-implementation, not worked around at the property level.
+implementation, not worked around at the property level. This is a real
+(if tiny) behaviour change to a landed 0003 helper, so its impact is worth
+stating rather than assuming: checked both existing call sites, and neither
+is affected. `_pointwise.py`'s transcendental-function guard short-circuits
+on `if not _units.active(): return ...` *before* it ever calls
+`_units.dimensionless()`, so the no-backend branch there is unreachable
+either way; `_selection.py`'s `if not origin_unit or
+_units.dimensionless(origin_unit)` short-circuits on `not origin_unit` first,
+so `_units.dimensionless()` is only ever reached with a **truthy** (i.e.
+non-empty) `origin_unit` — the exact input the fix doesn't change behaviour
+for.
+
+`.unitless` needs a fifth: verified directly against pint 0.25's source
+(`Quantity.unitless` is `not bool(self.to_root_units()._units)`, distinct
+from `Quantity.dimensionless`, which is `self.dimensionality == {}`-ish and
+is `True` for a radian-valued quantity) — worth adding for exactly this
+reason, not silently folded into `dimensionless`.
+
+**Backend-protocol note** (applies to `.dimensionality` here and to the whole
+§2.7 family below): 0003 §5a's adapter protocol (`normalise`, `equal`/
+`compatible`/`dimensionless`, `mul`/`div`/`pow_`, `factor`, `unit_of`/
+`magnitude_of`) has no operation for dimensionality, or for computing a
+base/reduced/compact/preferred target unit. Implementing `.dimensionality`
+and the §2.7 family means growing that protocol with roughly five new
+entries (a `dimensionality(unit) -> str`, and `base_units`/`reduced_units`/
+`compact_units`/`preferred_units(unit, preferred) -> str`), so the
+pint-specific calls this proposal's own snippets show for illustration
+(`str(pint.Unit(u).dimensionality)`, `ureg.Unit(s)`) end up living inside
+`_units.py`'s pint adapter, not hard-coded in `_tensors.py` — exactly what
+0003 §5a exists to prevent. `.is_compatible_with` is the one new member here
+that needs no protocol growth: it reuses the existing `compatible()` entry
+as-is.
 
 ### 2.2 `.is_compatible_with(unit)`
 
@@ -200,16 +251,21 @@ the theory that in-place unit conversion has no precedent and would break
 autograd. Both premises don't hold up:
 
 - **There *is* precedent.** `XTensor` already ships in-place metadata mutators
-  with the trailing-underscore convention — `rename_` and `swap_dims_`
-  (Proposal 0005) mutate axis metadata on `self` and return it, exactly the
-  shape an in-place unit conversion would take.
+  with the trailing-underscore convention — `rename_` (pre-existing) and
+  `swap_dims_` (Proposal 0005, which itself cites `rename_`/`rename` as the
+  precedent it follows) mutate axis metadata on `self` and return it, exactly
+  the shape an in-place unit conversion would take.
 - **Autograd doesn't silently break.** Verified directly: an in-place rescale
   (`y.mul_(factor)`) on a **non-leaf** tensor computes the correct gradient,
   identically to any other in-place torch op. The only failure is PyTorch's
-  own standard restriction on **leaf** tensors requiring grad (`a view of a
-  leaf Variable that requires grad is being used in an in-place operation`) —
-  the exact same `RuntimeError` any `mul_`/`add_`/etc. already raises on a
-  leaf today. Nothing unit-specific about it.
+  own standard restriction on a **leaf** tensor requiring grad — verified on
+  an actual `XTensor` leaf, which raises `a view of a leaf Variable that
+  requires grad is being used in an in-place operation` (the "view of"
+  wording specifically because `XTensor` construction goes through
+  `as_subclass`, which torch treats as a view internally; a bare
+  `torch.Tensor` leaf gives the shorter `a leaf Variable that requires
+  grad...`). Either way it's the exact same `RuntimeError` any `mul_`/`add_`/
+  etc. already raises on a leaf today. Nothing unit-specific about it.
 
 So the honest constraint on an in-place conversion isn't "autograd" or "no
 precedent" — it's the same constraint every in-place torch op already has:
@@ -297,15 +353,19 @@ def to(
 ) -> tx.Self:
     """
     Same as `torch.Tensor.to` (dtype/device, positional or keyword), plus
-    `units=`/`names=`/`coords=` overrides -- the instance-method form of
-    `as_xtensor`'s override kwargs. A bare positional backend
-    `Unit`/`Quantity` (`x.to(ureg.mm)`) is sugar for `units=` with that
-    same object; unlike the positional form, `units=` also accepts a
-    plain unit string directly (a keyword can't collide with torch's own
-    device-string overload the way a positional string would). `units=`
-    **converts** (like `to_units`, requiring a unit already set), it
-    doesn't just annotate -- consistent with `.to()` always meaning
-    conversion, never blind reassignment.
+    `units=`/`names=`/`coords=` overrides. `names=`/`coords=` are the
+    instance-method form of `as_xtensor`'s override kwargs of the same
+    name (delegated to it directly, below). `units=` is **not** the same
+    as `as_xtensor`'s `units=` -- `as_xtensor(x, units=...)` *annotates*
+    (assigns through the `.units` setter, changing no data), matching its
+    own "override replaces wholesale" contract; `.to(units=...)`
+    **converts** (like `to_units`, requiring a unit already set),
+    consistent with `.to()` always meaning conversion, never blind
+    reassignment. A bare positional backend `Unit`/`Quantity`
+    (`x.to(ureg.mm)`) is sugar for `units=` with that same object; unlike
+    the positional form, `units=` also accepts a plain unit string
+    directly (a keyword can't collide with torch's own device-string
+    overload the way a positional string would).
     """
     if (
         args
@@ -335,6 +395,36 @@ it accepts a plain string too. With no backend active, `is_unit_like` is
 always `False`, so `.to()` falls straight through to today's plain-torch
 behaviour when `units=` isn't a string either — no new degradation-table
 entry needed beyond what `.to_units()` already has.
+
+An edge case worth flagging rather than silently deciding: `as_xtensor(x,
+units=None)` is a valid call that **clears** the unit (any `_UNSET`-eligible
+override accepts `None` as "set it to nothing"), but `.to(units=None)`
+inherits `to_units`'s convert semantics, and `to_units(None)` isn't a
+sensible conversion target — this should raise a clear error at
+implementation time rather than being worked out ad hoc.
+
+The positional branch also requires `not kwargs` — `x.to(ureg.mm,
+copy=True)` therefore does **not** take the unit-recognition path; it falls
+straight through to `Tensor.to(self, ureg.mm, copy=True)`, which raises
+`TypeError` from torch itself (the same error as today, just with an extra
+argument torch also doesn't recognise). Combining a positional unit with
+other `.to()` options isn't supported — only `units=` the keyword composes
+with `names=`/`coords=`/dtype/device kwargs in the same call.
+
+This also closes a sub-question issue #142 (closed) left open: whether
+`to_unit(...)` should become `.to(...)` instead of a separately-named
+method. The answer lands as **both**: `.to_units()` stays the explicit,
+`.to_units`-shaped spelling, and `.to(units=...)` is now equally valid
+sugar for the same conversion — not a replacement, matching this codebase's
+existing habit of having more than one valid spelling for a common operation
+where each serves a different calling style (compare `x.sum(dim="q")` vs.
+`torch.sum(x, dim="q")`).
+
+`Coordinate.to(unit)` and `_units.Unitful.to(unit)` (both pre-existing) are
+worth citing too: `.to(unit)` already means "convert this unit" *within this
+codebase*, not just by analogy to pint — so `.to()` gaining that meaning for
+`XTensor`'s own data unit isn't a new idiom, just extending an existing one
+to a new class.
 
 **Not proposed here**: an `axes=` override (the axis-descriptor metadata from
 #39a/#39b, distinct from `names`/`coords`). `as_xtensor` itself doesn't have
@@ -367,11 +457,15 @@ def to_(
 ) -> tx.Self:
     """
     In-place `.to()`, with the same `units=`/`names=`/`coords=` overrides
-    as the non-in-place form (§2.5) -- all metadata-only mutations, so
-    they always succeed. A dtype/device change is the one thing that
-    can't happen in place: it raises unless the request already matches
+    as the non-in-place form (§2.5), each going through an already
+    in-place path -- but "in place" doesn't mean "always succeeds": a
+    dtype/device change raises unless the request already matches
     `self`'s current dtype/device (a no-op), even if forced through
-    `copy=True`.
+    `copy=True`; `units=` inherits `to_units_`'s own `ValueError`/
+    `RuntimeError` restrictions (§2.4: no unit set, or a leaf tensor
+    requiring grad); `names=`/`coords=` inherit their setters' own
+    validation (a length mismatch on `names=`, an invalid coordinate
+    spec on `coords=`).
     """
     if (
         args
@@ -403,6 +497,14 @@ Checking `result.dtype`/`result.device` against `self`'s (rather than, say,
 tensor even for a no-op conversion when `copy=True` is explicitly passed, and
 that shouldn't be treated as a rejected dtype/device change — only an actual
 mismatch should raise.
+
+Implementer's note: as written, `Tensor.to(self, *args, **kwargs)` always
+runs first, so a dtype/device change that's going to be rejected still pays
+for the (potentially real, allocating) conversion before the check discards
+it and raises. That's fine for a proposal-level sketch — checking the
+*parsed request* against `self.dtype`/`self.device` before calling
+`Tensor.to()` at all would avoid the wasted allocation, left as an
+implementation detail rather than a design decision.
 
 ### 2.7 The unit-simplification family: `to_base_units`, `to_reduced_units`, `to_compact`, `to_preferred`
 
@@ -496,6 +598,7 @@ Same contract for the new members:
 | --- | --- |
 | `.dimensionality` | raise `ValueError("dimensionality requires unit_backend='pint'")` |
 | `.dimensionless` | `not bool(self.units)` — `True` for no unit or an explicitly empty one, `False` for any opaque unit string (§2.1) |
+| `.unitless` | same fallback as `.dimensionless` (`not bool(self.units)`) — the two coincide exactly with no backend, since there's no dimensionality system to distinguish "no unit" from "a dimensionless unit" (§2.1) |
 | `.is_compatible_with(unit)` | `_units.compatible()` already degrades to plain string equality without a backend (existing behaviour, unchanged) — no new failure mode needed |
 | `.m_as(unit)` | inherits `to_units()`'s existing `ValueError` on `self.units is None` or no backend |
 | `.m` / `.u` | no special case — plain aliases of `.magnitude`/`.units`, which already work with no backend (§2.3) |
@@ -552,12 +655,7 @@ the target unit?) — deliberately not tackled by this proposal; every member
 here composes on top of whatever `to_units()` does today, unchanged, and
 picks up that future work automatically if `to_units()` itself ever grows it.
 
-## 4. Open questions
-
-1. Confirm `.magnitude` naming (§5) doesn't need revisiting given the pint
-   precedent found below.
-
-## 5. Resolving the `.magnitude` vs. complex-`abs` question
+## 4. Resolving the `.magnitude` vs. complex-`abs` question
 
 The issue raised: does `.magnitude` (0003's "drop the unit annotation" verb)
 read confusingly against the mathematical sense of "magnitude of a complex

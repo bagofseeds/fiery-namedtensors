@@ -22,6 +22,8 @@ open questions.
 - [0005 — Multiple coordinates per axis](0005-multiple-coordinates.md) —
   non-dimension coordinates riding along a dim, and compact **affine**
   coordinates spanning several dims at once.
-- [0006 — A `pint.Quantity`-shaped API](0006-quantity-api.md) — the small
-  query surface (`dimensionality`, compatibility checks, a convert-and-drop
-  shortcut) that rounds out data units into feeling like a `pint.Quantity`.
+- [0006 — A `pint.Quantity`-shaped API](0006-quantity-api.md) — dimensionality
+  and compatibility queries, short forms (`.m`/`.u`/`.m_as`), and in-place and
+  backend-computed conversion variants (`.to_units_`, `.to()`/`.to_()`, the
+  `to_base_units`/`to_compact`/`to_preferred` family) that round out data
+  units into feeling like a `pint.Quantity`.
