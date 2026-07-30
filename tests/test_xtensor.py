@@ -87,6 +87,31 @@ def test_pointwise_method_functional_and_operator_forms_run_once(monkeypatch):
     assert len(calls) == 1
 
 
+def test_method_form_pointwise_op_on_partially_overlapping_names():
+    # the double-execution bug (#160) had a user-visible symptom beyond
+    # wasted work: re-running `_binary` on its own already name-aligned
+    # output (rather than the original operands) could feed it a `None`
+    # sitting after a named axis on the second pass, even though the
+    # operands' own names never had that shape -- so every method-form
+    # pointwise op on two operands with only partially-overlapping name
+    # sets (needing the union-broadcast path in `_align_by_name`) used to
+    # raise, while the functional and operator forms of the exact same op
+    # (which only ever ran `_binary` once) both succeeded.
+    a = XTensor(torch.ones(2, 3), names=("a", "b"))
+    b = XTensor(torch.ones(3, 4), names=("b", "c"))
+    expected_names = ("a", "b", "c")
+    expected_shape = (2, 3, 4)
+
+    functional = torch.add(a, b)
+    operator_form = a + b
+    method = a.add(b)  # used to raise ValueError before the fix
+
+    for out in (functional, operator_form, method):
+        assert out.names == expected_names
+        assert out.shape == expected_shape
+    assert torch.equal(method, functional)
+
+
 # ----------------------------------------------------------------------
 # dimensions (names)
 # ----------------------------------------------------------------------
