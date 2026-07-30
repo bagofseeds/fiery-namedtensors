@@ -54,6 +54,74 @@ op **raises**. Name every axis (`refine_names`) or move the unnamed axes to the
 front. (This is the resolution of
 [#75](https://github.com/bagofseeds/fiery-xtensor/issues/75).)
 
+### Each axis's pairing key is its own operand's business
+
+An axis pairs up **by name** if it has one, and **by position** if it doesn't
+— and which of those applies is decided **per operand, per axis**, never by
+looking at what the *other* operand's names happen to be:
+
+```python
+X = xtensor(torch.zeros(2, 3), names=("a", "b"))
+Y = xtensor(torch.zeros(3, 2), names=("b", "a"))
+(X + Y).names            # ('a', 'b')  — paired by NAME: X's 'a' meets Y's 'a',
+                          # even though it sits at a different position in Y
+
+X2 = xtensor(torch.zeros(2, 3), names=(None, None))
+Y2 = xtensor(torch.zeros(2, 3), names=(None, None))
+(X2 + Y2).names          # (None, None) — paired by POSITION: first meets first
+```
+
+This can look inconsistent at first — "does an axis pair by name or by
+position?" — but it isn't a case-by-case rule, it's one rule applied locally:
+*an unnamed axis always broadcasts positionally against whatever sits in the
+corresponding slot on the other side, regardless of whether that other axis
+happens to be named.* The consequence is the sharp edge below.
+
+### Sharp edge: an anonymous operand is not the same as a partially-named one
+
+Because pairing is decided per axis, giving one more axis a name can change
+*which values land where* — even when the result's `shape` and `names` come
+out identical either way:
+
+```python
+a = xtensor(torch.zeros(3, 3, 5), names=(None, "x", "y"))   # batch=3, x=3, y=5
+d = torch.arange(15.).reshape(3, 5)
+
+r1 = a + xtensor(d)                            # right operand: fully anonymous
+r2 = a + xtensor(d, names=(None, "y"))          # right operand: partially named
+# r1.shape == r2.shape == (3, 3, 5)
+# r1.names == r2.names == (None, 'x', 'y')
+
+r1[:, 0, 0].tolist()      # [0.0, 0.0, 0.0]   -- d broadcasts positionally: its
+                          # axis 0 (size 3) lines up with a's trailing axis 'x'
+r2[:, 0, 0].tolist()      # [0.0, 5.0, 10.0]  -- d's axis 0 is now anonymous
+                          # too, but 'y' on the right pins d's axis 1 to a's
+                          # 'y', which pushes d's anonymous axis to align with
+                          # a's anonymous batch axis instead of its 'x' axis
+```
+
+`r1` and `r2` are unequal element-wise despite sharing a shape and a `names`
+tuple — the fully-anonymous `d` broadcasts against `a`'s two *trailing* axes
+(the ordinary torch rule), while naming just one of `d`'s axes anchors it to
+that specific dimension and lets its remaining anonymous axis fall back
+against `a`'s *leading* one instead. Naming every axis removes the ambiguity
+entirely (`xtensor(d, names=("x", "y"))` agrees with `r1` here, because now
+there is a name to pair on for both):
+
+```python
+r3 = a + xtensor(d, names=("x", "y"))
+r3[:, 0, 0].tolist()      # [0.0, 0.0, 0.0]  -- agrees with r1
+```
+
+The practical rule: on a mixed anonymous/named operation, either name **every**
+axis that has a same-sized counterpart on the other side, or leave **all** of
+them unnamed — don't name only *some* of an operand's axes when the other
+operand is fully anonymous, since which axis absorbs the "leftover" anonymous
+dimension depends on that choice. (Investigated as
+[#145](https://github.com/bagofseeds/fiery-xtensor/issues/145); the current
+behavior is intentional — see the issue for the fuller design discussion — and
+this section is the documentation half of that resolution.)
+
 ## Coordinate alignment
 
 When a shared dimension is **labelled on both operands** but the labels are in a
