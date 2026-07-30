@@ -341,22 +341,28 @@ def _binary(
     result = base(a, b, *args, **kwargs)
     if not isinstance(result, Tensor):
         return result
-    # Prefer whichever operand actually carries names/coordinates -- an
-    # all-unnamed `XTensor` (e.g. a plain tensor merely wrapped bare) has
-    # nothing more to offer than a plain tensor, so it shouldn't out-rank a
-    # named operand just for being `a` (issue #157). The `a_has and b_has`
-    # gate above guarantees at most one of `a`/`b` has real names here, so
-    # there's no reconciliation to do -- just pick the informative side.
+    # `ref` stays the plain isinstance-based pick: it's the donor `_carry`
+    # uses for dtype/subclass/`__dict__` (data unit included, when no
+    # backend override applies), and `a`'s claim to that role has nothing to
+    # do with whether it happens to carry names.
+    ref = a if isinstance(a, XTensor) else b
+    # `cref` -- the coordinate/name source -- prefers whichever operand
+    # actually carries names: an all-unnamed `XTensor` (e.g. a plain tensor
+    # merely wrapped bare) has nothing more to offer there than a plain
+    # tensor, so it shouldn't out-rank a named operand just for being `a`
+    # (issue #157). The `a_has and b_has` gate above guarantees at most one
+    # of `a`/`b` has real names here, so there's no reconciliation to do --
+    # just pick the informative side.
     if _has_names(a):
-        ref = a
+        cref = a
     elif _has_names(b):
-        ref = b
+        cref = b
     else:
-        ref = a if isinstance(a, XTensor) else b
+        cref = ref
     names = _broadcast_batch_names(_names_of(a), _names_of(b))
     coords = (
-        _coords_for(ref, names)
-        if result.ndim == getattr(ref, "ndim", -1)
+        _coords_for(cref, names)
+        if result.ndim == getattr(cref, "ndim", -1)
         else {}
     )
     meta = _merge_axis_meta((a, b), names)

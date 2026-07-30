@@ -5105,6 +5105,24 @@ def test_positional_fallback_prefers_the_named_side_either_order():
         assert out.coords == {"y": ("a", "b", "c")}
 
 
+def test_positional_fallback_still_carries_the_left_operands_data_unit():
+    # the coordinate/name donor picked in the positional fallback (issue
+    # #157) must stay independent of the _carry donor: without a units
+    # backend, a data unit (and any other __dict__/subclass state) still
+    # comes from the left operand, same rule as everywhere else -- even
+    # when the left operand is the fully-anonymous one and therefore loses
+    # the coordinate/name pick to the named operand on the right.
+    z = XTensor(torch.ones(3), units="V")
+    p = XTensor(torch.ones(3), names=("y",), coords={"y": ("a", "b", "c")})
+    out = z + p
+    assert out.units == "V"  # left operand's unit, unaffected by #157's fix
+    assert out.coords == {"y": ("a", "b", "c")}  # right operand's coords
+
+    left = XTensor(torch.ones(3), units="A")
+    right = XTensor(torch.ones(3), names=("y",), units="V")
+    assert (left + right).units == "A"  # left-operand rule, not name-based
+
+
 def test_partial_names_align_named_suffix_broadcast_leading_anon():
     # issue #75: unnamed axes all leading -> named suffix aligns by name,
     # anonymous prefix broadcasts positionally. The shared name is used, so
