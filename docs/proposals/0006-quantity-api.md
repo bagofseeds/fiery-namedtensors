@@ -323,9 +323,9 @@ own C-level overload resolution, and it does **not** recognize a pint object
 today:
 
 ```python
->>> t = torch.zeros(3)
->>> t.to(ureg.mm)
-TypeError: to() received an invalid combination of arguments - got (Unit), ...
+t = torch.zeros(3)
+t.to(ureg.mm)
+# TypeError: to() received an invalid combination of arguments - got (Unit), ...
 ```
 
 So adding pint-unit recognition means intercepting *before* that dispatch —
@@ -525,11 +525,11 @@ itself. There's no policy for this package to invent — it's a pure
 pass-through:
 
 ```python
->>> q = ureg.Quantity(5000, "g*mm/s**2")
->>> q.to_base_units()             # -> 0.005 kilogram * meter / second ** 2
->>> q.to_reduced_units()          # -> 5000 gram * millimeter / second ** 2 (this case, no-op)
->>> q.to_compact()                # -> 5.0 gram * meter / second ** 2
->>> q.to_preferred([ureg.N])      # -> 0.005 newton  (only with an explicit or registry-default table)
+q = ureg.Quantity(5000, "g*mm/s**2")
+q.to_base_units()             # -> 0.005 kilogram * meter / second ** 2
+q.to_reduced_units()          # -> 5000 gram * millimeter / second ** 2 (this case, no-op)
+q.to_compact()                # -> 5.0 gram * meter / second ** 2
+q.to_preferred([ureg.N])      # -> 0.005 newton  (only with an explicit or registry-default table)
 ```
 
 All four are in scope, each a thin wrapper mirroring `to_units`'s own shape
@@ -664,13 +664,11 @@ number" (its modulus, `|z|`)?
 Checked directly against pint 0.25:
 
 ```python
->>> import pint
->>> u = pint.UnitRegistry()
->>> q = u.Quantity(-3 + 4j, "V")
->>> q.magnitude
-(-3+4j)
->>> abs(q).magnitude
-5.0
+import pint
+u = pint.UnitRegistry()
+q = u.Quantity(-3 + 4j, "V")
+q.magnitude       # -> (-3+4j)
+abs(q).magnitude  # -> 5.0
 ```
 
 **`pint.Quantity.magnitude` itself returns the raw underlying value verbatim —
