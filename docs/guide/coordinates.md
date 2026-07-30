@@ -228,6 +228,67 @@ with set_options(interp_bound="replicate"):
     sig.interp(t=10.0)   # every call in this block clamps too
 ```
 
+## Coordinates spanning several dimensions
+
+A coordinate can also span **more than one axis** at once — a `lat`/`lon`
+grid over `(y, x)`, not a separate coordinate per axis. Key it by a name that
+isn't a dim, paired with the **tuple of dims** it spans:
+
+```python
+img = xtensor(data, names=("y", "x"), coords={
+    "lat": (("y", "x"), {"spacing": ([1.0, 0.0], "deg"), "origin": (10.0, "deg")}),
+    "lon": (("y", "x"), {"spacing": ([0.0, 2.0], "deg"), "origin": (20.0, "deg")}),
+})
+```
+
+This is the same compact `spacing`/`origin` form as a 1-D numeric coordinate,
+just with one `spacing` component **per spanned dim** (here, `lat` only
+varies along `y`, `lon` only along `x` — a plain lat/lon grid; a rotated or
+sheared grid would give both components non-zero values). Query every
+spanned name **together** in one `.sel`/`.interp` call — a *joint* query,
+solved as a small linear system (`index = A⁻¹(world − origin)`) rather than
+axis-by-axis:
+
+```python
+img.sel(lat=11.0, lon=24.0)                    # exact match -> a scalar
+img.sel(mode="round", lat=11.4, lon=23.6)      # snaps to the nearest position
+img.interp(lat=11.4, lon=23.6)                 # interpolates -> a scalar
+```
+
+A query with a **list** collapses the spanned dims into **one new axis** of
+sampled points (not an outer-product grid — the dims are coupled, so you
+move through both at once), carrying the sampled `lat`/`lon` values back as
+a riding coordinate on it. Name the new axis with `name=`:
+
+```python
+pts = img.interp(lat=[10.0, 11.0, 12.0], lon=[20.0, 22.0, 24.0], name="pts")
+pts.shape            # (3,)
+pts.coords["lat"]    # the three sampled lat values, riding along "pts"
+```
+
+Composes with ordinary 1-D indexers in the same call
+(`img.sel(t=1.0, lat=11.0, lon=24.0)`), but a dim resolved by the joint query
+can't *also* be given directly in the same call. Only `mode="round"` (`.sel`)
+is supported for the joint query; `.interp` keeps its usual `method=`/
+`bound=`/`extrapolate=`.
+
+A coordinate can also span several dims **without** an affine formula — an
+explicit array, one value per grid point, for a genuinely curved
+(**curvilinear**) grid that a compact `spacing`/`origin` can't describe:
+
+```python
+grid = xtensor(data, names=("y", "x"), coords={
+    "lat": (("y", "x"), lat_array),   # an (y, x)-shaped tensor of latitudes
+    "lon": (("y", "x"), lon_array),
+})
+grid.sel(lat=52.1, lon=4.3, method="nearest")   # nearest grid point, by raw distance
+```
+
+Unlike the affine form, this has no inverse formula to solve — `.sel` finds
+the nearest point by brute-force distance instead (unit-blind, and a
+single-point query only; it isn't meant for bulk regridding). `.interp` over
+a curvilinear coordinate isn't implemented yet — only `.sel`.
+
 ## Multiple coordinates per axis
 
 An axis can carry more than one coordinate at once — its own index, plus any

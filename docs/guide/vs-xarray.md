@@ -47,21 +47,27 @@ This page lists where the two diverge, in both directions.
 - **No IO / plotting / pandas bridge.** No NetCDF/Zarr readers, no `.plot`, no
   `.to_pandas()` / `MultiIndex`.
 - **Curvilinear `.sel` is single-point and brute force; `.interp` isn't there
-  yet.** A dim can carry a general `lat(y, x)`-style array of arbitrary
-  values over multiple dims — a **curvilinear** coordinate, alongside the
-  compact **affine** form
-  ([Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82).
-  `.sel(lat=.., lon=..)` finds the single nearest grid point by squared
-  Euclidean distance over the queried coordinates' raw magnitudes (no
-  scipy/sklearn dependency, so it stays GPU-capable) — but brute force,
-  with no tree index behind it, and unit-blind (mixing e.g. degrees and
-  metres weights the nearer-magnitude one more heavily). Fine for a one-off
-  lookup against even a large grid; it does **not** scale to
+  yet.** A coordinate can span several dims at once — a `lat(y, x)`-style
+  grid, jointly queried as `.sel(lat=.., lon=..)`/`.interp(lat=.., lon=..)`
+  ([guide](coordinates.md#coordinates-spanning-several-dimensions),
+  [Proposal 0005](../proposals/0005-multiple-coordinates.md), issue #82) —
+  in two forms with very different capabilities. The compact **affine**
+  form (`spacing`/`origin`, a linear map) inverts in closed form
+  (`index = A⁻¹(world − origin)`), so both `.sel` and `.interp` are cheap
+  and `.interp` supports a full vectorized/bulk query, collapsing the
+  spanned dims into one new axis of sampled points. The explicit
+  **curvilinear** form (an arbitrary array, no formula) has no such
+  inverse: `.sel(lat=.., lon=..)` finds the nearest grid point by brute-force
+  squared Euclidean distance over the queried coordinates' raw magnitudes
+  (no scipy/sklearn dependency, so it stays GPU-capable) — unit-blind
+  (mixing e.g. degrees and metres weights the nearer-magnitude one more
+  heavily), and **single-point only**: it does **not** scale to
   *bulk regridding* (querying a whole new grid's worth of points at once),
   where the distance-matrix cost grows with the *product* of the source
   grid size and the query count — the reason every tree-based library in
   this space (xarray's `NDPointIndex`, `xoak`, `pyresample`) exists in the
-  first place. Curvilinear `.interp` isn't implemented at all yet.
+  first place. Curvilinear `.interp` isn't implemented at all yet (only
+  `.sel`).
 - **Alignment is inner-join only.** There is no `join="outer"/"left"/"right"`
   (which would need NaN fill); operands align to the **intersection** of their
   labels. (xarray's *default* `arithmetic_join` is also `"inner"`, so the
