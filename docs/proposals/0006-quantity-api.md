@@ -2,9 +2,10 @@
 
 | | |
 | --- | --- |
-| **Status** | Proposed — not yet implemented |
+| **Status** | Accepted — implemented (all eighteen members of §2.1–2.7, plus §2.8's degradation contract and §4's docstring clarification) |
 | **Author** | (proposed) |
 | **Created** | 2026-07-30 |
+| **Updated** | 2026-07-30 — implemented |
 | **Tracking** | [#143](https://github.com/bagofseeds/fiery-xtensor/issues/143); builds on Proposal 0003 (data units) |
 
 ## Abstract

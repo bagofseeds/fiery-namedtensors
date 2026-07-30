@@ -117,13 +117,107 @@ def pow_(a: tx.Any, n: tx.Any) -> tx.Any:
 
 
 def dimensionless(a: tx.Any) -> bool:
-    """Whether a unit is dimensionless (`None` counts as dimensionless)."""
+    """
+    Whether a unit is dimensionless (`None` counts as dimensionless). With no
+    backend there is no dimensionality system to consult, so this is just
+    `not bool(a)` -- true for no unit or an explicitly empty one, false for
+    any opaque unit string.
+    """
     if a is None:
         return True
     if active() != "pint":
-        return False
+        return not bool(a)
     _, ureg = _pint()
     return ureg.Unit(a).dimensionless
+
+
+def unitless(a: tx.Any) -> bool:
+    """
+    Whether a unit names no unit at all -- stricter than `dimensionless`: an
+    angle unit (`"rad"`) is dimensionless but not unitless. With no backend
+    the two coincide (`not bool(a)`).
+    """
+    if a is None:
+        return True
+    if active() != "pint":
+        return not bool(a)
+    _, ureg = _pint()
+    return ureg.Quantity(1.0, a).unitless
+
+
+def dimensionality(a: tx.Any) -> str:
+    """
+    The physical dimensionality of a unit, as a string (`""` for no unit).
+    Requires an active backend.
+    """
+    if active() != "pint":
+        raise ValueError("dimensionality requires unit_backend='pint'")
+    if a is None:
+        return ""
+    _, ureg = _pint()
+    return str(ureg.Unit(a).dimensionality)
+
+
+# -- backend-computed target units (Proposal 0006 §2.7) ----------------------
+#
+# Each returns the unit string some simplification rule picks for `a`; the
+# caller then converts to it through the ordinary `factor` path, so the pint
+# calls stay in this adapter rather than leaking into the tensor code.
+
+
+def base_units(a: tx.Any) -> str:
+    """The base-unit spelling of a unit (SI base units under pint)."""
+    if active() != "pint":
+        raise ValueError(
+            "converting to base units requires unit_backend='pint'"
+        )
+    _, ureg = _pint()
+    return str(ureg.Quantity(1.0, a).to_base_units().units)
+
+
+def reduced_units(a: tx.Any) -> str:
+    """The reduced (simplified) spelling of a unit."""
+    if active() != "pint":
+        raise ValueError(
+            "converting to reduced units requires unit_backend='pint'"
+        )
+    _, ureg = _pint()
+    return str(ureg.Quantity(1.0, a).to_reduced_units().units)
+
+
+def compact_units(a: tx.Any, magnitude: tx.Any = 1.0) -> str:
+    """
+    The unit a value of size `magnitude` reads most compactly in (the prefix
+    that keeps it near 1, e.g. `200e-9 s` -> nanosecond).
+    """
+    if active() != "pint":
+        raise ValueError(
+            "converting to compact units requires unit_backend='pint'"
+        )
+    _, ureg = _pint()
+    return str(ureg.Quantity(magnitude, a).to_compact().units)
+
+
+def preferred_units(
+    a: tx.Any, preferred: tx.Optional[tx.Sequence[tx.Any]] = None
+) -> str:
+    """
+    The unit the backend's preferred-units logic picks for `a`, guided by the
+    `preferred` unit strings. Omitting them uses the backend registry's own
+    default, which raises if none is configured.
+    """
+    if active() != "pint":
+        raise ValueError(
+            "converting to preferred units requires unit_backend='pint'"
+        )
+    _, ureg = _pint()
+    quantity = ureg.Quantity(1.0, a)
+    if preferred is None:
+        return str(quantity.to_preferred().units)
+    # pint's own `to_preferred` wants `Unit` objects, not strings.
+    return str(
+        quantity.to_preferred([ureg.Unit(unit) for unit in preferred]).units
+    )
 
 
 # -- recognising the backend's own unit / quantity objects (for `x * mm`) -----

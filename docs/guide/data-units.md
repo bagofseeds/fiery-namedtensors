@@ -68,6 +68,105 @@ with set_options(unit_backend="pint"):
     xtensor(v, units="V").magnitude.units                    # None   — unit dropped, still an XTensor
 ```
 
+## Asking about a unit
+
+Under a backend you can ask what a unit *is*, and whether a conversion would
+work, without converting anything:
+
+```python
+with set_options(unit_backend="pint"):
+    power = xtensor(data, units="W")
+    power.dimensionality             # "[mass] * [length] ** 2 / [time] ** 3"
+    power.dimensionless              # False
+    power.is_compatible_with("kW")   # True   — so to_units("kW") would work
+    power.is_compatible_with("V")    # False
+
+    angle = xtensor(data, units="rad")
+    angle.dimensionless              # True   — an angle has no dimensions
+    angle.unitless                   # False  — but it still names a unit
+```
+
+`.m_as` converts and drops the annotation in one step — sugar for
+`.to_units(...).magnitude`:
+
+```python
+with set_options(unit_backend="pint"):
+    volts = xtensor(data, units="V")
+    volts.m_as("mV")       # values ×1000, no unit
+```
+
+(pint's own `.m`/`.u` short aliases for `.magnitude`/`.units` are
+deliberately not mirrored here: they would silently shadow a coordinate
+label named `"m"`/`"u"` — and single-letter physics variable names
+(velocity components, mass) are exactly the kind of label this library
+expects to see.)
+
+## More ways to convert
+
+Every conversion has an **in-place** twin, spelled with a trailing underscore
+(the same convention as `rename_`): it rescales the data and updates the
+annotation on the tensor itself instead of returning a new one.
+
+```python
+with set_options(unit_backend="pint"):
+    x = xtensor(data, units="V")
+    x.to_units_("mV")      # x is now in millivolts
+```
+
+`.to()` converts too, alongside its usual dtype/device job — by keyword, or
+straight from one of the backend's own unit objects:
+
+=== "By keyword"
+
+    ```python
+    x.to(units="mm")
+    ```
+
+=== "From a backend unit"
+
+    ```python
+    x.to(u.mm)
+    ```
+
+=== "Alongside dtype and names"
+
+    ```python
+    x.to(torch.float64, units="mm", names=("b", "t"))
+    ```
+
+`units=` **converts** (so a unit must already be set) — annotating is still
+`x.units = ...`. `names=`/`coords=` replace that metadata wholesale, exactly
+as they do for `as_xtensor`. Write the unit as a keyword to pass it as a
+plain string: a positional string is torch's own device spelling (`"cuda"`),
+so only a backend unit object is recognised there.
+
+`.to_()` does all of the same in place, and refuses a real dtype or device
+change (moving the data is not an in-place operation):
+
+```python
+with set_options(unit_backend="pint"):
+    y = xtensor(data, names=("b", "t"), units="m")
+    y.to_(units="mm", names=("b", "time"))   # fine
+    y.to_(torch.float64)                     # ValueError
+```
+
+When you would rather not name the target unit at all, let the backend pick
+one:
+
+```python
+with set_options(unit_backend="pint"):
+    force = xtensor(torch.tensor([5000.0]), units="g*mm/s**2")
+    force.to_base_units()        # 0.005 kilogram * meter / second ** 2
+    force.to_reduced_units()     # 5000 gram * millimeter / second ** 2
+    force.to_compact()           # 5.0 gram * meter / second ** 2
+    force.to_preferred(["N"])    # 0.005 newton
+```
+
+`to_compact` reads the values as well as the unit — it picks the prefix that
+keeps them near 1 — and `to_preferred` needs a list of units to choose from
+(or a default configured on the backend registry). All four have an in-place
+twin as well (`to_base_units_`, `to_compact_`, …).
+
 ## Heterogeneous (per-axis) units
 
 Units may also **vary along an axis**: give a structured coordinate
