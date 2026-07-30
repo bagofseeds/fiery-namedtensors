@@ -300,8 +300,12 @@ pattern is worth internalising rather than re-discovering.
   (ellipsis) falls back to the base-unit product.
 
 - **the `pint.Quantity`-shaped API** (Proposal 0006): queries
-  `dimensionality`/`dimensionless`/`unitless`/`is_compatible_with`, short
-  forms `m`/`u`/`m_as`, in-place `to_units_`, and the simplification family
+  `dimensionality`/`dimensionless`/`unitless`/`is_compatible_with`, `m_as`
+  (short for `.to_units(unit).magnitude`; pint's own `m`/`u` aliases were
+  deliberately dropped — they'd permanently shadow a coordinate label
+  literally named `"m"`/`"u"`, since `__getattr__`'s label lookup never runs
+  once a real attribute of that name exists), in-place `to_units_`, and the
+  simplification family
   `to_base_units`/`to_reduced_units`/`to_compact`/`to_preferred` plus their
   four `_`-suffixed in-place twins. `.to()` is now overridden (it was plain
   `Tensor.to` before): same dtype/device forms, plus a **positional** backend

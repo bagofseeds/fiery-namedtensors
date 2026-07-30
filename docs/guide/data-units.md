@@ -86,16 +86,20 @@ with set_options(unit_backend="pint"):
     angle.unitless                   # False  — but it still names a unit
 ```
 
-`.u` and `.m` are short aliases for `.units` and `.magnitude`, and `.m_as`
-converts and drops the annotation in one step:
+`.m_as` converts and drops the annotation in one step — sugar for
+`.to_units(...).magnitude`:
 
 ```python
 with set_options(unit_backend="pint"):
     volts = xtensor(data, units="V")
-    volts.u                # "volt"
-    volts.m.units          # None
     volts.m_as("mV")       # values ×1000, no unit
 ```
+
+(pint's own `.m`/`.u` short aliases for `.magnitude`/`.units` are
+deliberately not mirrored here: they would silently shadow a coordinate
+label named `"m"`/`"u"` — and single-letter physics variable names
+(velocity components, mass) are exactly the kind of label this library
+expects to see.)
 
 ## More ways to convert
 

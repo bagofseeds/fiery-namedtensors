@@ -5808,16 +5808,6 @@ def test_m_as_converts_and_drops_the_unit():
             XTensor(torch.ones(3)).m_as("mV")
 
 
-def test_m_and_u_alias_magnitude_and_units():
-    x = XTensor(torch.ones(3), names=("t",), units="V")
-    assert x.u == x.units == "V"
-    assert x.m.units is None
-    assert x.m.names == ("t",)
-    # `.u` is read-only: `.units = ...` stays the one way to annotate
-    with pytest.raises(AttributeError):
-        x.u = "A"
-
-
 def test_to_units_converts_in_place():
     pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
@@ -5876,10 +5866,12 @@ def test_to_recognises_a_backend_unit_positionally():
         assert x.units == "meter"  # the original is untouched
         # a Quantity's own magnitude is not applied -- `.to()` converts
         assert x.to(3 * u.mm).tolist() == [1000.0, 1000.0, 1000.0]
-        # combining a positional unit with other `.to()` options is not
-        # supported: torch's own dispatch rejects it, as it always has
-        with pytest.raises(TypeError, match="invalid combination"):
-            x.to(u.mm, copy=True)
+        # a positional unit still combines with torch's own no-dtype/device
+        # kwargs (copy=, non_blocking=, memory_format=) -- once the unit is
+        # consumed there's nothing left for them to be ambiguous with
+        also_converted = x.to(u.mm, copy=True)
+        assert also_converted.units == "millimeter"
+        assert also_converted.tolist() == [1000.0, 1000.0, 1000.0]
 
 
 def test_to_converts_through_the_units_keyword():
@@ -5942,6 +5934,18 @@ def test_to_in_place_mutates_metadata_but_refuses_a_dtype_change():
         with pytest.raises(ValueError, match="cannot change dtype or device"):
             x.to_(torch.float64)
         assert x.dtype == torch.float32  # and nothing was changed
+
+
+def test_to_in_place_applies_units_last_so_a_bad_names_override_stays_atomic():
+    pytest.importorskip("pint")
+    with set_options(unit_backend="pint"):
+        x = XTensor(torch.ones(2, 3), names=("b", "t"), units="m")
+        with pytest.raises(ValueError, match="Expected 2 names"):
+            x.to_(units="mm", names=("a", "b", "c"))
+        # names= raised before units= ever ran -- nothing changed
+        assert x.units == "meter"
+        assert x.tolist() == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
+        assert x.names == ("b", "t")
 
 
 def test_to_in_place_accepts_a_no_op_copy_and_renames():
@@ -6012,14 +6016,16 @@ def test_to_compact_picks_a_nice_scale_for_the_values():
 
 
 def test_to_preferred_needs_a_table_of_units():
-    pytest.importorskip("pint")
+    pint = pytest.importorskip("pint")
     with set_options(unit_backend="pint"):
         out = _force().to_preferred(["N"])
         assert out.units == "newton"
         assert out.item() == pytest.approx(0.005)
         # with no table given, and none configured on the backend registry,
         # the backend itself refuses
-        with pytest.raises(Exception, match="default_preferred_units"):
+        with pytest.raises(
+            pint.UndefinedUnitError, match="default_preferred_units"
+        ):
             _force().to_preferred()
 
 

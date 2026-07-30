@@ -471,25 +471,12 @@ class XTensor(ExtendedTensor):
         """
         return self.to_units(unit).magnitude
 
-    @property
-    def m(self) -> tx.Self:
-        """
-        Alias for `magnitude`. Like any real attribute, this takes
-        priority over a coordinate label named `"m"` (the same tradeoff
-        `.T`/`.shape`/every other attribute already has) -- reach such a
-        label with `x.sel(dim="m")` or `x["m"]` instead of `x.m`.
-        """
-        return self.magnitude
-
-    @property
-    def u(self) -> tx.Optional[str]:
-        """
-        Alias for `units`. Like any real attribute, this takes priority
-        over a coordinate label named `"u"` (the same tradeoff `.T`/
-        `.shape`/every other attribute already has) -- reach such a label
-        with `x.sel(dim="u")` or `x["u"]` instead of `x.u`.
-        """
-        return self.units
+    # `.m`/`.u` (pint's own short aliases for `.magnitude`/`.units`) were
+    # deliberately not added: they would silently shadow a coordinate label
+    # named "m"/"u" (`__getattr__`'s label lookup never runs once a real
+    # attribute of that name exists) -- and single-letter physics variable
+    # names (velocity components `u`/`v`/`w`, mass `m`) are exactly the kind
+    # of label this library expects to see.
 
     # -- unit simplification (Proposal 0006 §2.7) --------------------------
     #
@@ -513,6 +500,12 @@ class XTensor(ExtendedTensor):
         # present as a stand-in for the whole tensor. A NaN/inf value must
         # not veto the whole tensor's answer -- only fall back to 1.0 when
         # there is no finite value at all (an empty tensor, or all NaN/inf).
+        # There is no torch.nanmax across the torch versions this library
+        # supports, so the finite values are masked out by hand -- an O(n)
+        # pass that allocates a boolean mask plus a filtered copy, on top of
+        # the abs()/detach() copies already taken. Worth knowing before
+        # calling `to_compact`/`to_compact_` on a large tensor, despite the
+        # name suggesting something cheap.
         magnitude = 1.0
         if self.numel():
             values = self.as_subclass(Tensor).detach().abs()
@@ -562,7 +555,10 @@ class XTensor(ExtendedTensor):
         Convert to the unit these values read most compactly in -- the prefix
         that keeps them near 1 (`200e-9 s` becomes `200 ns`), picked from the
         largest magnitude present. Requires a unit already set and
-        `unit_backend="pint"`.
+        `unit_backend="pint"`. Unlike the other three simplifications, this
+        one has to look at the data itself (not just the unit), which costs
+        an extra full pass over the tensor -- worth knowing before calling it
+        in a hot loop over a large tensor.
         """
         return self.to_units(self._compact_target("to_compact"))
 
@@ -611,14 +607,17 @@ class XTensor(ExtendedTensor):
         """
         Split `.to()`/`.to_()`'s arguments into `(args, unit)`: a lone
         positional backend `Unit`/`Quantity` is sugar for `units=`, and a
-        backend object given either way reduces to its unit string.
+        backend object given either way reduces to its unit string. Other
+        `.to()` keywords (`copy=`, `non_blocking=`, `memory_format=`) still
+        apply alongside it -- once `args[0]` is recognised as a unit there is
+        no ambiguity left for them to create, so they simply pass through to
+        the dtype/device call unchanged.
         """
         if (
             args
             and _units.is_unit_like(args[0])
             and units is arrayutils._UNSET
             and len(args) == 1
-            and not kwargs
         ):
             units, args = args[0], ()
         if units is None:
@@ -691,8 +690,10 @@ class XTensor(ExtendedTensor):
         inherits `to_units_`'s own restrictions (no unit set, or a leaf
         tensor requiring grad); `names=`/`coords=` inherit their setters'
         own validation (a length mismatch, an invalid coordinate spec).
-        Not atomic across overrides: if `units=` succeeds but a later
-        `names=`/`coords=` then raises, the unit change already happened.
+        Applied `names=`, then `coords=`, then `units=` last -- each of the
+        first two either fully applies or raises before mutating anything,
+        so the data rescale from `units=` never happens unless every other
+        override already succeeded.
         """
         args, units = self._parse_to_units("to_", args, kwargs, units)
         result = Tensor.to(self, *args, **kwargs)
@@ -702,12 +703,12 @@ class XTensor(ExtendedTensor):
                 f"(would produce dtype={result.dtype}, "
                 f"device={result.device})"
             )
-        if units is not arrayutils._UNSET:
-            self.to_units_(units)
         if names is not arrayutils._UNSET:
             self.names = names
         if coords is not arrayutils._UNSET:
             self.coords = coords
+        if units is not arrayutils._UNSET:
+            self.to_units_(units)
         return self
 
     # -- attaching a unit by multiplication (Proposal 0003 §2.4) -----------
