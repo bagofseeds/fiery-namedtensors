@@ -6000,6 +6000,15 @@ def test_to_compact_picks_a_nice_scale_for_the_values():
         # an empty tensor has no magnitude to go on: it keeps its own unit
         empty = XTensor(torch.zeros(0), units="s")
         assert empty.to_compact().units == "second"
+        # multi-element: the *largest* magnitude drives the choice
+        multi = XTensor(torch.tensor([1e-9, 5e-6, 2e-9]), units="s")
+        assert multi.to_compact().units == "microsecond"
+        # a NaN must not veto the finite values' own max
+        mixed = XTensor(torch.tensor([float("nan"), 5e-6, 2e-9]), units="s")
+        assert mixed.to_compact().units == "microsecond"
+        # no finite value anywhere: falls back to magnitude 1, keeps its unit
+        allnan = XTensor(torch.tensor([float("nan"), float("inf")]), units="s")
+        assert allnan.to_compact().units == "second"
 
 
 def test_to_preferred_needs_a_table_of_units():

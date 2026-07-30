@@ -373,8 +373,11 @@ class XTensor(ExtendedTensor):
     def dimensionality(self) -> str:
         """
         The physical dimensionality of this tensor's unit (e.g. `"[length]"`,
-        `"[mass] * [length] ** 2 / [time] ** 3"`), or `""` if unitless.
-        Requires `unit_backend="pint"`.
+        `"[mass] * [length] ** 2 / [time] ** 3"`), or `""` if there's no unit
+        at all. An explicitly dimensionless unit (`.units == ""`) has its own
+        non-empty dimensionality string (`"dimensionless"`) -- see
+        `.dimensionless`/`.unitless` for the boolean questions. Requires
+        `unit_backend="pint"`.
         """
         return _units.dimensionality(self.units)
 
@@ -470,12 +473,22 @@ class XTensor(ExtendedTensor):
 
     @property
     def m(self) -> tx.Self:
-        """Alias for `magnitude`."""
+        """
+        Alias for `magnitude`. Like any real attribute, this takes
+        priority over a coordinate label named `"m"` (the same tradeoff
+        `.T`/`.shape`/every other attribute already has) -- reach such a
+        label with `x.sel(dim="m")` or `x["m"]` instead of `x.m`.
+        """
         return self.magnitude
 
     @property
     def u(self) -> tx.Optional[str]:
-        """Alias for `units`."""
+        """
+        Alias for `units`. Like any real attribute, this takes priority
+        over a coordinate label named `"u"` (the same tradeoff `.T`/
+        `.shape`/every other attribute already has) -- reach such a label
+        with `x.sel(dim="u")` or `x["u"]` instead of `x.u`.
+        """
         return self.units
 
     # -- unit simplification (Proposal 0006 §2.7) --------------------------
@@ -497,12 +510,15 @@ class XTensor(ExtendedTensor):
     def _compact_target(self, name: str) -> str:
         # Unlike the other three, the compact unit depends on how big the
         # values actually are, so the backend is given the largest magnitude
-        # present as a stand-in for the whole tensor.
+        # present as a stand-in for the whole tensor. A NaN/inf value must
+        # not veto the whole tensor's answer -- only fall back to 1.0 when
+        # there is no finite value at all (an empty tensor, or all NaN/inf).
         magnitude = 1.0
         if self.numel():
-            largest = self.as_subclass(Tensor).detach().abs().max().item()
-            if math.isfinite(largest):
-                magnitude = largest
+            values = self.as_subclass(Tensor).detach().abs()
+            finite = values[torch.isfinite(values)]
+            if finite.numel():
+                magnitude = finite.max().item()
         return self._simplification_target(
             name, _units.compact_units, magnitude=magnitude
         )
@@ -675,6 +691,8 @@ class XTensor(ExtendedTensor):
         inherits `to_units_`'s own restrictions (no unit set, or a leaf
         tensor requiring grad); `names=`/`coords=` inherit their setters'
         own validation (a length mismatch, an invalid coordinate spec).
+        Not atomic across overrides: if `units=` succeeds but a later
+        `names=`/`coords=` then raises, the unit change already happened.
         """
         args, units = self._parse_to_units("to_", args, kwargs, units)
         result = Tensor.to(self, *args, **kwargs)
