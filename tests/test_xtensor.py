@@ -5075,6 +5075,36 @@ def test_all_unnamed_operand_behaves_like_a_plain_tensor():
     assert (a + u).names == ("x", "y")
 
 
+def test_positional_fallback_keeps_coordinates_regardless_of_operand_order():
+    # issue #157: the positional fallback used to pick its coordinate source
+    # by `isinstance(a, XTensor)` alone, so a fully-anonymous XTensor on the
+    # left (`z`) silently out-ranked a named XTensor on the right (`p`) and
+    # dropped its coordinates -- even though wrapping a plain tensor bare
+    # (`z`) should be a no-op, exactly like using the plain tensor itself.
+    p = XTensor(
+        torch.ones(2, 3), names=("x", "y"), coords={"y": ("a", "b", "c")}
+    )
+    plain = torch.ones(2, 3)
+    z = XTensor(torch.ones(2, 3))  # fully anonymous -- same data as `plain`
+    expected = {"y": ("a", "b", "c")}
+    assert (p + plain).coords == expected
+    assert (plain + p).coords == expected
+    assert (p + z).coords == expected
+    assert (z + p).coords == expected  # was {} before the fix
+
+
+def test_positional_fallback_prefers_the_named_side_either_order():
+    # both operands are XTensor, one anonymous and one named -- the named
+    # side's coordinates/names should win regardless of which side it's on.
+    named = XTensor(
+        torch.zeros(2, 3), names=(None, "y"), coords={"y": ("a", "b", "c")}
+    )
+    anon = XTensor(torch.zeros(2, 3))
+    for out in (named + anon, anon + named):
+        assert out.names == (None, "y")
+        assert out.coords == {"y": ("a", "b", "c")}
+
+
 def test_partial_names_align_named_suffix_broadcast_leading_anon():
     # issue #75: unnamed axes all leading -> named suffix aligns by name,
     # anonymous prefix broadcasts positionally. The shared name is used, so

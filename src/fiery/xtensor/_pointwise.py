@@ -289,6 +289,11 @@ def _reconcile_units(
     return a, b, {"_data_units": _binary_unit(a, b, rule)}
 
 
+def _has_names(x: tx.Any) -> bool:
+    """Whether `x` is an `XTensor` carrying at least one named axis."""
+    return isinstance(x, XTensor) and any(n is not None for n in x.names)
+
+
 def _binary(
     a: tx.Any, b: tx.Any, base: tx.Callable, args, kwargs, rule=None
 ) -> tx.Any:
@@ -336,7 +341,18 @@ def _binary(
     result = base(a, b, *args, **kwargs)
     if not isinstance(result, Tensor):
         return result
-    ref = a if isinstance(a, XTensor) else b
+    # Prefer whichever operand actually carries names/coordinates -- an
+    # all-unnamed `XTensor` (e.g. a plain tensor merely wrapped bare) has
+    # nothing more to offer than a plain tensor, so it shouldn't out-rank a
+    # named operand just for being `a` (issue #157). The `a_has and b_has`
+    # gate above guarantees at most one of `a`/`b` has real names here, so
+    # there's no reconciliation to do -- just pick the informative side.
+    if _has_names(a):
+        ref = a
+    elif _has_names(b):
+        ref = b
+    else:
+        ref = a if isinstance(a, XTensor) else b
     names = _broadcast_batch_names(_names_of(a), _names_of(b))
     coords = (
         _coords_for(ref, names)
