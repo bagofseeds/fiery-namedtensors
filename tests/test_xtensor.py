@@ -24,6 +24,70 @@ _HAS_MOVEAXIS = hasattr(torch, "moveaxis")
 _HAS_BROADCAST_TO = hasattr(torch, "broadcast_to")
 
 # ----------------------------------------------------------------------
+# dispatch machinery: method form vs. functional form (issue #160)
+# ----------------------------------------------------------------------
+
+
+def test_method_form_runs_the_override_body_exactly_once(monkeypatch):
+    # `x.sum(...)` used to run `_reduce_names` twice: once directly (Python
+    # attribute lookup finds the registered method without ever going
+    # through `__torch_function__`), then again when that call's own
+    # `base(input, ...)` re-entered `__torch_function__` and found the same
+    # override a second time. `torch.sum(x, ...)` only ever ran it once.
+    import fiery.xtensor._reduce as _reduce
+
+    calls = []
+    orig = _reduce._reduce_names
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(_reduce, "_reduce_names", counting)
+
+    x = XTensor(torch.arange(6.0).reshape(2, 3), names=("a", "b"))
+
+    calls.clear()
+    method_result = x.sum(dim="a")
+    assert len(calls) == 1
+
+    calls.clear()
+    functional_result = torch.sum(x, 0)
+    assert len(calls) == 1
+
+    assert method_result.names == functional_result.names == ("b",)
+    assert method_result.tolist() == functional_result.tolist()
+
+
+def test_pointwise_method_functional_and_operator_forms_run_once(monkeypatch):
+    import fiery.xtensor._pointwise as _pointwise
+
+    calls = []
+    orig = _pointwise._binary
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    monkeypatch.setattr(_pointwise, "_binary", counting)
+
+    x = XTensor(torch.ones(2, 3), names=("a", "b"))
+    y = XTensor(torch.ones(2, 3), names=("a", "b"))
+
+    calls.clear()
+    x.add(y)
+    assert len(calls) == 1
+
+    calls.clear()
+    torch.add(x, y)
+    assert len(calls) == 1
+
+    calls.clear()
+    x + y
+    assert len(calls) == 1
+
+
+# ----------------------------------------------------------------------
 # dimensions (names)
 # ----------------------------------------------------------------------
 

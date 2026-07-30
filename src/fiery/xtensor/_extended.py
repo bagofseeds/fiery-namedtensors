@@ -55,8 +55,26 @@ class ExtendedTensor(Tensor, metaclass=ExtendedTensorMeta):
             newfunc = wraps(func)(newfunc)
             # Register as a public torch function
             cls._OVERRIDES[func] = newfunc
-            # Register as a torch.Tensor method
-            setattr(cls, func.__name__, newfunc)
+
+            # Register as a torch.Tensor method. `newfunc`'s own body calls
+            # `base(input, ...)` to get the real op's result -- when reached
+            # via `__torch_function__` (the functional form, `torch.op(x)`),
+            # that inner call is made under `_no_dispatch()` below, so it
+            # runs the plain op directly instead of recursing back here. The
+            # method form (`x.op(...)`) is instead resolved by ordinary
+            # Python attribute lookup, which never goes through
+            # `__torch_function__` at all -- so without this wrapper,
+            # `newfunc`'s inner `base(...)` call would re-enter
+            # `__torch_function__`, find this same override, and run the
+            # entire body a second time (issue #160). Disabling dispatch
+            # here mirrors what `__torch_function__` already does for the
+            # functional form, so both forms run the override exactly once.
+            @wraps(newfunc)
+            def method_slot(*args: tx.Any, **kwargs: tx.Any) -> tx.Any:
+                with _no_dispatch():
+                    return newfunc(*args, **kwargs)
+
+            setattr(cls, func.__name__, method_slot)
             return newfunc
 
         return decorator
