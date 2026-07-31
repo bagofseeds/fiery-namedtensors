@@ -3191,6 +3191,34 @@ def _affine_interp_pull(
     return out
 
 
+def _reslice_coordinate_values(
+    values: tx.Any, slicer: _SmartSlicerT
+) -> tx.Any:
+    """
+    Index a coordinate's materialised position array by `slicer`, explicitly
+    carrying over its position unit (`_unit_of(values)`) rather than relying
+    on it being propagated automatically.
+
+    `_slice_coordinate` is reached both from inside a registered override
+    (`narrow`/`select`/`split`/`flip`/`roll`/`index_select`, ...) and from
+    plain `__getitem__`/`.sel`/`.isel` (not themselves registered overrides).
+    The two paths differ in exactly the way that matters here: an override
+    runs under `_no_dispatch()` (`_extended.py`), which suppresses the
+    *generic* fallback (`_extended.py`'s `__torch_function__`, the "ops
+    without a name-aware override" branch) that would otherwise copy
+    `_data_units` from `values` onto `values[slicer]` for this un-overridden
+    indexing op -- so left to itself, `values[slicer]` silently comes back
+    unitless there, even though `values` itself carries a unit (issue #165).
+    `__getitem__`/`.sel`/`.isel` never run under `_no_dispatch()`, so that
+    generic fallback already carries the unit for them without this helper --
+    they were never actually affected, despite reaching the same function.
+    """
+    sliced = values[slicer]
+    if isinstance(values, XTensor) and isinstance(sliced, XTensor):
+        sliced._data_units = _unit_of(values)
+    return sliced
+
+
 def _slice_coordinate(
     coord: Coordinate, slicer: _SmartSlicerT, size: int
 ) -> tx.Optional[Coordinate]:
@@ -3218,7 +3246,8 @@ def _slice_coordinate(
                 value=base + start * spacing["value"], unit=spacing["unit"]
             )
             return out
-        return Coordinate(value=dict.__getitem__(coord, "value")[slicer])
+        values = dict.__getitem__(coord, "value")
+        return Coordinate(value=_reslice_coordinate_values(values, slicer))
     if arrayutils._is_boolean_index(slicer) or arrayutils._is_advanced_index(
         slicer
     ):
@@ -3226,7 +3255,7 @@ def _slice_coordinate(
             values = coord._bound(size)["value"]
         else:
             values = dict.__getitem__(coord, "value")
-        return Coordinate(value=values[slicer])
+        return Coordinate(value=_reslice_coordinate_values(values, slicer))
     return None
 
 
