@@ -4075,6 +4075,68 @@ def test_index_select_accepts_axis_name_and_slices_coords():
     assert by_name.coords == by_int.coords == {"chan": ("w", "y")}
 
 
+def test_index_select_on_a_compact_numeric_coordinate():
+    # #162: `index_select`'s coordinate handling used to hand the axis'
+    # `Coordinate` straight to `_slice_labels`, which integer-indexes it
+    # *positionally* -- but a numeric `Coordinate` is a dict-like mapping
+    # keyed by strings ("value"/"spacing"/"origin"), so that hit
+    # `Coordinate.__getitem__` and KeyErrored looking up the *key* `0`
+    # instead of *position* `0` (the same failure shape as #85).
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    idx = torch.tensor([0, 2])
+    out = x.index_select("t", idx)
+    assert out.tolist() == [0.0, 2.0]
+    assert out.coords["t"]["value"].tolist() == [0.0, 2.0]
+
+
+def test_index_select_functional_form_matches_method_form_for_numeric_coord():
+    # both `x.index_select(...)` and `torch.index_select(x, ...)` must go
+    # through the same fix -- they share one override body (see #160/#161).
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    idx = torch.tensor([0, 2])
+    method = x.index_select("t", idx)
+    functional = torch.index_select(x, 0, idx)
+    assert method.tolist() == functional.tolist() == [0.0, 2.0]
+    expected = [10.0, 14.0]
+    assert method.coords["t"]["value"].tolist() == expected
+    assert functional.coords["t"]["value"].tolist() == expected
+
+
+def test_index_select_on_an_explicit_numeric_coordinate():
+    # the explicit/irregular form (`{"value": <tensor>}`) is a meaningfully
+    # different branch of `_slice_coordinate` than the compact affine form
+    # above -- both must work.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0, 50.0])},
+    )
+    out = x.index_select("t", torch.tensor([3, 0, 1]))
+    assert out.tolist() == [3.0, 0.0, 1.0]
+    assert out.coords["t"]["value"].tolist() == [40.0, 10.0, 20.0]
+
+
+def test_index_select_on_a_label_coordinate_still_works():
+    # non-regression: a label coordinate (tuple of strings) must keep going
+    # through `_slice_labels` exactly as before the #162 fix.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": ("a", "b", "c", "d", "e")},
+    )
+    out = x.index_select("t", torch.tensor([0, 2, 4]))
+    assert out.tolist() == [0.0, 2.0, 4.0]
+    assert out.coords["t"] == ("a", "c", "e")
+
+
 def test_name_as_dim_unknown_name_raises():
     x = XTensor(torch.zeros(2, 3), names=("a", "b"))
     with pytest.raises(ValueError, match="no axis named 'z'"):

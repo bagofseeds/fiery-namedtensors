@@ -19,7 +19,13 @@ from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
 from fiery.xtensor._meta import _broadcast_batch_names
 from fiery.xtensor._selection import _slice_labels
-from fiery.xtensor._tensors import XTensor, _coords_dropping, _names_of
+from fiery.xtensor._tensors import (
+    Coordinate,
+    XTensor,
+    _coords_dropping,
+    _names_of,
+    _slice_coordinate,
+)
 
 # ======================================================================
 #
@@ -36,7 +42,21 @@ def _(input: XTensor, dim: int | str, index: Tensor) -> tx.Any:
     name = input.names[dim]
     coords = _coords_dropping(input, name)
     labels = input.coords.get(name)
-    if labels is not None:
+    if isinstance(labels, Coordinate):
+        # A numeric `Coordinate` is a dict-like mapping keyed by strings
+        # ("value"/"spacing"/"origin"), not a plain sequence -- positionally
+        # integer-indexing it (what `_slice_labels` does, correctly, for a
+        # tuple of labels) instead hits `Coordinate.__getitem__`, which looks
+        # up a *key*, not a *position*, and KeyErrors (#85's pitfall; #162).
+        # `index_select`'s index tensor is an advanced index (arbitrary
+        # positions, not necessarily a contiguous range), so route it through
+        # `_slice_coordinate`'s advanced-index branch instead -- the same
+        # machinery `flip`/`roll` already use to re-slice a numeric
+        # coordinate by an explicit position list.
+        sliced = _slice_coordinate(labels, index, input.shape[dim])
+        if sliced is not None:
+            coords[name] = (name,), sliced
+    elif labels is not None:
         coords[name] = (name,), tuple(_slice_labels(labels, index))
     return _carry(input, result, _coords=coords)
 
