@@ -19,7 +19,13 @@ from fiery.xtensor._compat import no_dispatch as _no_dispatch
 from fiery.xtensor._compat import torch_func as _torch_func
 from fiery.xtensor._meta import _broadcast_batch_names
 from fiery.xtensor._selection import _slice_labels
-from fiery.xtensor._tensors import XTensor, _coords_dropping, _names_of
+from fiery.xtensor._tensors import (
+    Coordinate,
+    XTensor,
+    _coords_dropping,
+    _names_of,
+    _slice_coordinate,
+)
 
 # ======================================================================
 #
@@ -36,7 +42,33 @@ def _(input: XTensor, dim: int | str, index: Tensor) -> tx.Any:
     name = input.names[dim]
     coords = _coords_dropping(input, name)
     labels = input.coords.get(name)
-    if labels is not None:
+    if isinstance(labels, Coordinate):
+        # A numeric `Coordinate` is a dict-like mapping keyed by strings
+        # ("value"/"spacing"/"origin"), not a plain sequence -- positionally
+        # integer-indexing it (what `_slice_labels` does, correctly, for a
+        # tuple of labels) instead hits `Coordinate.__getitem__`, which looks
+        # up a *key*, not a *position*, and KeyErrors (#85's pitfall; #162).
+        # `index_select`'s index tensor is an advanced index (arbitrary
+        # positions, not necessarily a contiguous range), so route it through
+        # `_slice_coordinate`'s advanced-index branch instead -- the same
+        # machinery `flip`/`roll` already use to re-slice a numeric
+        # coordinate by an explicit position list. Unlike `flip`/`roll`
+        # (which always synthesise a full-length Python list themselves),
+        # `index_select` hands `_slice_coordinate` a user-supplied tensor
+        # directly, so it must be normalised first: `_is_advanced_index`
+        # only recognises `torch.long`, so an `int32` index (torch documents
+        # both as valid) would otherwise silently fall through and drop the
+        # coordinate rather than re-slicing it; and a 0-D index (a valid,
+        # if unusual, `index_select` argument -- `argmax`/`argmin` return
+        # exactly this) would otherwise produce a mismatched 0-D coordinate
+        # against the size-1 result, corrupting the object (later access to
+        # `.coords`/`repr`/arithmetic raises) instead of the loud, immediate
+        # error the pre-fix code gave for this same input.
+        positions = torch.atleast_1d(index).long()
+        sliced = _slice_coordinate(labels, positions, input.shape[dim])
+        if sliced is not None:
+            coords[name] = (name,), sliced
+    elif labels is not None:
         coords[name] = (name,), tuple(_slice_labels(labels, index))
     return _carry(input, result, _coords=coords)
 

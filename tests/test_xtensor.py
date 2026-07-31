@@ -23,6 +23,16 @@ _HAS_SWAPAXES = hasattr(torch, "swapaxes")  # swapaxes / swapdims
 _HAS_MOVEAXIS = hasattr(torch, "moveaxis")
 _HAS_BROADCAST_TO = hasattr(torch, "broadcast_to")
 
+# torch 1.7's index_select rejects an int32 index outright ("Expected dtype
+# int64 for index"); later torch accepts it (matching the IntTensor-or-
+# LongTensor contract torch documents). Probed at runtime rather than gated
+# on a version number, since it's the actual op behavior under test.
+try:
+    torch.zeros(1).index_select(0, torch.zeros(1, dtype=torch.int32))
+    _INDEX_SELECT_ACCEPTS_INT32 = True
+except RuntimeError:
+    _INDEX_SELECT_ACCEPTS_INT32 = False
+
 # ----------------------------------------------------------------------
 # dispatch machinery: method form vs. functional form (issue #160)
 # ----------------------------------------------------------------------
@@ -4073,6 +4083,105 @@ def test_index_select_accepts_axis_name_and_slices_coords():
     by_int = x.index_select(2, torch.tensor([0, 2]))
     assert by_name.shape == by_int.shape == (2, 3, 2)
     assert by_name.coords == by_int.coords == {"chan": ("w", "y")}
+
+
+def test_index_select_on_a_compact_numeric_coordinate():
+    # #162: `index_select`'s coordinate handling used to hand the axis'
+    # `Coordinate` straight to `_slice_labels`, which integer-indexes it
+    # *positionally* -- but a numeric `Coordinate` is a dict-like mapping
+    # keyed by strings ("value"/"spacing"/"origin"), so that hit
+    # `Coordinate.__getitem__` and KeyErrored looking up the *key* `0`
+    # instead of *position* `0` (the same failure shape as #85).
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 1.0, "origin": 0.0}},
+    )
+    idx = torch.tensor([0, 2])
+    out = x.index_select("t", idx)
+    assert out.tolist() == [0.0, 2.0]
+    assert out.coords["t"]["value"].tolist() == [0.0, 2.0]
+
+
+def test_index_select_functional_form_matches_method_form_for_numeric_coord():
+    # both `x.index_select(...)` and `torch.index_select(x, ...)` must go
+    # through the same fix -- they share one override body (see #160/#161).
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    idx = torch.tensor([0, 2])
+    method = x.index_select("t", idx)
+    functional = torch.index_select(x, 0, idx)
+    assert method.tolist() == functional.tolist() == [0.0, 2.0]
+    expected = [10.0, 14.0]
+    assert method.coords["t"]["value"].tolist() == expected
+    assert functional.coords["t"]["value"].tolist() == expected
+
+
+def test_index_select_on_an_explicit_numeric_coordinate():
+    # the explicit/irregular form (`{"value": <tensor>}`) is a meaningfully
+    # different branch of `_slice_coordinate` than the compact affine form
+    # above -- both must work.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": torch.tensor([10.0, 20.0, 30.0, 40.0, 50.0])},
+    )
+    out = x.index_select("t", torch.tensor([3, 0, 1]))
+    assert out.tolist() == [3.0, 0.0, 1.0]
+    assert out.coords["t"]["value"].tolist() == [40.0, 10.0, 20.0]
+
+
+def test_index_select_on_a_label_coordinate_still_works():
+    # non-regression: a label coordinate (tuple of strings) must keep going
+    # through `_slice_labels` exactly as before the #162 fix.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": ("a", "b", "c", "d", "e")},
+    )
+    out = x.index_select("t", torch.tensor([0, 2, 4]))
+    assert out.tolist() == [0.0, 2.0, 4.0]
+    assert out.coords["t"] == ("a", "c", "e")
+
+
+def test_index_select_with_a_0d_index_on_a_numeric_coordinate():
+    # a 0-D index is a valid index_select argument (e.g. what argmax/argmin
+    # return) -- the first version of the #162 fix mismatched a 0-D
+    # coordinate value against the size-1 result, producing an object that
+    # returned successfully but raised later on any access to .coords,
+    # repr(), or arithmetic. Must behave like the equivalent 1-D index.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    out = x.index_select("t", torch.tensor(2))
+    assert out.tolist() == [2.0]
+    assert out.coords["t"]["value"].tolist() == [14.0]
+    assert repr(out)  # must not raise
+    assert (out + 1).tolist() == [3.0]
+
+
+@pytest.mark.skipif(
+    not _INDEX_SELECT_ACCEPTS_INT32,
+    reason="torch 1.7's index_select itself rejects an int32 index",
+)
+def test_index_select_with_an_int32_index_on_a_numeric_coordinate():
+    # torch documents index_select's index as IntTensor or LongTensor; the
+    # first version of the #162 fix only recognised torch.long and silently
+    # dropped the coordinate for an int32 index instead of re-slicing it.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    idx = torch.tensor([0, 2], dtype=torch.int32)
+    out = x.index_select("t", idx)
+    assert out.tolist() == [0.0, 2.0]
+    assert out.coords["t"]["value"].tolist() == [10.0, 14.0]
 
 
 def test_name_as_dim_unknown_name_raises():
