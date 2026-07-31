@@ -3199,16 +3199,19 @@ def _reslice_coordinate_values(
     carrying over its position unit (`_unit_of(values)`) rather than relying
     on it being propagated automatically.
 
-    `_slice_coordinate` is only ever reached from inside a registered
-    override (`narrow`/`select`/`split`/`flip`/`roll`/`index_select`/
-    `__getitem__`'s own dispatch, ...), which -- per `_extended.py` -- always
-    runs under `_no_dispatch()` so the plain ops it calls do not recurse back
-    through `__torch_function__`. That also disables the *generic* fallback
-    (`_extended.py`'s `__torch_function__`, the "ops without a name-aware
-    override" branch) that would otherwise copy `_data_units` from `values`
-    onto `values[slicer]` for this un-overridden indexing op -- so left to
-    itself, `values[slicer]` silently comes back unitless even though
-    `values` itself carries a unit (issue #165).
+    `_slice_coordinate` is reached both from inside a registered override
+    (`narrow`/`select`/`split`/`flip`/`roll`/`index_select`, ...) and from
+    plain `__getitem__`/`.sel`/`.isel` (not themselves registered overrides).
+    The two paths differ in exactly the way that matters here: an override
+    runs under `_no_dispatch()` (`_extended.py`), which suppresses the
+    *generic* fallback (`_extended.py`'s `__torch_function__`, the "ops
+    without a name-aware override" branch) that would otherwise copy
+    `_data_units` from `values` onto `values[slicer]` for this un-overridden
+    indexing op -- so left to itself, `values[slicer]` silently comes back
+    unitless there, even though `values` itself carries a unit (issue #165).
+    `__getitem__`/`.sel`/`.isel` never run under `_no_dispatch()`, so that
+    generic fallback already carries the unit for them without this helper --
+    they were never actually affected, despite reaching the same function.
     """
     sliced = values[slicer]
     if isinstance(values, XTensor) and isinstance(sliced, XTensor):

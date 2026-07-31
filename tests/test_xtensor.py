@@ -4628,10 +4628,12 @@ def test_flip_preserves_the_position_unit_of_an_explicit_numeric_coordinate():
 
 
 def test_narrow_and_split_preserve_the_unit_of_an_explicit_coordinate():
-    # #165's basic-slice sibling: `narrow`/`select`/`split`/`chunk` re-slice
-    # an *explicit* numeric coordinate through `_slice_coordinate`'s basic
-    # slice branch, also called from inside a `_no_dispatch()` override, and
-    # so also silently dropped the unit.
+    # #165's basic-slice sibling: `narrow`/`split`/`chunk` re-slice an
+    # *explicit* numeric coordinate through `_slice_coordinate`'s basic slice
+    # branch, also called from inside a `_no_dispatch()` override, and so
+    # also silently dropped the unit. `select` passes a plain int, which
+    # drops the whole coordinate (there's nothing left to lose a unit from),
+    # so it was never actually affected despite reaching the same function.
     x = XTensor(
         torch.arange(4.0),
         names=("t",),
