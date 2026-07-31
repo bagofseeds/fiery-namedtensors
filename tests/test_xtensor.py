@@ -4565,6 +4565,107 @@ def test_flip_of_a_compact_numeric_coordinate_keeps_gradients_flowing():
     assert spacing.grad is not None
 
 
+def test_roll_preserves_the_position_unit_of_a_compact_numeric_coordinate():
+    # #165: `roll`'s wrap-around can't stay affine, so it materialises the
+    # compact coordinate to an explicit array via `_slice_coordinate`'s
+    # advanced-index branch -- that branch used to rely on the generic
+    # `__torch_function__` metadata-carry fallback to propagate the position
+    # unit onto the materialised array, but `_slice_coordinate` is always
+    # called from inside an override running under `_no_dispatch()`, where
+    # that fallback never fires -- so the unit silently came back `None`.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": (2.0, "mm"), "origin": (10.0, "mm")}},
+    )
+    assert x.coords["t"]["spacing"].unit == "mm"
+    out = torch.roll(x, 1, dims=0)
+    assert out.coords["t"]["value"].tolist() == [18.0, 10.0, 12.0, 14.0, 16.0]
+    assert out.coords["t"]["value"].units == "mm"
+
+
+def test_index_select_preserves_the_unit_of_a_compact_numeric_coordinate():
+    # #165: same root cause as the `roll` case above, for `index_select`'s
+    # (#162-fixed) advanced-index re-slice of a compact coordinate.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": (2.0, "mm"), "origin": (10.0, "mm")}},
+    )
+    out = x.index_select("t", torch.tensor([0, 2]))
+    assert out.coords["t"]["value"].tolist() == [10.0, 14.0]
+    assert out.coords["t"]["value"].units == "mm"
+
+
+def test_flip_still_preserves_the_unit_of_a_compact_numeric_coordinate():
+    # non-regression: flip's compact case never materialises (it negates
+    # `spacing`/shifts `origin` and stays compact), so it never went through
+    # the buggy path and must be completely unaffected by the #165 fix.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": (2.0, "mm"), "origin": (10.0, "mm")}},
+    )
+    out = torch.flip(x, [0])
+    assert out.coords["t"]["value"].tolist() == [18.0, 16.0, 14.0, 12.0, 10.0]
+    assert out.coords["t"]["value"].units == "mm"
+    assert out.coords["t"]._compact()  # unchanged: still the compact form
+
+
+def test_flip_preserves_the_position_unit_of_an_explicit_numeric_coordinate():
+    # #165 also affected flip when the coordinate is *already* explicit
+    # (negative-step slicing isn't valid on a tensor, so flip re-slices an
+    # explicit coordinate through the same advanced-index branch as roll /
+    # index_select, rather than through the compact affine shortcut above).
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"value": XTensor([10.0, 20.0, 30.0, 40.0], units="mm")}},
+    )
+    out = x.flip("t")
+    assert out.coords["t"]["value"].tolist() == [40.0, 30.0, 20.0, 10.0]
+    assert out.coords["t"]["value"].units == "mm"
+
+
+def test_narrow_and_split_preserve_the_unit_of_an_explicit_coordinate():
+    # #165's basic-slice sibling: `narrow`/`select`/`split`/`chunk` re-slice
+    # an *explicit* numeric coordinate through `_slice_coordinate`'s basic
+    # slice branch, also called from inside a `_no_dispatch()` override, and
+    # so also silently dropped the unit.
+    x = XTensor(
+        torch.arange(4.0),
+        names=("t",),
+        coords={"t": {"value": XTensor([10.0, 20.0, 30.0, 40.0], units="mm")}},
+    )
+    narrowed = x.narrow("t", 1, 2)
+    assert narrowed.coords["t"]["value"].tolist() == [20.0, 30.0]
+    assert narrowed.coords["t"]["value"].units == "mm"
+    parts = x.split(2, dim="t")
+    assert [p.coords["t"]["value"].units for p in parts] == ["mm", "mm"]
+
+
+def test_roll_of_a_non_unitful_compact_numeric_coordinate_still_works():
+    # non-regression: a coordinate with no unit at all must not gain one
+    # (and must not error) after the #165 fix -- don't assume every
+    # coordinate carries a unit.
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    assert x.coords["t"]["spacing"].unit == ""
+    out = torch.roll(x, 1, dims=0)
+    assert out.coords["t"]["value"].tolist() == [3.0, 0.0, 1.0, 2.0]
+    assert out.coords["t"]["value"].units == ""
+
+
+def test_index_select_of_a_non_unitful_compact_coordinate_still_works():
+    x = XTensor(
+        torch.arange(4.0), names=("t",), coords={"t": {"spacing": 1.0}}
+    )
+    out = x.index_select("t", torch.tensor([0, 2]))
+    assert out.coords["t"]["value"].tolist() == [0.0, 2.0]
+    assert out.coords["t"]["value"].units == ""
+
+
 # ----------------------------------------------------------------------
 # reshape-family (rank-changing): flatten / unflatten / expand / diagonal
 # ----------------------------------------------------------------------
