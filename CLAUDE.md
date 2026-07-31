@@ -531,7 +531,7 @@ page, tutorial, and example — not just the header doc-comments:
 
 **This applies equally to every public docstring** (any class/function/method
 without a leading underscore, reachable from `fiery.xtensor`'s public API) —
-the API reference page renders them directly via `mkdocstrings`, so a
+the API reference renders them directly via `mkdocstrings`, so a
 docstring *is* a doc page, not an implementation note. Concretely, a public
 docstring must **not**:
 
