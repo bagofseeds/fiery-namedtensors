@@ -4137,6 +4137,39 @@ def test_index_select_on_a_label_coordinate_still_works():
     assert out.coords["t"] == ("a", "c", "e")
 
 
+def test_index_select_with_a_0d_index_on_a_numeric_coordinate():
+    # a 0-D index is a valid index_select argument (e.g. what argmax/argmin
+    # return) -- the first version of the #162 fix mismatched a 0-D
+    # coordinate value against the size-1 result, producing an object that
+    # returned successfully but raised later on any access to .coords,
+    # repr(), or arithmetic. Must behave like the equivalent 1-D index.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    out = x.index_select("t", torch.tensor(2))
+    assert out.tolist() == [2.0]
+    assert out.coords["t"]["value"].tolist() == [14.0]
+    assert repr(out)  # must not raise
+    assert (out + 1).tolist() == [3.0]
+
+
+def test_index_select_with_an_int32_index_on_a_numeric_coordinate():
+    # torch documents index_select's index as IntTensor or LongTensor; the
+    # first version of the #162 fix only recognised torch.long and silently
+    # dropped the coordinate for an int32 index instead of re-slicing it.
+    x = XTensor(
+        torch.arange(5.0),
+        names=("t",),
+        coords={"t": {"spacing": 2.0, "origin": 10.0}},
+    )
+    idx = torch.tensor([0, 2], dtype=torch.int32)
+    out = x.index_select("t", idx)
+    assert out.tolist() == [0.0, 2.0]
+    assert out.coords["t"]["value"].tolist() == [10.0, 14.0]
+
+
 def test_name_as_dim_unknown_name_raises():
     x = XTensor(torch.zeros(2, 3), names=("a", "b"))
     with pytest.raises(ValueError, match="no axis named 'z'"):

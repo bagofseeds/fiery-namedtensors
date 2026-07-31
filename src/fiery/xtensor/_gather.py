@@ -52,8 +52,20 @@ def _(input: XTensor, dim: int | str, index: Tensor) -> tx.Any:
         # positions, not necessarily a contiguous range), so route it through
         # `_slice_coordinate`'s advanced-index branch instead -- the same
         # machinery `flip`/`roll` already use to re-slice a numeric
-        # coordinate by an explicit position list.
-        sliced = _slice_coordinate(labels, index, input.shape[dim])
+        # coordinate by an explicit position list. Unlike `flip`/`roll`
+        # (which always synthesise a full-length Python list themselves),
+        # `index_select` hands `_slice_coordinate` a user-supplied tensor
+        # directly, so it must be normalised first: `_is_advanced_index`
+        # only recognises `torch.long`, so an `int32` index (torch documents
+        # both as valid) would otherwise silently fall through and drop the
+        # coordinate rather than re-slicing it; and a 0-D index (a valid,
+        # if unusual, `index_select` argument -- `argmax`/`argmin` return
+        # exactly this) would otherwise produce a mismatched 0-D coordinate
+        # against the size-1 result, corrupting the object (later access to
+        # `.coords`/`repr`/arithmetic raises) instead of the loud, immediate
+        # error the pre-fix code gave for this same input.
+        positions = torch.atleast_1d(index).long()
+        sliced = _slice_coordinate(labels, positions, input.shape[dim])
         if sliced is not None:
             coords[name] = (name,), sliced
     elif labels is not None:
