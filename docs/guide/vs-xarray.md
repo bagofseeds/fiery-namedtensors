@@ -72,14 +72,19 @@ This page lists where the two diverge, in both directions.
   `method="nearest"`/`"linear"`: since there is no closed form, it seeds a
   fractional index from the same brute-force nearest lookup and refines it
   with a few Newton iterations against a finite-difference Jacobian, in
-  plain `torch` (no extra dependency). It solves one query point at a time
-  (no shared work across a batch the way the affine path's single matrix
-  inverse gets), raises rather than guessing when a query is out of the
-  grid's coordinate range or lands where the map isn't locally invertible
-  (a fold), and does not carry gradients back to the query point or the
-  coordinate arrays — only to the tensor's own data values, same as every
-  other `interp` call. A higher spline order, or more than 2 spanned dims,
-  isn't implemented.
+  plain `torch` (no extra dependency). Only that nearest-neighbor seed is
+  computed one point at a time (no vectorized form of that lookup exists);
+  the Newton solve and the final pull are both fully vectorized over the
+  whole batch. It raises rather than guessing when a query is out of the
+  grid's coordinate range, or lands close enough to a fold that the local
+  Jacobian is itself singular there — away from the fold line itself it
+  resolves to one of the (possibly several) valid preimages without warning
+  that another exists — and does not carry gradients back to the query
+  point or the coordinate arrays — only to the tensor's own data values,
+  same as every other `interp` call. Convergence and singularity checks
+  scale with the coordinates' own magnitude rather than a fixed absolute
+  unit. A higher spline order, or more than 2 spanned dims, isn't
+  implemented.
 - **Alignment is inner-join only.** There is no `join="outer"/"left"/"right"`
   (which would need NaN fill); operands align to the **intersection** of their
   labels. (xarray's *default* `arithmetic_join` is also `"inner"`, so the

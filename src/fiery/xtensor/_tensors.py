@@ -1520,11 +1520,18 @@ class XTensor(ExtendedTensor):
         brute-force lookup `.sel` uses), then refines it with a few Newton
         iterations against a locally-estimated Jacobian, entirely in plain
         `torch` (no extra dependency). A query outside the grid's coordinate
-        range, or landing where the map isn't locally invertible (e.g. a
-        fold), raises rather than returning a silently wrong answer. The
-        Newton solve itself does not carry gradients back to the query
-        point or the coordinate arrays -- only to the tensor's own **data**
-        values, same as every other `interp` path.
+        range raises rather than returning a silently wrong answer, as does
+        one landing close enough to a fold (or other locally non-invertible
+        patch) that the local Jacobian is itself singular there. That
+        detection is necessarily local, though: a fold means at least two
+        different positions share the same world coordinates, and *away*
+        from the fold line itself (where the two branches are still locally
+        distinct and individually invertible) the solve converges to
+        *whichever* of the valid preimages its nearest-neighbor seed happens
+        to land closest to, without warning that another equally-valid
+        preimage exists. The Newton solve itself does not carry gradients
+        back to the query point or the coordinate arrays -- only to the
+        tensor's own **data** values, same as every other `interp` path.
 
         Pass `indexers` as an explicit mapping (`x.interp({"method":
         5.0})`) instead of keyword arguments when a dim's name collides
@@ -1559,13 +1566,13 @@ class XTensor(ExtendedTensor):
         out, curv_consumed = out._curvilinear_interp_group(
             indexers, method, bound, extrapolate, name
         )
-        overlap = consumed & curv_consumed
-        if overlap:
-            raise ValueError(
-                f"interp: dim(s) {sorted(overlap)!r} set by both a joint "
-                "affine and a joint curvilinear query in the same call -- "
-                "pass one or the other"
-            )
+        # `consumed`/`curv_consumed` can never overlap: a name's stored
+        # `Coordinate` is either `_compact()` (affine) or not (curvilinear),
+        # never both, so the two groups can never both claim the same name.
+        # The dims-level version of this conflict (same `dims` spanned by
+        # one of each kind) is caught upfront by
+        # `_check_no_affine_curvilinear_dims_conflict`, before either group
+        # runs.
         consumed = consumed | curv_consumed
         for key, target in indexers.items():
             if key in consumed:
@@ -2544,37 +2551,76 @@ def _curvilinear_sel_indices(
 #: sampled grid, so a handful of iterations either converges or signals a
 #: genuinely bad query (out of range, or a non-invertible/folded patch).
 _CURVILINEAR_INTERP_MAX_ITER = 50
-_CURVILINEAR_INTERP_TOL = 1e-9
+#: Convergence check: `residual.abs() < atol + rtol * |target|`, mirroring
+#: `torch.allclose`'s own atol/rtol combination (review of #166, finding
+#: #3). A bare absolute tolerance is only reachable up to coordinate
+#: magnitudes of a few million in float64 (spacing is `~2.2e-16 * M`), so
+#: UTM/ECEF-scale (metres, 1e6-1e7) or millimetre-precision coordinates
+#: would spuriously "fail to converge" well before they actually ran out of
+#: representable precision. `_CURVILINEAR_INTERP_ATOL` alone still governs
+#: small-magnitude coordinates (its previous role as the sole tolerance).
+_CURVILINEAR_INTERP_ATOL = 1e-9
+_CURVILINEAR_INTERP_RTOL = 1e-10
 _CURVILINEAR_INTERP_FD_STEP = 1e-4
-#: A central difference straddling an exact kink (e.g. right at a fold's
-#: turning point) subtracts two nearly-equal float64 values, so its noise
-#: floor sits a few times `1e-16 / (2 * _CURVILINEAR_INTERP_FD_STEP)` above
-#: zero (~1e-12) rather than being exactly zero -- comfortably below any
-#: real (non-degenerate) Jacobian entry, so this stays well clear of that
-#: floor without risking a false negative on a genuinely small-but-valid
-#: determinant.
-_CURVILINEAR_INTERP_SINGULAR_TOL = 1e-8
+#: Singularity check: compare `|det(J)|` against `rtol * ||J[:, 0]|| *
+#: ||J[:, 1]||` rather than a bare constant (review of #166, finding #2).
+#: `det(J)` carries units of `world0 * world1 / index^2`, so a fixed
+#: absolute threshold is only sensible for O(1)-magnitude coordinates: the
+#: same geometry in fine-resolution degrees (`|det J| ~ 1e-9`) or in
+#: large-magnitude metres (`|det J|` inflated by `~1e6`) would push a fixed
+#: threshold to false-positive or false-negative respectively. Normalizing
+#: by the column norms turns the test into `|sin(theta)| < rtol`, where
+#: `theta` is the angle between the Jacobian's two column vectors -- a
+#: dimensionless, scale-free measure of how close the local map is to
+#: folding (theta -> 0), which is what "isn't locally invertible" actually
+#: means. `<=` (not `<`) so a Jacobian with an exactly-zero column (e.g. a
+#: degenerate size-1 axis, where both norms and the determinant are all
+#: exactly 0) is still caught rather than passing a `0 < 0` test.
+_CURVILINEAR_INTERP_SINGULAR_RTOL = 1e-6
 #: How far (in index units) a solved position may sit outside `[0, size -
 #: 1]` before it counts as out-of-bounds rather than an edge cell -- half a
 #: grid cell either side, mirroring `bound="replicate"`'s own edge handling.
 _CURVILINEAR_INTERP_OOB_MARGIN = 0.5
 
 
-def _bilinear_sample_2d(grid: Tensor, ij: Tensor) -> Tensor:
+def _bilinear_sample_2d(
+    grid: Tensor, ij: Tensor, *, clamp_query: bool = True
+) -> Tensor:
     """
     Bilinearly sample a 2-D `grid` (shape `(h, w)`) at fractional row/column
-    positions `ij` (`(..., 2)`), clamping to the valid range (replicate at
-    the border). The forward-map evaluator the curvilinear Newton solve
-    (`_curvilinear_interp_pull`) repeatedly calls -- deliberately
-    independent of the optional `fiery.interpol` backend (pure `torch`, no
-    extra dependency), since the inversion needs to evaluate it many times
-    per query point and a size-1 axis is a real, if degenerate, case (no
-    interpolation possible along it, so that axis's contribution is a flat
-    zero).
+    positions `ij` (`(..., 2)`). The forward-map evaluator the curvilinear
+    Newton solve (`_curvilinear_interp_pull`) repeatedly calls --
+    deliberately independent of the optional `fiery.interpol` backend (pure
+    `torch`, no extra dependency), since the inversion needs to evaluate it
+    many times per query point and a size-1 axis is a real, if degenerate,
+    case (no interpolation possible along it, so that axis's contribution
+    is a flat zero).
+
+    `clamp_query=True` (the default) clamps `ij` to the valid `[0, size -
+    1]` range first (replicate at the border) -- the right behavior for
+    evaluating the map itself, including at/near the boundary, so a
+    genuinely out-of-range query still degrades to a flattened derivative
+    there and gets caught (see `_curvilinear_newton_indices`).
+
+    `clamp_query=False` skips that clamp: `i`/`j` (and therefore `di`/`dj`)
+    are allowed to go negative or past `size - 1`, which -- since `i0`/`j0`
+    (the gather indices) are still clamped to a valid cell -- linearly
+    *extrapolates* along that edge cell's own slope instead of flattening.
+    This is what `_curvilinear_newton_indices` uses for its finite-
+    difference Jacobian: a central difference straddling index 0 or `size -
+    1` must see the true local derivative, not one artificially halved by
+    one of its two sample points collapsing back onto the clamped boundary
+    (review of #166, finding #1) -- the nearest-neighbor Newton seed is
+    *always* an exact integer index by construction, so boundary rows/
+    columns (a third or more of any grid's nodes) are hit on essentially
+    every query, not as some rare edge case.
     """
     h, w = grid.shape[-2], grid.shape[-1]
-    i = ij[..., 0].clamp(0, h - 1)
-    j = ij[..., 1].clamp(0, w - 1)
+    i = ij[..., 0]
+    j = ij[..., 1]
+    if clamp_query:
+        i = i.clamp(0, h - 1)
+        j = j.clamp(0, w - 1)
     i0 = i.floor().long().clamp(0, max(h - 2, 0))
     j0 = j.floor().long().clamp(0, max(w - 2, 0))
     i1 = (i0 + 1).clamp(max=h - 1)
@@ -2595,7 +2641,11 @@ def _bilinear_sample_2d(grid: Tensor, ij: Tensor) -> Tensor:
 
 
 def _curvilinear_out_of_bounds(
-    index: Tensor, sizes: tuple, dims: tuple, names_in_group: list
+    index: Tensor,
+    sizes: tuple,
+    dims: tuple,
+    names_in_group: list,
+    active: tx.Optional[Tensor] = None,
 ) -> None:
     """
     Raise a clear `ValueError` if any row of `index` (`(n, k)`) sits outside
@@ -2603,7 +2653,17 @@ def _curvilinear_out_of_bounds(
     `_CURVILINEAR_INTERP_OOB_MARGIN` -- shared between the mid-solve check
     (an out-of-range query degrades to a singular clamped-boundary Jacobian,
     see `_curvilinear_newton_indices`) and the final post-convergence check.
+
+    `active` (`(n,)` bool, default all-`True`) restricts which rows are
+    checked, while keeping the reported row number relative to the full
+    batch -- the mid-solve call passes the not-yet-converged mask, so an
+    already-converged point sitting near the margin (nothing wrong with it)
+    can never be the one this raises about (review of #166, finding #4).
     """
+    if active is None:
+        active = torch.ones(
+            index.shape[0], dtype=torch.bool, device=index.device
+        )
     for col in range(index.shape[1]):
         size = sizes[col]
         lo = -_CURVILINEAR_INTERP_OOB_MARGIN
@@ -2613,7 +2673,9 @@ def _curvilinear_out_of_bounds(
         # exactly *at* the boundary, not beyond it -- `<=`/`>=` still catches
         # that (an interior solution landing exactly on the boundary by
         # genuine coincidence is vanishingly unlikely).
-        out_of_bounds = (index[:, col] <= lo) | (index[:, col] >= hi)
+        out_of_bounds = active & (
+            (index[:, col] <= lo) | (index[:, col] >= hi)
+        )
         if bool(out_of_bounds.any()):
             bad = int(out_of_bounds.nonzero()[0])
             raise ValueError(
@@ -2652,6 +2714,16 @@ def _curvilinear_newton_indices(
     within the iteration budget, or when the final position lands outside
     the grid's index range by more than half a cell -- rather than
     returning an extrapolated or otherwise unreliable position.
+
+    A point that has already converged is masked out of every later
+    iteration's singularity test (and its Newton update) -- otherwise its
+    outcome would depend on whichever *other*, still-iterating point
+    happens to be batched alongside it: a point that converges immediately
+    (e.g. it seeds exactly onto a fold's apex, where the true Jacobian is
+    itself singular *at the solution*) would still have that singular
+    Jacobian re-tested -- and raise -- on every subsequent iteration driven
+    by a slower batch-mate, even though queried alone it succeeds
+    (review of #166, finding #4).
     """
     h_step = _CURVILINEAR_INTERP_FD_STEP
     index = init_index.clone()
@@ -2672,32 +2744,52 @@ def _curvilinear_newton_indices(
             [_bilinear_sample_2d(g, index) for g in grids], dim=-1
         )  # (n, k)
         residual = targets - world
-        converged = residual.abs().amax(dim=-1) < _CURVILINEAR_INTERP_TOL
+        tol = (
+            _CURVILINEAR_INTERP_ATOL + _CURVILINEAR_INTERP_RTOL * targets.abs()
+        )
+        converged = (residual.abs() < tol).all(dim=-1)
         if bool(converged.all()):
             break
+        active = ~converged
         jac = torch.empty(n, k, k, dtype=index.dtype, device=index.device)
         for col in range(k):
             step = torch.zeros_like(index)
             step[:, col] = h_step
             plus = torch.stack(
-                [_bilinear_sample_2d(g, index + step) for g in grids], dim=-1
+                [
+                    _bilinear_sample_2d(g, index + step, clamp_query=False)
+                    for g in grids
+                ],
+                dim=-1,
             )
             minus = torch.stack(
-                [_bilinear_sample_2d(g, index - step) for g in grids], dim=-1
+                [
+                    _bilinear_sample_2d(g, index - step, clamp_query=False)
+                    for g in grids
+                ],
+                dim=-1,
             )
             jac[:, :, col] = (plus - minus) / (2 * h_step)
         a, b = jac[:, 0, 0], jac[:, 0, 1]
         c, d = jac[:, 1, 0], jac[:, 1, 1]
         det = a * d - b * c
-        singular = det.abs() < _CURVILINEAR_INTERP_SINGULAR_TOL
+        col0_norm = torch.hypot(a, c)
+        col1_norm = torch.hypot(b, d)
+        singular_tol = (
+            _CURVILINEAR_INTERP_SINGULAR_RTOL * col0_norm * col1_norm
+        )
+        singular = active & (det.abs() <= singular_tol)
         if bool(singular.any()):
             # an out-of-range query degrades to a singular Jacobian for a
             # mundane reason (the forward sampler clamps/flattens beyond
             # the grid edge, so its derivative vanishes there) -- check that
             # first, so the error names the actual cause (out of range)
             # rather than the more alarming but less useful "singular"
-            # diagnosis whenever the two coincide.
-            _curvilinear_out_of_bounds(index, sizes, dims, names_in_group)
+            # diagnosis whenever the two coincide. Scoped to `active` (not
+            # yet converged) rows, same as `singular` itself.
+            _curvilinear_out_of_bounds(
+                index, sizes, dims, names_in_group, active
+            )
             bad = int(singular.nonzero()[0])
             raise ValueError(
                 "interp: the local Jacobian of the curvilinear coordinate "
@@ -2711,6 +2803,12 @@ def _curvilinear_newton_indices(
         delta = torch.stack(
             [(d * r0 - b * r1) * inv_det, (-c * r0 + a * r1) * inv_det],
             dim=-1,
+        )
+        # freeze already-converged rows: `delta` for them may be garbage
+        # (e.g. `inv_det` computed from a since-irrelevant near-singular
+        # Jacobian at the fold apex above), but it is never selected here.
+        delta = torch.where(
+            active.unsqueeze(-1), delta, torch.zeros_like(delta)
         )
         index = torch.max(torch.min(index + delta, hi), lo)
     else:
@@ -2869,7 +2967,6 @@ def _curvilinear_interp_pull(
             grids, targets, init, sizes, dims, names_in_group
         )
 
-    riding = [(nm, query, unit) for nm, query, unit in broadcasted]
     return _nd_interp_pull_and_wrap(
         tensor,
         dims,
@@ -2880,7 +2977,7 @@ def _curvilinear_interp_pull(
         extrapolate,
         name,
         is_many_group,
-        riding,
+        broadcasted,
     )
 
 
@@ -3440,7 +3537,7 @@ def _check_no_affine_curvilinear_dims_conflict(
     stored: dict, indexers: tx.Mapping[str, tx.Any]
 ) -> None:
     """
-    Raise a clear error if the same `dims` tuple is spanned by both a
+    Raise a clear error if the same *set* of dims is spanned by both a
     compact **affine** coordinate name and a general **curvilinear**
     coordinate name, both present in the same `interp` call (issue #82) --
     e.g. `y, x` carrying both a `p`/`q` affine map and a `lat`/`lon`
@@ -3451,24 +3548,36 @@ def _check_no_affine_curvilinear_dims_conflict(
     for its own group, which would otherwise surface as a confusing "no
     axis" error rather than naming the actual conflict. Checked before
     either phase runs, so neither has mutated anything yet.
+
+    Compares `dims` as an unordered `frozenset` with a non-empty-
+    intersection test, not an exact-tuple equality test (review of #166,
+    finding #7): an affine coordinate spanning `("y", "x")` and a
+    curvilinear one spanning `("x", "y")` -- the same two axes, written in
+    the other order -- previously slipped past an exact-tuple comparison
+    entirely, as did a *partially* overlapping pair (e.g. `("y", "x")` vs.
+    `("x", "z")`, sharing only `"x"`); both produce exactly the confusing
+    "no axis" error this guard exists to prevent.
     """
-    affine_dims = set()
-    curvilinear_dims = set()
+    affine_dims = []
+    curvilinear_dims = []
     for nm in indexers:
         entry = stored.get(nm)
         if entry is None:
             continue
         dims, coord = entry
         if len(dims) > 1 and isinstance(coord, Coordinate):
-            (affine_dims if coord._compact() else curvilinear_dims).add(dims)
-    overlap = affine_dims & curvilinear_dims
-    if overlap:
-        raise ValueError(
-            f"interp: dims {sorted(overlap)!r} are spanned by both a "
-            "compact affine coordinate and a general curvilinear "
-            "coordinate, both queried in the same call -- pass one or "
-            "the other"
-        )
+            group = affine_dims if coord._compact() else curvilinear_dims
+            group.append(frozenset(dims))
+    for a in affine_dims:
+        for c in curvilinear_dims:
+            overlap = a & c
+            if overlap:
+                raise ValueError(
+                    f"interp: dim(s) {sorted(overlap)!r} are spanned by "
+                    "both a compact affine coordinate and a general "
+                    "curvilinear coordinate, both queried in the same "
+                    "call -- pass one or the other"
+                )
 
 
 def _affine_interp_pull(

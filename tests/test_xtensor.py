@@ -1,6 +1,7 @@
 """Tests for fiery.xtensor."""
 
 import enum
+import math
 
 import pytest
 import torch
@@ -958,6 +959,14 @@ def test_curvilinear_interp_matches_a_hand_computed_bilinear_reference():
         target_lon = _bilinear_2d(lon, fi, fj)
         got = t.interp(lat=target_lat, lon=target_lon, method="linear").item()
         expected = _bilinear_2d(data, fi, fj)
+        # investigated (review of #166, finding #9): the ~1e-4 floor here
+        # is not float32 fixture noise from `_curvilinear_demo`'s data --
+        # rerunning with float64 data/coordinates measures the same ~7e-6
+        # worst case, so the floor traces to the optional
+        # `fiery.interpol.grid_pull` backend itself (out of this module's
+        # control), not to anything the curvilinear solve does. Left as-is
+        # rather than tightened to a value that would flake on backend
+        # precision it doesn't own.
         assert abs(got - expected) < 1e-4, (fi, fj, got, expected)
 
 
@@ -1006,7 +1015,11 @@ def test_curvilinear_interp_matches_the_closed_form_affine_path():
         got = curv.interp(
             lat=target_lat, lon=target_lon, method="linear"
         ).item()
-        assert abs(got - expected) < 1e-5, (fi, fj, got, expected)
+        # tightened from 1e-5 (review of #166, finding #9): measured worst
+        # discrepancy across hundreds of points is ~1.3e-7, so 1e-5 was
+        # ~100x looser than reality and wouldn't have caught a real
+        # regression; 1e-6 keeps comfortable margin without being loose.
+        assert abs(got - expected) < 1e-6, (fi, fj, got, expected)
 
 
 def test_curvilinear_interp_many_query_produces_one_new_named_axis():
@@ -1029,11 +1042,130 @@ def test_curvilinear_interp_out_of_range_raises():
         t.interp(lat=1000.0, lon=1000.0, method="linear")
 
 
-def test_curvilinear_interp_fold_raises_rather_than_a_wrong_answer():
-    # a folded map (lat depends on |y - 2|, so two different y's share the
-    # same lat) is not locally invertible right at the fold -- the solver
-    # must raise (singular Jacobian, or the equivalent out-of-range
-    # divergence it degrades to numerically), never silently guess.
+def test_curvilinear_interp_boundary_seeded_query_succeeds():
+    # regression test (review of #166, finding #1): `_bilinear_sample_2d`
+    # used to clamp its query point *before* differencing, so the Newton
+    # solve's finite-difference Jacobian was silently halved whenever an
+    # iterate sat exactly at index 0 or size-1 -- which the nearest-
+    # neighbor seed does constantly, since it is always an exact integer
+    # index by construction. On this anisotropic 11x11 grid the corrupted
+    # Jacobian used to send the solve's very first step off the edge,
+    # collapse the (still-clamped) Jacobian to 0 there, and raise
+    # "outside the grid's coordinate range" for a target that is squarely
+    # interior (true index ~(0.4299, 5.2996)).
+    pytest.importorskip("fiery.interpol")
+    i = torch.arange(11.0).unsqueeze(1)
+    j = torch.arange(11.0).unsqueeze(0)
+    lat = (100.0 * (i + 0.3 * j)).expand(11, 11).contiguous()
+    lon = (j - 0.2 * i).expand(11, 11).contiguous()
+    data = (10 * i + j).expand(11, 11).contiguous()
+    t = XTensor(
+        data,
+        names=("y", "x"),
+        coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
+    )
+    out = t.interp(
+        lat=201.98156282543255, lon=5.213648134218069, method="linear"
+    )
+    assert out.item() == pytest.approx(9.598889754567772, abs=1e-4)
+
+
+def test_curvilinear_interp_singular_check_is_scale_aware():
+    # regression test (review of #166, finding #2): `|det(J)|` has units of
+    # world^2 / index^2, so comparing it to a bare absolute constant only
+    # makes sense for O(1)-magnitude coordinates. The same well-conditioned
+    # geometry, stored as fine-resolution (~5 m and ~1 m cell) lat/lon
+    # degrees, used to be misdiagnosed as "not locally invertible" purely
+    # because of its units -- with no change to the actual geometry.
+    pytest.importorskip("fiery.interpol")
+
+    def make(cell_deg):
+        h = w = 9
+        y = torch.arange(h, dtype=torch.float64).unsqueeze(1)
+        x = torch.arange(w, dtype=torch.float64).unsqueeze(0)
+        lat = (10.0 + cell_deg * (y + 0.05 * x)).expand(h, w).contiguous()
+        lon = (20.0 + cell_deg * (x - 0.05 * y)).expand(h, w).contiguous()
+        data = (10 * y + x).expand(h, w).contiguous()
+        return (
+            XTensor(
+                data,
+                names=("y", "x"),
+                coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
+            ),
+            lat,
+            lon,
+        )
+
+    for cell_deg in (4.5e-5, 9e-6):  # ~5 m and ~1 m cells, in degrees
+        t, lat, lon = make(cell_deg)
+        target_lat = float(lat[4, 4]) + cell_deg * 0.3
+        target_lon = float(lon[4, 4]) + cell_deg * 0.2
+        out = t.interp(lat=target_lat, lon=target_lon, method="linear")
+        assert math.isfinite(out.item())
+
+
+def test_curvilinear_interp_converges_at_large_coordinate_magnitude():
+    # regression test (review of #166, finding #3): the convergence check
+    # used to compare the residual to a bare absolute world-unit constant,
+    # unreachable in float64 past a coordinate magnitude of a few million
+    # (UTM/ECEF-scale). Same nonlinear geometry, scaled up to a
+    # metres-in-large-datum magnitude, must still converge.
+    pytest.importorskip("fiery.interpol")
+    h = w = 9
+    y = torch.arange(h, dtype=torch.float64).unsqueeze(1)
+    x = torch.arange(w, dtype=torch.float64).unsqueeze(0)
+    scale = 1e10
+    lat = (scale * (y + 0.3 * torch.sin(x))).expand(h, w).contiguous()
+    lon = (scale * (x + 0.3 * torch.cos(y))).expand(h, w).contiguous()
+    data = (10 * y + x).expand(h, w).contiguous()
+    t = XTensor(
+        data,
+        names=("y", "x"),
+        coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
+    )
+    fi, fj = 3.4, 4.6
+    target_lat = _bilinear_2d(lat, fi, fj)
+    target_lon = _bilinear_2d(lon, fi, fj)
+    got = t.interp(lat=target_lat, lon=target_lon, method="linear").item()
+    expected = _bilinear_2d(data, fi, fj)
+    assert got == pytest.approx(expected, rel=1e-6)
+
+
+def test_curvilinear_interp_batched_query_matches_single_point_queries():
+    # regression test (review of #166, finding #4): the Newton loop kept
+    # singularity-testing *already-converged* points on every subsequent
+    # iteration driven by a slower batch-mate. A point that seeds exactly
+    # onto a fold's apex converges in one step with a genuinely singular
+    # local Jacobian there -- fine on its own, but re-checking it on every
+    # later iteration used to make the whole batched call raise, purely
+    # because of who else was in the batch.
+    pytest.importorskip("fiery.interpol")
+    i = torch.arange(9.0).unsqueeze(1)
+    j = torch.arange(9.0).unsqueeze(0)
+    lat = ((i - 4.0) ** 2 / 8.0).expand(9, 9).contiguous()  # apex at i=4
+    lon = j.expand(9, 9).contiguous()
+    data = (10 * i + j).expand(9, 9).contiguous()
+    t = XTensor(
+        data,
+        names=("y", "x"),
+        coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
+    )
+    out_a = t.interp(lat=[0.0], lon=[3.0], name="p")
+    out_b = t.interp(lat=[0.5], lon=[2.37], name="p")
+    out_ab = t.interp(lat=[0.0, 0.5], lon=[3.0, 2.37], name="p")
+    assert out_ab[0].item() == pytest.approx(out_a[0].item())
+    assert out_ab[1].item() == pytest.approx(out_b[0].item())
+
+
+def test_curvilinear_interp_near_fold_resolves_to_a_valid_preimage():
+    # a folded map (lat depends on |y - 2|, so two different y's -- 1.7 and
+    # 2.3 -- share the same lat=0.3) is only locally non-invertible *right
+    # at* the fold line itself (y == 2 exactly, where the Jacobian is
+    # genuinely rank-deficient): away from it, each branch is individually
+    # well-conditioned, so the solver must resolve to *one* of the two
+    # legitimate preimages -- never silently returning a value that matches
+    # neither (review of #166, finding #5: the "raises at a fold" guarantee
+    # is local to the fold line, not the whole folded region).
     pytest.importorskip("fiery.interpol")
     h, w = 5, 5
     data = torch.arange(25.0).reshape(h, w)
@@ -1046,17 +1178,46 @@ def test_curvilinear_interp_fold_raises_rather_than_a_wrong_answer():
         names=("y", "x"),
         coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
     )
-    with pytest.raises(
-        ValueError, match="isn't locally invertible|outside the grid"
-    ):
-        t.interp(lat=0.3, lon=2.3, method="linear")
+    got = t.interp(lat=0.3, lon=2.3, method="linear").item()
+    # the two legitimate preimages, y=1.7 or y=2.3 (both x=2.3), give
+    # data = 5*y + x -- either is an acceptable, genuinely-valid answer.
+    branch_low = 5 * 1.7 + 2.3
+    branch_high = 5 * 2.3 + 2.3
+    assert got == pytest.approx(branch_low) or got == pytest.approx(
+        branch_high
+    ), (got, branch_low, branch_high)
+
+
+def test_curvilinear_interp_rank_deficient_map_raises_singular():
+    # a map where one spanned axis (x) contributes nothing to *either*
+    # world coordinate is genuinely, everywhere non-invertible (the
+    # Jacobian's x-column is exactly zero) -- unlike a fold, this isn't a
+    # numerical near-miss, so it must raise regardless of query point.
+    pytest.importorskip("fiery.interpol")
+    h, w = 5, 5
+    data = torch.arange(25.0).reshape(h, w)
+    y = torch.arange(h, dtype=torch.float64).unsqueeze(1)
+    lat = y.expand(h, w).contiguous()
+    lon = (2.0 * y).expand(h, w).contiguous()
+    t = XTensor(
+        data,
+        names=("y", "x"),
+        coords={"lat": (("y", "x"), lat), "lon": (("y", "x"), lon)},
+    )
+    with pytest.raises(ValueError, match="isn't locally invertible"):
+        t.interp(lat=1.5, lon=3.0, method="linear")
 
 
 def test_curvilinear_interp_gradients_flow_through_data_not_query():
     # documented limitation: the Newton solve is detached (an iterative,
     # data-dependent root find has no well-defined gradient), so only the
     # tensor's own *data* values stay differentiable -- same as every other
-    # interp path -- while the query itself carries no gradient.
+    # interp path -- while the query itself carries no gradient. Checks
+    # both halves of the claim (review of #166, finding #9): the *query*
+    # tensors must come back with `.grad is None`, not just be unchecked,
+    # and the *data* gradient must match the exact bilinear weights (not
+    # just "sums to something positive", which is a tautology -- interp
+    # weights always sum to 1 regardless of whether they're correct).
     pytest.importorskip("fiery.interpol")
     t, lat, lon, data = _curvilinear_demo()
     values = data.clone().requires_grad_(True)
@@ -1065,13 +1226,32 @@ def test_curvilinear_interp_gradients_flow_through_data_not_query():
         names=["y", "x"],
         coords={"lat": (["y", "x"], lat), "lon": (["y", "x"], lon)},
     )
-    target_lat = float(lat[2, 3]) + 0.01
-    target_lon = float(lon[2, 3]) + 0.01
-    out = tg.interp(lat=target_lat, lon=target_lon, method="linear")
+    fi, fj = 1.4, 2.6  # an interior, non-exact-node fractional index
+    target_lat = _bilinear_2d(lat, fi, fj)
+    target_lon = _bilinear_2d(lon, fi, fj)
+    query_lat = torch.tensor(target_lat, requires_grad=True)
+    query_lon = torch.tensor(target_lon, requires_grad=True)
+    out = tg.interp(lat=query_lat, lon=query_lon, method="linear")
     out.backward()
+
+    # query point: no gradient at all (detached Newton solve).
+    assert query_lat.grad is None
+    assert query_lon.grad is None
+
+    # data: gradient must equal the exact bilinear corner weights, not
+    # merely be non-negative/summing to 1.
     assert values.grad is not None
     assert not torch.isnan(values.grad).any()
-    assert values.grad.sum().item() > 0
+    i0, j0 = int(fi), int(fj)
+    i1, j1 = i0 + 1, j0 + 1
+    di, dj = fi - i0, fj - j0
+    expected = torch.zeros_like(values.grad)
+    expected[i0, j0] = (1 - di) * (1 - dj)
+    expected[i0, j1] = (1 - di) * dj
+    expected[i1, j0] = di * (1 - dj)
+    expected[i1, j1] = di * dj
+    torch.testing.assert_close(values.grad, expected, atol=1e-5, rtol=1e-4)
+    assert values.grad.sum().item() == pytest.approx(1.0)
 
 
 def test_curvilinear_interp_unbalanced_group_raises():
@@ -1165,6 +1345,63 @@ def test_curvilinear_interp_and_affine_group_conflict_raises():
     )
     with pytest.raises(ValueError, match="spanned by both"):
         t.interp(lat=5.0, lon=105.0, p=1.0, q=1.0)
+
+
+def test_curvilinear_interp_and_affine_group_conflict_raises_reversed_dims():
+    # regression test (review of #166, finding #7): the same two axes,
+    # spanned in the *other* order by the curvilinear coordinate, must
+    # still be caught -- an exact-tuple `dims` comparison let `("y", "x")`
+    # (affine) vs. `("x", "y")` (curvilinear) slip through, producing a
+    # confusing "no axis named ..." error instead of naming the conflict.
+    pytest.importorskip("fiery.interpol")
+    field = torch.arange(24.0).reshape(4, 6)
+    arr = torch.arange(24.0).reshape(6, 4)
+    t = XTensor(
+        field,
+        names=("y", "x"),
+        coords={
+            "p": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], ""), "origin": (0.0, "")},
+            ),
+            "q": (
+                ("y", "x"),
+                {"spacing": ([0.0, 1.0], ""), "origin": (0.0, "")},
+            ),
+            "lat": (("x", "y"), arr),
+            "lon": (("x", "y"), arr + 100.0),
+        },
+    )
+    with pytest.raises(ValueError, match="spanned by both"):
+        t.interp(p=1.0, q=2.0, lat=11.5, lon=102.5)
+
+
+def test_curvilinear_interp_and_affine_group_conflict_raises_partial_overlap():
+    # regression test (review of #166, finding #7): a curvilinear coordinate
+    # sharing only *some* of the affine coordinate's dims (not the exact
+    # same tuple) must also be caught -- the exact-tuple comparison missed
+    # this too.
+    pytest.importorskip("fiery.interpol")
+    field = torch.arange(48.0).reshape(4, 6, 2)
+    arr = torch.arange(12.0).reshape(6, 2)
+    t = XTensor(
+        field,
+        names=("y", "x", "z"),
+        coords={
+            "p": (
+                ("y", "x"),
+                {"spacing": ([1.0, 0.0], ""), "origin": (0.0, "")},
+            ),
+            "q": (
+                ("y", "x"),
+                {"spacing": ([0.0, 1.0], ""), "origin": (0.0, "")},
+            ),
+            "lat": (("x", "z"), arr),
+            "lon": (("x", "z"), arr + 100.0),
+        },
+    )
+    with pytest.raises(ValueError, match="spanned by both"):
+        t.interp(p=1.0, q=2.0, lat=11.5, lon=102.5)
 
 
 def test_affine_coordinate_repeated_dim_is_rejected():

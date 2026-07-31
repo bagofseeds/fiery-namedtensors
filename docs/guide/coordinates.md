@@ -300,10 +300,16 @@ grid.interp(lat=52.13, lon=4.28)                # method="nearest" or "linear"
 This is scoped to a **2-D** spanned coordinate (the `lat(y, x)`/`lon(y, x)`
 case above) and to `method="nearest"`/`"linear"` — a higher spline order, or
 more than 2 spanned dims, isn't implemented. A query outside the grid's
-coordinate range, or landing where the map isn't locally invertible (a
-fold), raises rather than returning a silently wrong answer. Gradients flow
-through the tensor's own data values, as with any other `interp` call, but
-not back through the query point or the coordinate arrays themselves.
+coordinate range, or landing close enough to a fold that the local Jacobian
+is itself singular there, raises rather than returning a silently wrong
+answer. That detection is local: away from the fold line itself, a query
+still resolves to one of the (possibly several) valid preimages — whichever
+its nearest-neighbor seed lands closest to — without warning that another
+equally-valid one exists. Convergence and singularity checks scale with the
+coordinates' own magnitude rather than a fixed absolute unit, so this works
+the same whether the coordinate values are e.g. degrees or metres. Gradients
+flow through the tensor's own data values, as with any other `interp` call,
+but not back through the query point or the coordinate arrays themselves.
 
 ## Multiple coordinates per axis
 
