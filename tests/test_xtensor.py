@@ -23,6 +23,16 @@ _HAS_SWAPAXES = hasattr(torch, "swapaxes")  # swapaxes / swapdims
 _HAS_MOVEAXIS = hasattr(torch, "moveaxis")
 _HAS_BROADCAST_TO = hasattr(torch, "broadcast_to")
 
+# torch 1.7's index_select rejects an int32 index outright ("Expected dtype
+# int64 for index"); later torch accepts it (matching the IntTensor-or-
+# LongTensor contract torch documents). Probed at runtime rather than gated
+# on a version number, since it's the actual op behavior under test.
+try:
+    torch.zeros(1).index_select(0, torch.zeros(1, dtype=torch.int32))
+    _INDEX_SELECT_ACCEPTS_INT32 = True
+except RuntimeError:
+    _INDEX_SELECT_ACCEPTS_INT32 = False
+
 # ----------------------------------------------------------------------
 # dispatch machinery: method form vs. functional form (issue #160)
 # ----------------------------------------------------------------------
@@ -4155,6 +4165,10 @@ def test_index_select_with_a_0d_index_on_a_numeric_coordinate():
     assert (out + 1).tolist() == [3.0]
 
 
+@pytest.mark.skipif(
+    not _INDEX_SELECT_ACCEPTS_INT32,
+    reason="torch 1.7's index_select itself rejects an int32 index",
+)
 def test_index_select_with_an_int32_index_on_a_numeric_coordinate():
     # torch documents index_select's index as IntTensor or LongTensor; the
     # first version of the #162 fix only recognised torch.long and silently
